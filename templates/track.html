@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="my">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ဖောက်သည်/ဆိုင် - ပို့ဆောင်သူ တည်နေရာ ရှာဖွေခြင်း</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    font-family: "Noto Sans Myanmar", "Myanmar Text", "Microsoft YaHei", Arial, sans-serif;
+    background:#f5f5f5;
+  }
+  .top { background: linear-gradient(135deg, #f6d365, #fda085); padding: 20px 16px 46px; color:#fff; }
+  .top h2 { font-size: 22px; }
+  .top .sub { font-size: 13px; opacity:.9; margin-top:4px; line-height:1.8; }
+  .search {
+    background:#fff; border-radius: 12px; margin: -26px 16px 14px;
+    padding: 16px; box-shadow: 0 2px 10px rgba(0,0,0,0.12); position:relative; z-index:5;
+  }
+  label { display:block; font-size:12px; color:#888; margin: 8px 0 4px; }
+  input {
+    width:100%; padding:10px; border:1px solid #ddd; border-radius:8px; font-size:15px; outline:none;
+  }
+  input:focus { border-color:#fda085; }
+  button {
+    width:100%; padding:12px; border:none; border-radius:10px; margin-top:14px;
+    font-size:16px; color:#fff; cursor:pointer; background: linear-gradient(135deg, #f6d365, #fda085);
+  }
+  button:disabled { background:#ccc; cursor:not-allowed; }
+  #map { width:100%; height: 420px; margin-top: 4px; z-index:1; }
+  .result {
+    background:#fff; border-radius:12px; margin:14px 16px; padding:16px;
+    box-shadow:0 2px 8px rgba(0,0,0,0.08); display:none; font-size:14px; line-height:2.2;
+  }
+  .result b { color:#e07b00; }
+  .status-tag {
+    display:inline-block; padding:2px 12px; border-radius:20px; font-size:13px; font-weight:bold;
+  }
+  .st-အစားအစာယူရန် { background:#fff3e0; color:#e65100; }
+  .st-ပို့ဆောင်နေသည် { background:#e3f2fd; color:#1565c0; }
+  .st-ရောက်ရှိပြီး { background:#e8f5e9; color:#2e7d32; }
+  .err { color:#d32f2f; font-size:13px; margin-top:8px; display:none; }
+</style>
+</head>
+<body>
+  <div class="top">
+    <h2>📍 ပို့ဆောင်သူ တည်နေရာ ရှာဖွေခြင်း</h2>
+    <div class="sub">အမှာစာနံပါတ် + ပို့ဆောင်သူ ဖုန်းနံပါတ် ထည့်၍ မည်သည့်နေရာရောက်နေသည်ကို အချိန်နှင့်တပြေးညီ ကြည့်ပါ</div>
+  </div>
+
+  <div class="search">
+    <label>အမှာစာနံပါတ်</label>
+    <input id="orderNo" placeholder="ဥပမာ - BZ1001102030">
+    <label>ပို့ဆောင်သူ ဖုန်းနံပါတ်</label>
+    <input id="phone" placeholder="ပို့ဆောင်သူ ဖုန်းနံပါတ် ထည့်ပါ" type="tel">
+    <button id="searchBtn" onclick="search()">တည်နေရာ ရှာမည်</button>
+    <div class="err" id="err"></div>
+  </div>
+
+  <div class="result" id="result">
+    အမှာစာ：<b id="rOrderNo"></b>（<span id="rCustomer"></span>）
+    <span class="status-tag st-ပို့ဆောင်နေသည်" id="rStatusTag">ပို့ဆောင်နေသည်</span><br>
+    ပို့ရမည့်လိပ်စာ：<span id="rAddress"></span><br>
+    ပို့ဆောင်သူ နောက်ဆုံးတည်နေရာ အချိန်：<b id="rTime"></b><br>
+    အချက်အလက်：စာမျက်နှာသည် ၅ စက္ကန့်တိုင်း အလိုအလျောက် ပြန်လည်တင်ပေးသည်
+  </div>
+
+  <div id="map"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+var map = null;
+var marker = null;
+var trackLine = null;
+var refreshTimer = null;
+var currentOrderNo = "";
+var currentPhone = "";
+
+async function search() {
+  var orderNo = document.getElementById("orderNo").value.trim();
+  var phone = document.getElementById("phone").value.trim();
+  if (!orderNo || !phone) { showErr("အမှာစာနံပါတ်နှင့် ပို့ဆောင်သူ ဖုန်းနံပါတ် ထည့်သွင်းပါ"); return; }
+  clearErr();
+  document.getElementById("searchBtn").disabled = true;
+  document.getElementById("searchBtn").textContent = "ရှာဖွေနေသည်...";
+  var r = await fetch("/api/track?order_no=" + encodeURIComponent(orderNo) + "&phone=" + encodeURIComponent(phone));
+  var j = await r.json();
+  document.getElementById("searchBtn").disabled = false;
+  document.getElementById("searchBtn").textContent = "တည်နေရာ ရှာမည်";
+
+  if (!j.ok) { showErr(j.msg || "ရှာဖွေမှု မအောင်မြင်ပါ"); return; }
+
+  currentOrderNo = orderNo;
+  currentPhone = phone;
+  if (refreshTimer) clearInterval(refreshTimer);
+  refreshTimer = setInterval(search, 5000);
+
+  render(j);
+}
+
+function render(j) {
+  var box = document.getElementById("result");
+  box.style.display = "block";
+  document.getElementById("rOrderNo").textContent = j.order_no;
+  document.getElementById("rCustomer").textContent = j.customer_name || "ဖောက်သည်";
+  document.getElementById("rAddress").textContent = j.address || "မဖြည့်ထားပါ";
+  document.getElementById("rTime").textContent = j.update_time || "-";
+
+  var tag = document.getElementById("rStatusTag");
+  tag.className = "status-tag st-" + (j.status || "ပို့ဆောင်နေသည်");
+  tag.textContent = j.status || "ပို့ဆောင်နေသည်";
+
+  var latLngs = (j.track || []).map(function(p) { return [p.lat, p.lng]; });
+  if (latLngs.length === 0) {
+    showErr("ဤအမှာစာအတွက် တည်နေရာဒေတာ မရှိသေးပါ။ ပို့ဆောင်သူသည် 「ပို့ဆောင်သူ」စာမျက်နှာတွင် ချိတ်ဆက်၍ တည်နေရာ တင်ရန် လိုအပ်ပါသည်");
+    return;
+  }
+
+  if (!map) {
+    map = L.map("map").setView(latLngs[0], 15);
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      attribution: "&copy; OpenStreetMap contributors", maxZoom: 19
+    }).addTo(map);
+  }
+
+  if (trackLine) map.removeLayer(trackLine);
+  trackLine = L.polyline(latLngs, { color: "#fda085", weight: 4 }).addTo(map);
+
+  var latest = latLngs[latLngs.length - 1];
+  if (!marker) {
+    marker = L.marker(latest, { icon: grabIcon() }).addTo(map);
+  } else {
+    // 像 Grab 一样：小车平滑移动到新位置，而不是瞬间跳变
+    var cur = marker.getLatLng();
+    animateMarkerTo([cur.lat, cur.lng], latest, 900);
+  }
+  map.setView(latest, 15);
+}
+
+// Grab 风格小车图标：绿色圆底 + 白色小车
+function grabIcon() {
+  return L.divIcon({
+    className: "",
+    html: '<svg viewBox="0 0 64 64" width="46" height="46" style="filter:drop-shadow(0 2px 4px rgba(0,0,0,0.35))">' +
+      '<circle cx="32" cy="32" r="30" fill="#00b14f" stroke="#fff" stroke-width="3"/>' +
+      '<g transform="translate(11,18)">' +
+      '<path d="M7 15 l3.5-8.5 a5.5 5.5 0 0 1 5-3.2 h17 a5.5 5.5 0 0 1 5 3.2 l3.5 8.5 h-34z" fill="#fff"/>' +
+      '<circle cx="11" cy="21.5" r="4.2" fill="#00b14f" stroke="#fff" stroke-width="1.5"/>' +
+      '<circle cx="31" cy="21.5" r="4.2" fill="#00b14f" stroke="#fff" stroke-width="1.5"/>' +
+      '<rect x="18.5" y="4.8" width="7" height="6.2" rx="2.8" fill="#00b14f"/>' +
+      '</g></svg>',
+    iconSize: [46, 46],
+    iconAnchor: [23, 23]
+  });
+}
+
+// 小车平滑移动动画（模拟实时行驶）
+function animateMarkerTo(from, to, duration) {
+  var start = null;
+  function step(ts) {
+    if (!start) start = ts;
+    var t = Math.min((ts - start) / duration, 1);
+    var lat = from[0] + (to[0] - from[0]) * t;
+    var lng = from[1] + (to[1] - from[1]) * t;
+    marker.setLatLng([lat, lng]);
+    if (t < 1) requestAnimationFrame(step);
+  }
+  requestAnimationFrame(step);
+}
+
+function showErr(msg) {
+  var e = document.getElementById("err");
+  e.textContent = msg;
+  e.style.display = "block";
+}
+function clearErr() {
+  var e = document.getElementById("err");
+  e.textContent = "";
+  e.style.display = "none";
+}
+</script>
+</body>
+</html>

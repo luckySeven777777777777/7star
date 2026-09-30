@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="my">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ပေါက်စီဆိုင် အွန်လိုင်းအမှာ ပို့ဆောင်မှု စောင့်ကြည့်ရေး</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    font-family: "Noto Sans Myanmar", "Myanmar Text", "Microsoft YaHei", Arial, sans-serif;
+    background: linear-gradient(135deg, #f6d365 0%, #fda085 100%);
+    min-height: 100vh;
+  }
+  .container { max-width: 520px; margin: 0 auto; padding: 40px 20px; text-align:center; }
+  h1 { font-size: 26px; color: #8b4513; margin-bottom: 8px; }
+  .sub { color: #a0522d; margin-bottom: 30px; font-size: 15px; }
+  .card {
+    background: #fff; border-radius: 16px; padding: 28px 20px;
+    margin-bottom: 20px; box-shadow: 0 4px 16px rgba(0,0,0,0.12);
+    cursor: pointer; transition: transform .15s ease;
+  }
+  .card:hover { transform: translateY(-3px); }
+  .card .icon { font-size: 42px; margin-bottom: 10px; }
+  .card .title { font-size: 20px; font-weight: bold; color: #333; margin-bottom: 6px; }
+  .card .desc { font-size: 13px; color: #888; line-height: 1.8; }
+  .tip {
+    background: #fff8e1; border: 1px dashed #e0a800; border-radius: 12px;
+    padding: 14px; font-size: 13px; color: #7a6a1e; text-align: left; line-height: 2;
+  }
+  /* 左右布局：宽屏两个入口卡片左右并排，手机窄屏自动变上下 */
+  .cards { display: flex; gap: 20px; }
+  .cards .card { flex: 1; }
+  @media (max-width: 860px) {
+    .cards { flex-direction: column; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>🥟 ပေါက်စီဆိုင် အမှာပို့ဆောင်မှု</h1>
+  <div class="sub">ဖောက်သည်နှင့် ဆိုင်တို့သည် ပို့ဆောင်သူ၏ တည်နေရာကို အချိန်မရွေး ကြည့်ရှုနိုင်သည်</div>
+
+  <div class="cards">
+  <div class="card" onclick="location.href='/rider'">
+    <div class="icon">🛵</div>
+    <div class="title">ပို့ဆောင်သူ</div>
+    <div class="desc">ပို့ဆောင်သူသည် အမှာစာနံပါတ် ချိတ်ဆက်ပြီး တည်နေရာကို အလိုအလျောက် တင်ပေးမည်<br>（တည်နေရာ ခွင့်ပြုရန် နှိပ်ပါ）</div>
+  </div>
+
+  <div class="card" onclick="location.href='/track'">
+    <div class="icon">📍</div>
+    <div class="title">ဖောက်သည် / ဆိုင် ရှာဖွေရေး</div>
+    <div class="desc">အမှာစာနံပါတ် + ပို့ဆောင်သူ ဖုန်းနံပါတ် ထည့်ပြီး<br>မြေပုံပေါ်တွင် တည်နေရာနှင့် လမ်းကြောင်းကို အချိန်နှင့်တပြေးညီ ကြည့်ရှုပါ</div>
+  </div>
+  </div>
+
+  <div class="tip">
+    <b>အသုံးပြုနည်း（၃ ဆင့်）：</b><br>
+    ၁။ ဆိုင်က 「ပို့ဆောင်သူ」စာမျက်နှာတွင် အမှာစာ ဖန်တီးပြီး အမှာစာနံပါတ်ကို ပို့ဆောင်သူအား ပေးပါ<br>
+    ၂။ ပို့ဆောင်သူသည် 「ပို့ဆောင်သူ」စာမျက်နှာတွင် ဖုန်းနံပါတ် + အမှာစာနံပါတ် ထည့်၍ ပို့ဆောင်စပါ<br>
+    ၃။ ဖောက်သည်/ဆိုင်က 「ရှာဖွေရေး」စာမျက်နှာတွင် အမှာစာနံပါတ် + ပို့ဆောင်သူ ဖုန်းနံပါတ် ထည့်၍ တည်နေရာကို အချိန်မရွေး ကြည့်ရှုနိုင်သည်
+  </div>
+</div>
+</body>
+</html>

@@ -1,0 +1,4 @@
+flask>=2.3
+gunicorn>=21.2
+psycopg2-binary>=2.9
+（内容由AI生成，仅供参考）

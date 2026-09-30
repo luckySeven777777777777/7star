@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="my">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ပို့ဆောင်သူ - တည်နေရာတင်ခြင်း</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    font-family: "Noto Sans Myanmar", "Myanmar Text", "Microsoft YaHei", Arial, sans-serif;
+    background:#f5f5f5; padding: 16px;
+  }
+  h2 { text-align:center; color:#333; margin-bottom: 4px; }
+  .sub { text-align:center; color:#999; font-size:13px; margin-bottom: 16px; }
+  .panel { background:#fff; border-radius: 12px; padding: 18px; margin-bottom: 14px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+  label { display:block; font-size:13px; color:#666; margin: 10px 0 4px; }
+  input {
+    width:100%; padding:10px; border:1px solid #ddd; border-radius:8px;
+    font-size:15px; outline:none;
+  }
+  input:focus { border-color:#fda085; }
+  .btn {
+    display:block; width:100%; padding:12px; border:none; border-radius:10px;
+    font-size:16px; cursor:pointer; margin-top:14px; color:#fff;
+    background: linear-gradient(135deg, #f6d365, #fda085);
+  }
+  .btn:disabled { background:#ccc; cursor:not-allowed; }
+  .btn-gray { background:#999; }
+  .btn-green { background: linear-gradient(135deg, #56ab2f, #a8e063); color:#fff; }
+  .row2 { display:flex; gap:10px; }
+  .row2 .btn { flex:1; }
+  .info { font-size:13px; color:#333; line-height:2; margin-top:10px; }
+  .info b { color:#e07b00; }
+  .status-box { display:flex; gap:8px; margin-top:12px; flex-wrap:wrap; }
+  .status-box button {
+    flex:1; min-width:90px; padding:10px; border-radius:8px; border:2px solid #eee;
+    background:#fafafa; font-size:14px; cursor:pointer;
+  }
+  .status-box button.active { border-color:#fda085; background:#fff3e9; color:#e07b00; font-weight:bold; }
+  .dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:#fda085; margin-right:6px; }
+</style>
+</head>
+<body>
+  <h2>🛵 ပို့ဆောင်သူ</h2>
+  <div class="sub">အမှာစာ ချိတ်ဆက်ပြီးပါက သင့်တည်နေရာကို အလိုအလျောက် တင်ပေးမည်</div>
+
+  <div class="panel">
+    <button class="btn btn-gray" onclick="createOrder()">အမှာစာ ဖန်တီးရန်（ဆိုင်အတွက်）</button>
+    <div class="info" id="orderBox" style="display:none">အမှာစာအသစ်：<b id="newOrder"></b></div>
+  </div>
+
+  <div class="panel">
+    <label>ပို့ဆောင်သူ အမည်</label>
+    <input id="riderName" placeholder="ဥပမာ - မောင်မောင်" value="မောင်မောင်">
+    <label>ပို့ဆောင်သူ ဖုန်းနံပါတ်（ဖောက်သည် ရှာဖွေရာတွင် အသုံးပြုမည်）</label>
+    <input id="riderPhone" placeholder="ဖုန်းနံပါတ် ထည့်ပါ" type="tel">
+    <label>အမှာစာနံပါတ်</label>
+    <input id="orderNo" placeholder="ဥပမာ - BZ1001102030">
+    <button class="btn" id="bindBtn" onclick="bindOrder()">အမှာစာ ချိတ်ဆက်၍ ပို့ဆောင်စမည်</button>
+  </div>
+
+  <div class="panel" id="reportPanel" style="display:none">
+    <div class="info">
+      <span class="dot"></span>လက်ရှိအမှာစာ：<b id="curOrder"></b><br>
+      <span class="dot"></span>လက်ရှိအခြေအနေ：<b id="curStatus">ပို့ဆောင်နေသည်</b><br>
+      <span class="dot"></span>နောက်ဆုံး တင်ပြချိန်：<span id="lastTime">-</span>
+    </div>
+    <div class="status-box" id="statusBox">
+      <button onclick="setStatus('အစားအစာယူရန် စောင့်ဆိုင်း')">အစားအစာယူရန် စောင့်ဆိုင်း</button>
+      <button class="active" onclick="setStatus('ပို့ဆောင်နေသည်')">ပို့ဆောင်နေသည်</button>
+      <button onclick="setStatus('ရောက်ရှိပြီး')">ရောက်ရှိပြီး</button>
+    </div>
+    <div class="row2">
+      <button class="btn" id="gpsBtn" onclick="startGps()">GPS ဖွင့်၍ တင်မည်</button>
+      <button class="btn btn-green" id="simBtn" onclick="startSim()">ပို့ဆောင်မှု သရုပ်ပြ</button>
+    </div>
+  </div>
+
+<script>
+var state = {
+  orderNo: "", phone: "", status: "ပို့ဆောင်နေသည်",
+  gpsTimer: null, simTimer: null,
+  curLat: null, curLng: null
+};
+
+// ---------- ဆိုင်က အမှာစာ ဖန်တီးခြင်း ----------
+async function createOrder() {
+  try {
+    var r = await fetch("/api/order/create", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ customer_name: "ဖောက်သည်", address: "ဥပမာလိပ်စာ ၈၈" })
+    });
+    var j = await r.json();
+    if (j.ok) {
+      document.getElementById("newOrder").textContent = j.order_no;
+      document.getElementById("orderBox").style.display = "block";
+      document.getElementById("orderNo").value = j.order_no;
+    } else {
+      alert(j.msg || "ဖန်တီးမှု မအောင်မြင်ပါ");
+    }
+  } catch (e) {
+    alert("ဆာဗာနှင့် ချိတ်ဆက်၍ မရပါ။ ဝန်ဆောင်မှု စတင်ထားခြင်း ရှိမရှိ စစ်ဆေးပါ（请检查后端服务是否已启动，并用 http:// 地址访问）");
+  }
+}
+
+// ---------- အမှာစာ ချိတ်ဆက်ခြင်း ----------
+async function bindOrder() {
+  var phone = document.getElementById("riderPhone").value.trim();
+  var orderNo = document.getElementById("orderNo").value.trim();
+  var name = document.getElementById("riderName").value.trim();
+  if (!phone || !orderNo) { alert("ဖုန်းနံပါတ်နှင့် အမှာစာနံပါတ် နှစ်ခုလုံး ထည့်သွင်းပါ"); return; }
+
+  try {
+    var r = await fetch("/api/rider/bind", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ name: name, phone: phone, order_no: orderNo })
+    });
+    var j = await r.json();
+    if (!j.ok) { alert(j.msg); return; }
+
+    state.orderNo = orderNo;
+    state.phone = phone;
+    document.getElementById("reportPanel").style.display = "block";
+    document.getElementById("curOrder").textContent = orderNo;
+    document.getElementById("bindBtn").disabled = true;
+    document.getElementById("bindBtn").textContent = "ချိတ်ဆက်ပြီးပါပြီ";
+    alert("ချိတ်ဆက်မှု အောင်မြင်ပါသည်။ GPS ဖွင့်ခြင်း သို့မဟုတ် သရုပ်ပြ နှိပ်၍ တည်နေရာ တင်ပါ");
+  } catch (e) {
+    alert("ဆာဗာနှင့် ချိတ်ဆက်၍ မရပါ။ ဝန်ဆောင်မှု စတင်ထားခြင်း ရှိမရှိ စစ်ဆေးပါ（请检查后端服务是否已启动，并用 http:// 地址访问）");
+  }
+}
+
+// ---------- အခြေအနေ ပြောင်းခြင်း ----------
+function setStatus(status) {
+  state.status = status;
+  document.getElementById("curStatus").textContent = status;
+  document.querySelectorAll("#statusBox button").forEach(function(btn) {
+    btn.classList.remove("active");
+  });
+  event.target.classList.add("active");
+  if (state.curLat !== null && state.curLat !== undefined) {
+    reportLocation(state.curLat, state.curLng, status);
+  }
+}
+
+// ---------- တည်နေရာ တင်ခြင်း ----------
+async function reportLocation(lat, lng, status) {
+  if (!state.orderNo || !state.phone) return;
+  status = status || state.status;
+  try {
+    var r = await fetch("/api/rider/location", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ order_no: state.orderNo, phone: state.phone, lat: lat, lng: lng, status: status })
+    });
+    var j = await r.json();
+    if (j.ok) {
+      var now = new Date();
+      document.getElementById("lastTime").textContent =
+        now.getHours() + ":" + String(now.getMinutes()).padStart(2,"0") + ":" + String(now.getSeconds()).padStart(2,"0");
+    } else {
+      alert(j.msg);
+    }
+  } catch (e) {
+    alert("ဆာဗာနှင့် ချိတ်ဆက်၍ မရပါ။ ဝန်ဆောင်မှု စတင်ထားခြင်း ရှိမရှိ စစ်ဆေးပါ（请检查后端服务是否已启动）");
+  }
+}
+
+// ---------- နည်းလမ်း ၁ - GPS တိုက်ရိုက်တင်ခြင်း ----------
+function startGps() {
+  if (!navigator.geolocation) { alert("သင့်ဘရောက်ဆာသည် တည်နေရာကို မထောက်ပံ့ပါ။ ဖုန်းဘရောက်ဆာ သို့မဟုတ် Chrome ဖြင့် ဖွင့်ပါ"); return; }
+  document.getElementById("gpsBtn").disabled = true;
+  document.getElementById("gpsBtn").textContent = "GPS ဖွင့်ပြီး အလိုအလျောက် တင်နေသည်...";
+  stopSim();
+
+  navigator.geolocation.watchPosition(function(pos) {
+    state.curLat = pos.coords.latitude;
+    state.curLng = pos.coords.longitude;
+    reportLocation(state.curLat, state.curLng, state.status);
+  }, function(err) {
+    alert("တည်နေရာ ရယူမအောင်မြင်ပါ：" + err.message + "\nGPS မရနိုင်ပါက 「ပို့ဆောင်မှု သရုပ်ပြ」ကို နှိပ်ပါ");
+    document.getElementById("gpsBtn").disabled = false;
+    document.getElementById("gpsBtn").textContent = "GPS ဖွင့်၍ တင်မည်";
+  }, { enableHighAccuracy: true, maximumAge: 5000, timeout: 10000 });
+
+  state.gpsTimer = setInterval(function() {
+    navigator.geolocation.getCurrentPosition(function(pos) {
+      state.curLat = pos.coords.latitude;
+      state.curLng = pos.coords.longitude;
+      reportLocation(state.curLat, state.curLng, state.status);
+    }, function(){});
+  }, 5000);
+}
+
+// ---------- နည်းလမ်း ၂ - သရုပ်ပြ ပို့ဆောင်ခြင်း ----------
+function startSim() {
+  document.getElementById("simBtn").disabled = true;
+  document.getElementById("simBtn").textContent = "သရုပ်ပြ ပို့ဆောင်နေသည်...";
+  document.getElementById("gpsBtn").disabled = true;
+
+  if (state.curLat === null || state.curLat === undefined) {
+    state.curLat = 31.2304;
+    state.curLng = 121.4737;
+  }
+  reportLocation(state.curLat, state.curLng, state.status);
+
+  state.simTimer = setInterval(function() {
+    state.curLat += 0.0005;
+    state.curLng += 0.0005;
+    reportLocation(state.curLat, state.curLng, state.status);
+  }, 5000);
+}
+
+function stopSim() {
+  if (state.simTimer) { clearInterval(state.simTimer); state.simTimer = null; }
+}
+</script>
+</body>
+</html>

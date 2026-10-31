@@ -118,6 +118,15 @@ def init_db():
                 report_time TEXT
             )
         """))
+        cur.execute(_q("""
+            CREATE TABLE IF NOT EXISTS order_history (
+                id SERIAL PRIMARY KEY,
+                order_no TEXT NOT NULL,
+                rider_phone TEXT NOT NULL,
+                rider_name TEXT DEFAULT '',
+                bind_time TEXT
+            )
+        """))
     else:
         cur.executescript("""
             CREATE TABLE IF NOT EXISTS orders (
@@ -153,6 +162,13 @@ def init_db():
                 status TEXT DEFAULT '配送中',
                 is_sim INTEGER DEFAULT 0,
                 report_time TEXT
+            );
+            CREATE TABLE IF NOT EXISTS order_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                order_no TEXT NOT NULL,
+                rider_phone TEXT NOT NULL,
+                rider_name TEXT DEFAULT '',
+                bind_time TEXT
             );
         """)
     conn.commit()
@@ -284,9 +300,21 @@ def rider_bind():
         (name, phone, order_no, rider_name),
     )
     cur.execute(
-        _q("UPDATE orders SET status='配送中', delivery_address=?, baozi_total=?, shop_total=?, gps_enabled=1 WHERE order_no=?"),
+        _q("UPDATE orders SET delivery_address=?, baozi_total=?, shop_total=?, gps_enabled=1 WHERE order_no=?"),
         (delivery_address, baozi_total, shop_total, order_no),
     )
+    # 永久订单历史：每次绑定订单都记入 order_history（不因刷新/重绑丢失）
+    cur.execute(_q("SELECT id FROM order_history WHERE order_no=? AND rider_phone=?"), (order_no, phone))
+    if cur.fetchone():
+        cur.execute(
+            _q("UPDATE order_history SET rider_name=?, bind_time=? WHERE order_no=? AND rider_phone=?"),
+            (rider_name, now_str(), order_no, phone),
+        )
+    else:
+        cur.execute(
+            _q("INSERT INTO order_history (order_no, rider_phone, rider_name, bind_time) VALUES (?,?,?,?)"),
+            (order_no, phone, rider_name, now_str()),
+        )
     conn.commit()
     conn.close()
     return jsonify({"ok": True, "msg": "ချိတ်ဆက်မှု အောင်မြင်ပါသည်။ GPS ဖွင့်ပြီး အမှာစာ ပို့ဆောင်နေပြီ"})
@@ -318,7 +346,9 @@ def report_location():
         _q("INSERT INTO locations (order_no, phone, lat, lng, status, is_sim, report_time) VALUES (?,?,?,?,?,?,?)"),
         (order_no, phone, lat, lng, status, is_sim, now_str()),
     )
-    cur.execute(_q("UPDATE orders SET status=? WHERE order_no=?"), (status, order_no))
+    # 仅当快递员已选择并确认状态时才更新订单状态（未选择前保持待取餐，不显示配送中）
+    if status:
+        cur.execute(_q("UPDATE orders SET status=? WHERE order_no=?"), (status, order_no))
     conn.commit()
     conn.close()
     return jsonify({"ok": True, "msg": "တည်နေရာ တင်ပြီးပါပြီ"})
@@ -401,6 +431,55 @@ def rider_info():
     )
 
 
+# ==================== 接口: 订单历史（永久记录） ====================
+@app.route("/api/order/history", methods=["GET"])
+def order_history_api():
+    """骑手订单历史（永久记录，按手机号查询，刷新/重绑不丢失）"""
+    phone = (request.args.get("phone") or "").strip()
+    if not phone:
+        return jsonify({"ok": False, "msg": "ဖုန်းနံပါတ် မပါရှိပါ"}), 400
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute(_q("SELECT * FROM order_history WHERE rider_phone=? ORDER BY id DESC"), (phone,))
+    rows = cur.fetchall()
+    history = []
+    for row in rows:
+        h = _row_to_dict(cur, row)
+        order_no = h["order_no"]
+        cur.execute(_q("SELECT * FROM orders WHERE order_no=?"), (order_no,))
+        order = cur.fetchone()
+        if not order:
+            continue
+        od = _row_to_dict(cur, order)
+        cur.execute(
+            _q("SELECT lat, lng, status, report_time FROM locations WHERE order_no=? AND is_sim=0 ORDER BY id DESC LIMIT 1"),
+            (order_no,),
+        )
+        latest_row = cur.fetchone()
+        latest = _row_to_dict(cur, latest_row) if latest_row else None
+        if latest:
+            latest["address"] = reverse_geocode(latest["lat"], latest["lng"])
+        history.append(
+            {
+                "order_no": order_no,
+                "rider_name": h.get("rider_name", "") or "",
+                "rider_phone": h.get("rider_phone", "") or "",
+                "bind_time": h.get("bind_time", "") or "",
+                "status": od.get("status", "") or "",
+                "delivery_address": od.get("delivery_address", "") or "",
+                "baozi_total": od.get("baozi_total", 0) or 0,
+                "shop_total": od.get("shop_total", 0) or 0,
+                "baozi_received": od.get("baozi_received", 0) or 0,
+                "shop_received": od.get("shop_received", 0) or 0,
+                "baozi_remaining": (od.get("baozi_total", 0) or 0) - (od.get("baozi_received", 0) or 0),
+                "shop_remaining": (od.get("shop_total", 0) or 0) - (od.get("shop_received", 0) or 0),
+                "latest": latest,
+            }
+        )
+    conn.close()
+    return jsonify({"ok": True, "history": history})
+
+
 @app.route("/api/rider/gps", methods=["POST"])
 def rider_gps():
     """商家页开关快递员 GPS（rider 端绑定后自动开启且不可自行关闭）"""
@@ -464,6 +543,7 @@ def track():
             "customer_name": order_dict["customer_name"],
             "rider_name": (rider_dict.get("rider_name") or rider_dict.get("name") or "") if rider_dict else "",
             "gps_enabled": order_dict.get("gps_enabled", 1),
+            "created_at": order_dict.get("created_at", ""),
             "baozi_total": order_dict.get("baozi_total", 0),
             "shop_total": order_dict.get("shop_total", 0),
             "baozi_received": order_dict.get("baozi_received", 0),

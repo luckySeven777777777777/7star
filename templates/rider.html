@@ -38,6 +38,10 @@
   }
   .status-box button.active { border-color:#fda085; background:#fff3e9; color:#e07b00; font-weight:bold; }
   .dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:#fda085; margin-right:6px; }
+  .modal-overlay { position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.45); display:flex; align-items:center; justify-content:center; z-index:99; }
+  .modal-box { background:#fff; border-radius:12px; padding:20px; width:90%; max-width:360px; position:relative; box-shadow:0 4px 20px rgba(0,0,0,0.25); }
+  .modal-close { position:absolute; top:6px; right:10px; background:none; border:none; font-size:24px; line-height:1; cursor:pointer; color:#888; }
+  .modal-box h3 { margin:0 0 6px; color:#333; font-size:17px; }
 </style>
 </head>
 <body>
@@ -45,24 +49,33 @@
   <div class="sub">အမှာစာ ချိတ်ဆက်ပြီးပါက သင့်တည်နေရာကို အလိုအလျောက် တင်ပေးမည်</div>
 
   <div class="panel">
-    <button class="btn btn-gray" onclick="createOrder()">အမှာစာ ဖန်တီးရန်（ဆိုင်အတွက်）</button>
-    <div class="info" id="orderBox" style="display:none">အမှာစာအသစ်：<b id="newOrder"></b></div>
+    <button class="btn btn-gray" onclick="createOrder()">Get New Orders</button>
+    <div class="info" id="orderBox" style="display:none">Order Number：<b id="newOrder"></b></div>
   </div>
 
   <div class="panel">
     <label>ပို့ဆောင်သူ အမည်</label>
     <input id="riderName" placeholder="ဥပမာ - မောင်မောင်" value="မောင်မောင်">
-    <label>ပို့ဆောင်သူ ဖုန်းနံပါတ်（ဖောက်သည် ရှာဖွေရာတွင် အသုံးပြုမည်）</label>
+    <label>ပို့ဆောင်သူ ဖုန်းနံပါတ်</label>
     <input id="riderPhone" placeholder="ဖုန်းနံပါတ် ထည့်ပါ" type="tel">
-    <label>အမှာစာနံပါတ်</label>
+    <label>ပေါက်စီအရေအတွက်</label>
+    <input id="baoziCount" placeholder="ပေါက်စီ အရေအတွက် ထည့်ပါ" type="number" min="0">
+    <label>ဆိုင်အရေအတွက်</label>
+    <input id="shopCount" placeholder="ဆိုင် အရေအတွက် ထည့်ပါ" type="number" min="0">
+    <label>ပို့ရမည့်ဆိုင်လိပ်စာ：</label>
+    <input id="deliveryAddress" placeholder="ပို့ရမည့် ဆိုင်လိပ်စာ ထည့်ပါ">
+    <label>Order Number</label>
     <input id="orderNo" placeholder="ဥပမာ - BZ1001102030">
     <button class="btn" id="bindBtn" onclick="bindOrder()">အမှာစာ ချိတ်ဆက်၍ ပို့ဆောင်စမည်</button>
   </div>
 
   <div class="panel" id="reportPanel" style="display:none">
     <div class="info">
-      <span class="dot"></span>လက်ရှိအမှာစာ：<b id="curOrder"></b><br>
+      <span class="dot"></span>လက်ရှိOrder Number：<b id="curOrder"></b><br>
       <span class="dot"></span>လက်ရှိအခြေအနေ：<b id="curStatus">ပို့ဆောင်နေသည်</b><br>
+      <span class="dot"></span>လက်ရှိနေရာ:<span id="curLocation">-</span><br>
+      <span class="dot"></span>ကျန်ရှိသောပေါက်စီအလုံးအရေတွက်：<span id="curBaozi">-</span><br>
+      <span class="dot"></span>ကျန်ရှိသောဆိုင်အရေတွက်：<span id="curShop">-</span><br>
       <span class="dot"></span>နောက်ဆုံး တင်ပြချိန်：<span id="lastTime">-</span>
     </div>
     <div class="status-box" id="statusBox">
@@ -70,17 +83,33 @@
       <button class="active" onclick="setStatus('ပို့ဆောင်နေသည်')">ပို့ဆောင်နေသည်</button>
       <button onclick="setStatus('ရောက်ရှိပြီး')">ရောက်ရှိပြီး</button>
     </div>
+    <button class="btn btn-green" onclick="confirmDelivered()">လက်ခံပြီးပါပြီ</button>
     <div class="row2">
-      <button class="btn" id="gpsBtn" onclick="startGps()">GPS ဖွင့်၍ တင်မည်</button>
+      <button class="btn" id="gpsBtn" onclick="startGps()" disabled>GPS ဖွင့်ထားသည်</button>
       <button class="btn btn-green" id="simBtn" onclick="startSim()">ပို့ဆောင်မှု သရုပ်ပြ</button>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="confirmModal" style="display:none">
+    <div class="modal-box">
+      <button class="modal-close" onclick="closeConfirmModal()">×</button>
+      <h3>လက်ခံပြီးပါပြီ</h3>
+      <label>လက်ခံရရှိပေါက်စီအလုံးအရေတွက်</label>
+      <input id="confirmBaozi" type="number" min="0" placeholder="အရေအတွက် ထည့်ပါ">
+      <label>လက်ခံရရှိဆိုင်လိပ်စာ</label>
+      <input id="confirmAddress" placeholder="ဆိုင်လိပ်စာ ထည့်ပါ">
+      <div class="row2">
+        <button class="btn btn-green" onclick="doConfirmDelivered()">သေချာပါသည်✅</button>
+        <button class="btn btn-gray" onclick="closeConfirmModal()">မသေချာပါ❌</button>
+      </div>
     </div>
   </div>
 
 <script>
 var state = {
-  orderNo: "", phone: "", status: "ပို့ဆောင်နေသည်",
-  gpsTimer: null, simTimer: null, gpsWatchId: null,
-  curLat: null, curLng: null
+  orderNo: "", phone: "", name: "", status: "ပို့ဆောင်နေသည်",
+  gpsTimer: null, simTimer: null, refreshTimer: null, gpsWatchId: null,
+  curLat: null, curLng: null, gpsEnabled: true
 };
 
 // ---------- ဆိုင်က အမှာစာ ဖန်တီးခြင်း ----------
@@ -112,21 +141,37 @@ async function bindOrder() {
   if (!phone || !orderNo) { alert("ဖုန်းနံပါတ်နှင့် အမှာစာနံပါတ် နှစ်ခုလုံး ထည့်သွင်းပါ"); return; }
 
   try {
+    var baoziTotal = document.getElementById("baoziCount").value.trim();
+    var shopTotal = document.getElementById("shopCount").value.trim();
+    var deliveryAddress = document.getElementById("deliveryAddress").value.trim();
     var r = await fetch("/api/rider/bind", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({ name: name, phone: phone, order_no: orderNo })
+      body: JSON.stringify({
+        name: name, phone: phone, order_no: orderNo,
+        rider_name: name, baozi_total: baoziTotal || 0,
+        shop_total: shopTotal || 0, delivery_address: deliveryAddress
+      })
     });
     var j = await r.json();
     if (!j.ok) { alert(j.msg); return; }
 
     state.orderNo = orderNo;
     state.phone = phone;
+    state.name = name;
     document.getElementById("reportPanel").style.display = "block";
     document.getElementById("curOrder").textContent = orderNo;
     document.getElementById("bindBtn").disabled = true;
     document.getElementById("bindBtn").textContent = "ချိတ်ဆက်ပြီးပါပြီ";
-    alert("ချိတ်ဆက်မှု အောင်မြင်ပါသည်။ GPS ဖွင့်ခြင်း သို့မဟုတ် သရုပ်ပြ နှိပ်၍ တည်နေရာ တင်ပါ");
+    alert("ချိတ်ဆက်မှု အောင်မြင်ပါသည်။ GPS ဖွင့်ပြီး တည်နေရာ တင်နေပါသည်");
+    // GPS 强制开启：绑定成功后自动开启，快递员端不可关闭（仅 track 商家页可关）
+    document.getElementById("gpsBtn").disabled = true;
+    document.getElementById("gpsBtn").textContent = "GPS ဖွင့်ထားသည်";
+    startGps();
+    refreshRiderInfo();
+    // 定期检查商家是否关闭 GPS（商家关闭后本端立即停止上报）
+    if (state.refreshTimer) clearInterval(state.refreshTimer);
+    state.refreshTimer = setInterval(refreshRiderInfo, 5000);
   } catch (e) {
     alert("ဆာဗာနှင့် ချိတ်ဆက်၍ မရပါ။ ဝန်ဆောင်မှု စတင်ထားခြင်း ရှိမရှိ စစ်ဆေးပါ（请检查后端服务是否已启动，并用 http:// 地址访问）");
   }
@@ -146,14 +191,15 @@ function setStatus(status) {
 }
 
 // ---------- တည်နေရာ တင်ခြင်း ----------
-async function reportLocation(lat, lng, status) {
+async function reportLocation(lat, lng, status, isSim) {
   if (!state.orderNo || !state.phone) return;
   status = status || state.status;
+  isSim = isSim ? 1 : 0;
   try {
     var r = await fetch("/api/rider/location", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({ order_no: state.orderNo, phone: state.phone, lat: lat, lng: lng, status: status })
+      body: JSON.stringify({ order_no: state.orderNo, phone: state.phone, lat: lat, lng: lng, status: status, is_sim: isSim })
     });
     var j = await r.json();
     if (j.ok) {
@@ -180,8 +226,9 @@ function startGps() {
 
   function restoreBtn() {
     clearTimeout(timeoutId);
-    document.getElementById("gpsBtn").disabled = false;
-    document.getElementById("gpsBtn").textContent = "GPS ဖွင့်၍ တင်မည်";
+    // GPS 强制开启：快递员端不能自行关闭，仅 track 商家页可关
+    document.getElementById("gpsBtn").disabled = true;
+    document.getElementById("gpsBtn").textContent = "GPS ဖွင့်ထားသည်";
   }
 
   function gpsOk(pos) {
@@ -221,17 +268,70 @@ function startSim() {
     state.curLat = 31.2304;
     state.curLng = 121.4737;
   }
-  reportLocation(state.curLat, state.curLng, state.status);
+  reportLocation(state.curLat, state.curLng, state.status, 1);
 
   state.simTimer = setInterval(function() {
     state.curLat += 0.0005;
     state.curLng += 0.0005;
-    reportLocation(state.curLat, state.curLng, state.status);
+    reportLocation(state.curLat, state.curLng, state.status, 1);
   }, 5000);
 }
 
 function stopSim() {
   if (state.simTimer) { clearInterval(state.simTimer); state.simTimer = null; }
+}
+
+// ---------- ဆိုင်မှ လက်ခံရရှိကြောင်း အတည်ပြုခြင်း ----------
+function confirmDelivered() {
+  document.getElementById("confirmModal").style.display = "flex";
+  document.getElementById("confirmBaozi").value = "";
+  document.getElementById("confirmAddress").value = "";
+}
+function closeConfirmModal() {
+  document.getElementById("confirmModal").style.display = "none";
+}
+async function doConfirmDelivered() {
+  var baozi = parseInt(document.getElementById("confirmBaozi").value) || 0;
+  var address = document.getElementById("confirmAddress").value.trim();
+  if (baozi <= 0 && !address) { alert("အရေအတွက် သို့မဟုတ် လိပ်စာ ထည့်ပါ"); return; }
+  try {
+    var r = await fetch("/api/rider/confirm", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ order_no: state.orderNo, phone: state.phone, confirm_baozi: baozi, address: address })
+    });
+    var j = await r.json();
+    if (!j.ok) { alert(j.msg); return; }
+    closeConfirmModal();
+    alert("လက်ခံပြီးပါပြီ။ ကျန်ရှိသော အရေအတွက် ပြန်လည်တွက်ချက်ပြီးပါပြီ");
+    refreshRiderInfo();
+  } catch (e) {
+    alert("ဆာဗာနှင့် ချိတ်ဆက်၍ မရပါ။ ဝန်ဆောင်မှု စတင်ထားခြင်း ရှိမရှိ စစ်ဆေးပါ");
+  }
+}
+
+// ---------- နောက်ဆုံးအခြေအနေ ပြန်လည် ရယူခြင်း ----------
+async function refreshRiderInfo() {
+  if (!state.orderNo || !state.phone) return;
+  try {
+    var r = await fetch("/api/rider/info?order_no=" + encodeURIComponent(state.orderNo) + "&phone=" + encodeURIComponent(state.phone));
+    var j = await r.json();
+    if (!j.ok) return;
+    document.getElementById("curLocation").textContent = j.latest ? (j.latest.lat.toFixed(6) + ", " + j.latest.lng.toFixed(6)) : "-";
+    document.getElementById("curBaozi").textContent = (j.baozi_total - j.baozi_received) + " / " + j.baozi_total;
+    document.getElementById("curShop").textContent = (j.shop_total - j.shop_received) + " / " + j.shop_total;
+    // 商家关闭 GPS 后：立即停止本端上报（GPS 与模拟配送均停止），且不能自行重新开启
+    if (j.gps_enabled === 0 && state.gpsEnabled) {
+      state.gpsEnabled = false;
+      if (state.gpsWatchId !== null) { navigator.geolocation.clearWatch(state.gpsWatchId); state.gpsWatchId = null; }
+      clearInterval(state.gpsTimer); state.gpsTimer = null;
+      stopSim();
+      document.getElementById("gpsBtn").disabled = true;
+      document.getElementById("gpsBtn").textContent = "GPS ပိတ်ထားသည်";
+      document.getElementById("simBtn").disabled = true;
+      alert("商家已关闭 GPS 追踪，本端已停止位置上报");
+    }
+  } catch (e) {}
 }
 </script>
 </body>

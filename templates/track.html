@@ -28,6 +28,8 @@
     font-size:16px; color:#fff; cursor:pointer; background: linear-gradient(135deg, #f6d365, #fda085);
   }
   button:disabled { background:#ccc; cursor:not-allowed; }
+  .row2 { display:flex; gap:10px; }
+  .row2 button { flex:1; }
   #map { width:100%; height: 420px; margin-top: 4px; z-index:1; }
   .result {
     background:#fff; border-radius:12px; margin:14px 16px; padding:16px;
@@ -41,29 +43,56 @@
   .st-ပို့ဆောင်နေသည် { background:#e3f2fd; color:#1565c0; }
   .st-ရောက်ရှိပြီး { background:#e8f5e9; color:#2e7d32; }
   .err { color:#d32f2f; font-size:13px; margin-top:8px; display:none; }
+  .modal-overlay { position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.45); display:flex; align-items:center; justify-content:center; z-index:99; }
+  .modal-box { background:#fff; border-radius:12px; padding:20px; width:90%; max-width:360px; position:relative; box-shadow:0 4px 20px rgba(0,0,0,0.25); }
+  .modal-close { position:absolute; top:6px; right:10px; background:none; border:none; font-size:24px; line-height:1; cursor:pointer; color:#888; }
+  .modal-box h3 { margin:0 0 6px; color:#333; font-size:17px; }
+  .gps-state { font-size:14px; color:#333; margin:10px 0; }
+  .btn-on { background: linear-gradient(135deg, #56ab2f, #a8e063) !important; }
+  .btn-off { background: #d32f2f !important; }
 </style>
 </head>
 <body>
   <div class="top">
     <h2>📍 ပို့ဆောင်သူ တည်နေရာ ရှာဖွေခြင်း</h2>
-    <div class="sub">အမှာစာနံပါတ် + ပို့ဆောင်သူ ဖုန်းနံပါတ် ထည့်၍ မည်သည့်နေရာရောက်နေသည်ကို အချိန်နှင့်တပြေးညီ ကြည့်ပါ</div>
+    <div class="sub">Order Number + ပို့ဆောင်သူ ဖုန်းနံပါတ် + ပို့ဆောင်သူအမည် ထည့်၍ မည်သည့်နေရာရောက်နေသည်ကို အချိန်နှင့်တပြေးညီ ကြည့်ပါ</div>
   </div>
 
   <div class="search">
-    <label>အမှာစာနံပါတ်</label>
+    <label>Order Number</label>
     <input id="orderNo" placeholder="ဥပမာ - BZ1001102030">
     <label>ပို့ဆောင်သူ ဖုန်းနံပါတ်</label>
     <input id="phone" placeholder="ပို့ဆောင်သူ ဖုန်းနံပါတ် ထည့်ပါ" type="tel">
-    <button id="searchBtn" onclick="search()">တည်နေရာ ရှာမည်</button>
+    <label>ပို့ဆောင်သူအမည်</label>
+    <input id="riderName" placeholder="ပို့ဆောင်သူ အမည် ထည့်ပါ">
+    <div class="row2">
+      <button id="searchBtn" onclick="search()">တည်နေရာ ရှာမည်</button>
+      <button class="btn btn-gray" id="gpsBtn" onclick="toggleGpsModal()">GPS ထိန်းချုပ်ရန်</button>
+    </div>
     <div class="err" id="err"></div>
   </div>
 
   <div class="result" id="result">
-    အမှာစာ：<b id="rOrderNo"></b>（<span id="rCustomer"></span>）
+    Order Number：<b id="rOrderNo"></b>（<span id="rCustomer"></span>）
     <span class="status-tag st-ပို့ဆောင်နေသည်" id="rStatusTag">ပို့ဆောင်နေသည်</span><br>
     ပို့ရမည့်လိပ်စာ：<span id="rAddress"></span><br>
     ပို့ဆောင်သူ နောက်ဆုံးတည်နေရာ အချိန်：<b id="rTime"></b><br>
+    ပို့ဆောင်သူ နောက်ဆုံးတည်နေရာ：<b id="rLatest"></b><br>
+    ပို့ဆောင်သူ ကျန်ရှိသော ပေါက်စီအလုံးအရေတွက်：<b id="rBaozi"></b><br>
+    ပို့ဆောင်သူ ကျန်ရှိသော ဆိုင်အရေတွက်：<b id="rShop"></b><br>
     အချက်အလက်：စာမျက်နှာသည် ၅ စက္ကန့်တိုင်း အလိုအလျောက် ပြန်လည်တင်ပေးသည်
+  </div>
+
+  <div class="modal-overlay" id="gpsModal" style="display:none">
+    <div class="modal-box">
+      <button class="modal-close" onclick="closeGpsModal()">×</button>
+      <h3>GPS ထိန်းချုပ်ရန်</h3>
+      <div class="gps-state" id="gpsState">GPS အခြေအနေ -</div>
+      <div class="row2">
+        <button class="btn btn-on" onclick="setGps(1)">GPS ဖွင့်ရန်</button>
+        <button class="btn btn-off" onclick="setGps(0)">GPS ပိတ်ရန်</button>
+      </div>
+    </div>
   </div>
 
   <div id="map"></div>
@@ -80,11 +109,12 @@ var currentPhone = "";
 async function search() {
   var orderNo = document.getElementById("orderNo").value.trim();
   var phone = document.getElementById("phone").value.trim();
-  if (!orderNo || !phone) { showErr("အမှာစာနံပါတ်နှင့် ပို့ဆောင်သူ ဖုန်းနံပါတ် ထည့်သွင်းပါ"); return; }
+  var riderName = document.getElementById("riderName").value.trim();
+  if (!orderNo || !phone || !riderName) { showErr("Order Number + ပို့ဆောင်သူ ဖုန်းနံပါတ် + ပို့ဆောင်သူအမည် သုံးခုလုံး ထည့်သွင်းပါ"); return; }
   clearErr();
   document.getElementById("searchBtn").disabled = true;
   document.getElementById("searchBtn").textContent = "ရှာဖွေနေသည်...";
-  var r = await fetch("/api/track?order_no=" + encodeURIComponent(orderNo) + "&phone=" + encodeURIComponent(phone));
+  var r = await fetch("/api/track?order_no=" + encodeURIComponent(orderNo) + "&phone=" + encodeURIComponent(phone) + "&name=" + encodeURIComponent(riderName));
   var j = await r.json();
   document.getElementById("searchBtn").disabled = false;
   document.getElementById("searchBtn").textContent = "တည်နေရာ ရှာမည်";
@@ -103,9 +133,12 @@ function render(j) {
   var box = document.getElementById("result");
   box.style.display = "block";
   document.getElementById("rOrderNo").textContent = j.order_no;
-  document.getElementById("rCustomer").textContent = j.customer_name || "ဖောက်သည်";
-  document.getElementById("rAddress").textContent = j.address || "မဖြည့်ထားပါ";
+  document.getElementById("rCustomer").textContent = j.rider_name || "Delivery";
+  document.getElementById("rAddress").textContent = j.delivery_address || j.address || "မဖြည့်ထားပါ";
   document.getElementById("rTime").textContent = j.update_time || "-";
+  document.getElementById("rLatest").textContent = j.latest ? (j.latest.lat.toFixed(6) + ", " + j.latest.lng.toFixed(6)) : "-";
+  document.getElementById("rBaozi").textContent = (j.baozi_remaining !== undefined && j.baozi_remaining !== null) ? (j.baozi_remaining + " / " + (j.baozi_total || 0)) : "-";
+  document.getElementById("rShop").textContent = (j.shop_remaining !== undefined && j.shop_remaining !== null) ? (j.shop_remaining + " / " + (j.shop_total || 0)) : "-";
 
   var tag = document.getElementById("rStatusTag");
   tag.className = "status-tag st-" + (j.status || "ပို့ဆောင်နေသည်");
@@ -129,7 +162,7 @@ function render(j) {
 
   var latest = latLngs[latLngs.length - 1];
   if (!marker) {
-    marker = L.marker(latest, { icon: grabIcon() }).addTo(map);
+    marker = L.marker(latest, { icon: riderIcon() }).addTo(map);
   } else {
     // 像 Grab 一样：小车平滑移动到新位置，而不是瞬间跳变
     var cur = marker.getLatLng();
@@ -138,17 +171,18 @@ function render(j) {
   map.setView(latest, 15);
 }
 
-// Grab 风格小车图标：绿色圆底 + 白色小车
-function grabIcon() {
+// 骑手模型图标：绿色圆底 + 摩托车骑手
+function riderIcon() {
   return L.divIcon({
     className: "",
     html: '<svg viewBox="0 0 64 64" width="46" height="46" style="filter:drop-shadow(0 2px 4px rgba(0,0,0,0.35))">' +
       '<circle cx="32" cy="32" r="30" fill="#00b14f" stroke="#fff" stroke-width="3"/>' +
-      '<g transform="translate(11,18)">' +
-      '<path d="M7 15 l3.5-8.5 a5.5 5.5 0 0 1 5-3.2 h17 a5.5 5.5 0 0 1 5 3.2 l3.5 8.5 h-34z" fill="#fff"/>' +
-      '<circle cx="11" cy="21.5" r="4.2" fill="#00b14f" stroke="#fff" stroke-width="1.5"/>' +
-      '<circle cx="31" cy="21.5" r="4.2" fill="#00b14f" stroke="#fff" stroke-width="1.5"/>' +
-      '<rect x="18.5" y="4.8" width="7" height="6.2" rx="2.8" fill="#00b14f"/>' +
+      '<g transform="translate(20,6)">' +
+      '<circle cx="12" cy="13" r="5.5" fill="#fff"/>' +
+      '<path d="M4 28 q0-11 8-12.5 q8 1.5 8 12.5 z" fill="#fff"/>' +
+      '<path d="M2 28 h20 v9 a9 9 0 0 1 -18 0 z" fill="#fff"/>' +
+      '<circle cx="4" cy="31" r="3" fill="#00b14f" stroke="#fff" stroke-width="1.5"/>' +
+      '<circle cx="20" cy="31" r="3" fill="#00b14f" stroke="#fff" stroke-width="1.5"/>' +
       '</g></svg>',
     iconSize: [46, 46],
     iconAnchor: [23, 23]
@@ -178,6 +212,47 @@ function clearErr() {
   var e = document.getElementById("err");
   e.textContent = "";
   e.style.display = "none";
+}
+
+// ---------- GPS ထိန်းချုပ်ခြင်း (ဆိုင်မှ ပိတ်နိုင်/ဖွင့်နိုင်) ----------
+function toggleGpsModal() {
+  document.getElementById("gpsModal").style.display = "flex";
+  refreshGpsState();
+}
+function closeGpsModal() {
+  document.getElementById("gpsModal").style.display = "none";
+}
+async function refreshGpsState() {
+  var orderNo = document.getElementById("orderNo").value.trim();
+  var phone = document.getElementById("phone").value.trim();
+  if (!orderNo || !phone) { document.getElementById("gpsState").textContent = "ဦးစွာ Order Number + ဖုန်းနံပါတ် ထည့်ပါ"; return; }
+  try {
+    var r = await fetch("/api/track?order_no=" + encodeURIComponent(orderNo) + "&phone=" + encodeURIComponent(phone) + "&name=check");
+    var j = await r.json();
+    document.getElementById("gpsState").textContent = j.ok ? (j.gps_enabled ? "GPS ဖွင့်ထားသည်" : "GPS ပိတ်ထားသည်") : (j.msg || "-");
+  } catch (e) {
+    document.getElementById("gpsState").textContent = "ဆာဗာနှင့် ချိတ်ဆက်၍ မရပါ";
+  }
+}
+async function setGps(on) {
+  var orderNo = document.getElementById("orderNo").value.trim();
+  var phone = document.getElementById("phone").value.trim();
+  var riderName = document.getElementById("riderName").value.trim();
+  if (!orderNo || !phone || !riderName) { showErr("Order Number + ဖုန်းနံပါတ် + ပို့ဆောင်သူအမည် သုံးခုလုံး ထည့်သွင်းပါ"); closeGpsModal(); return; }
+  try {
+    var r = await fetch("/api/rider/gps", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ order_no: orderNo, phone: phone, gps_enabled: on ? 1 : 0 })
+    });
+    var j = await r.json();
+    if (!j.ok) { alert(j.msg); return; }
+    document.getElementById("gpsState").textContent = on ? "GPS ဖွင့်ထားသည်" : "GPS ပိတ်ထားသည်";
+    alert(on ? "GPS ဖွင့်ပြီးပါပြီ" : "GPS ပိတ်ပြီးပါပြီ");
+    setTimeout(closeGpsModal, 600);
+  } catch (e) {
+    alert("ဆာဗာနှင့် ချိတ်ဆက်၍ မရပါ");
+  }
 }
 </script>
 </body>

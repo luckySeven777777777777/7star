@@ -67,6 +67,11 @@
   }
   .history-item b { color:#e07b00; }
   .history-empty { text-align:center; color:#999; padding:24px 0; font-size:14px; }
+  .history-head { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:6px; }
+  .history-head h3 { margin:0; }
+  .history-head select { padding:6px 8px; border:1px solid #ddd; border-radius:8px; font-size:13px; background:#fff; color:#333; max-width:180px; }
+  .history-more { text-align:center; margin-top:10px; }
+  .history-more .btn { margin-top:0; padding:8px; font-size:13px; }
 </style>
 </head>
 <body>
@@ -127,8 +132,14 @@
   <div class="modal-overlay" id="historyModal" style="display:none">
     <div class="modal-box">
       <button class="modal-close" onclick="closeHistory()">×</button>
-      <h3>Order History</h3>
+      <div class="history-head">
+        <h3>Order History</h3>
+        <select id="historyDateFilter" onchange="renderHistory()"></select>
+      </div>
       <div id="historyList" style="max-height:60vh; overflow-y:auto;"></div>
+      <div class="history-more" id="historyMoreWrap" style="display:none;">
+        <button class="btn btn-gray" id="historyMoreBtn" onclick="toggleHistoryMore()">View More</button>
+      </div>
     </div>
   </div>
 
@@ -278,19 +289,31 @@ function closeInfoModal() {
   document.getElementById("infoModal").style.display = "none";
 }
 
-// 英文日期格式：年/月/日（如 2026/10/31）
+// 英文日期格式：年/月/日（如 31 October 2026）
 function formatEnglishDate(input) {
   if (!input) return "-";
-  var d = (input instanceof Date) ? input : new Date(input);
+  var d;
+  if (input instanceof Date) { d = input; }
+  else {
+    var s = String(input || "");
+    var m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (m) { d = new Date(+m[1], +m[2] - 1, +m[3]); }
+    else { d = new Date(s); }
+  }
   if (isNaN(d.getTime())) return "-";
   return d.toLocaleDateString("en-GB", { year: "numeric", month: "long", day: "numeric" });
 }
 
 // ---------- Order History（永久订单记录） ----------
+var _historyAll = [];
+var _historyDate = "";
+var _historyVisible = 10;
+
 async function openHistory() {
   var phone = document.getElementById("phone").value.trim();
   if (!phone) { showInfo("ပို့ဆောင်သူ ဖုန်းနံပါတ် ထည့်သွင်းပါ"); return; }
   document.getElementById("historyList").innerHTML = '<div class="history-empty">Loading...</div>';
+  document.getElementById("historyMoreWrap").style.display = "none";
   document.getElementById("historyModal").style.display = "flex";
   try {
     var r = await fetch("/api/order/history?phone=" + encodeURIComponent(phone));
@@ -299,29 +322,80 @@ async function openHistory() {
       document.getElementById("historyList").innerHTML = '<div class="history-empty">No order history yet.</div>';
       return;
     }
-    var html = "";
-    j.history.forEach(function(h) {
-      var dt = formatEnglishDate(h.bind_time);
-      var loc = h.latest ? (h.latest.address || (h.latest.lat.toFixed(6) + ", " + h.latest.lng.toFixed(6))) : "-";
-      var lastT = h.latest ? (h.latest.report_time || "-") : "-";
-      html += '<div class="history-item">'
-        + 'Date：<b>' + dt + '</b><br>'
-        + 'ပို့ဆောင်သူအမည်：<b>' + (h.rider_name || "-") + '</b><br>'
-        + 'ပို့ဆောင်သူ ဖုန်းနံပါတ်：<b>' + (h.rider_phone || "-") + '</b><br>'
-        + 'လက်ရှိOrder Number：<b>' + h.order_no + '</b><br>'
-        + 'လက်ရှိအခြေအနေ：<b>' + ((h.status && h.status !== "待取餐") ? h.status : "-") + '</b><br>'
-        + 'ပို့ဆောင်သူ နောက်ဆုံးတည်နေရာ：<b>' + loc + '</b><br>'
-        + 'ပို့ရမည့်ဆိုင်လိပ်စာ：<b>' + (h.delivery_address || "-") + '</b><br>'
-        + 'ကျန်ရှိသောပေါက်စီအလုံးအရေတွက်：<b>' + h.baozi_remaining + ' / ' + h.baozi_total + '</b><br>'
-        + 'ကျန်ရှိသောဆိုင်အရေတွက်：<b>' + h.shop_remaining + ' / ' + h.shop_total + '</b><br>'
-        + 'နောက်ဆုံး တင်ပြချိန်：<b>' + lastT + '</b>'
-        + '</div>';
+    _historyAll = j.history;
+    // 日期列表（去重、新→旧），来自 bind_time 前 10 位；跨 0 点不清零，永久保留
+    var dates = [];
+    _historyAll.forEach(function(h) {
+      var d = (h.bind_time || "").slice(0, 10);
+      if (d && dates.indexOf(d) < 0) dates.push(d);
     });
-    document.getElementById("historyList").innerHTML = html;
+    dates.sort(function(a, b) { return a < b ? 1 : (a > b ? -1 : 0); });
+    if (dates.length === 0) {
+      var now = new Date();
+      dates = [now.getFullYear() + "-" + ("0" + (now.getMonth() + 1)).slice(-2) + "-" + ("0" + now.getDate()).slice(-2)];
+    }
+    var sel = document.getElementById("historyDateFilter");
+    sel.innerHTML = "";
+    dates.forEach(function(d) {
+      var opt = document.createElement("option");
+      opt.value = d;
+      opt.textContent = formatEnglishDate(d);
+      sel.appendChild(opt);
+    });
+    _historyDate = dates[0];
+    sel.value = _historyDate;
+    _historyVisible = 10;
+    renderHistory();
   } catch (e) {
     document.getElementById("historyList").innerHTML = '<div class="history-empty">Failed to load history.</div>';
   }
 }
+
+function renderHistory() {
+  var sel = document.getElementById("historyDateFilter");
+  if (sel.value) _historyDate = sel.value;
+  var items = _historyAll.filter(function(h) {
+    return (h.bind_time || "").slice(0, 10) === _historyDate;
+  });
+  var html = "";
+  var show = items.slice(0, _historyVisible);
+  show.forEach(function(h) {
+    var dt = formatEnglishDate(h.bind_time);
+    var loc = h.latest ? (h.latest.address || (h.latest.lat.toFixed(6) + ", " + h.latest.lng.toFixed(6))) : "-";
+    var lastT = h.latest ? (h.latest.report_time || "-") : "-";
+    html += '<div class="history-item">'
+      + 'Date：<b>' + dt + '</b><br>'
+      + 'ပို့ဆောင်သူအမည်：<b>' + (h.rider_name || "-") + '</b><br>'
+      + 'ပို့ဆောင်သူ ဖုန်းနံပါတ်：<b>' + (h.rider_phone || "-") + '</b><br>'
+      + 'လက်ရှိOrder Number：<b>' + h.order_no + '</b><br>'
+      + 'လက်ရှိအခြေအနေ：<b>' + ((h.status && h.status !== "待取餐") ? h.status : "-") + '</b><br>'
+      + 'ပို့ဆောင်သူ နောက်ဆုံးတည်နေရာ：<b>' + loc + '</b><br>'
+      + 'ပို့ရမည့်ဆိုင်လိပ်စာ：<b>' + (h.delivery_address || "-") + '</b><br>'
+      + 'ကျန်ရှိသောပေါက်စီအလုံးအရေတွက်：<b>' + h.baozi_remaining + ' / ' + h.baozi_total + '</b><br>'
+      + 'ကျန်ရှိသောဆိုင်အရေတွက်：<b>' + h.shop_remaining + ' / ' + h.shop_total + '</b><br>'
+      + 'နောက်ဆုံး တင်ပြချိန်：<b>' + lastT + '</b>'
+      + '</div>';
+  });
+  if (show.length === 0) html = '<div class="history-empty">No orders on this date.</div>';
+  document.getElementById("historyList").innerHTML = html;
+  var moreWrap = document.getElementById("historyMoreWrap");
+  if (items.length > 10) {
+    moreWrap.style.display = "block";
+    document.getElementById("historyMoreBtn").textContent = (_historyVisible >= items.length) ? "View Less" : "View More (" + items.length + ")";
+  } else {
+    moreWrap.style.display = "none";
+  }
+}
+
+function toggleHistoryMore() {
+  var items = _historyAll.filter(function(h) {
+    return (h.bind_time || "").slice(0, 10) === _historyDate;
+  });
+  if (_historyVisible >= items.length) { _historyVisible = 10; }
+  else { _historyVisible = items.length; }
+  renderHistory();
+}
+
 function closeHistory() {
   document.getElementById("historyModal").style.display = "none";
 }

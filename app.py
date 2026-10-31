@@ -19,6 +19,9 @@
 
 import os
 import sqlite3
+import json
+import urllib.request
+import urllib.parse
 from datetime import datetime
 from flask import Flask, request, jsonify, render_template
 
@@ -161,6 +164,42 @@ init_db()
 
 def now_str():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+# ==================== 反向地理编码（经纬度 -> 地名） ====================
+_geo_cache = {}
+
+def reverse_geocode(lat, lng):
+    """将经纬度转换为可读地名（如 South Dagon - Min Bu Road），失败返回 None。
+    使用 OpenStreetMap Nominatim 免费反向地理编码，带进程内缓存避免频繁请求。"""
+    key = "%.5f,%.5f" % (lat, lng)
+    if key in _geo_cache:
+        return _geo_cache[key]
+    try:
+        url = "https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=17&addressdetails=1&lat=%s&lon=%s" % (lat, lng)
+        req = urllib.request.Request(url, headers={"User-Agent": "Marvis-Delivery-Tracker/1.0"})
+        with urllib.request.urlopen(req, timeout=4) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        addr = data.get("address") or {}
+        parts = []
+        if addr.get("road"):
+            parts.append(addr["road"])
+        if addr.get("suburb"):
+            parts.append(addr["suburb"])
+        if addr.get("city"):
+            parts.append(addr["city"])
+        if addr.get("state"):
+            parts.append(addr["state"])
+        display = data.get("display_name") or ""
+        if parts:
+            name = ", ".join(parts)
+        else:
+            name = display.split(",")[0] if display else ""
+        _geo_cache[key] = name or None
+        return _geo_cache[key]
+    except Exception:
+        _geo_cache[key] = None
+        return None
 
 
 # ==================== 页面路由 ====================
@@ -312,12 +351,12 @@ def rider_confirm():
     new_baozi = (order_dict.get("baozi_received", 0) or 0) + confirm_baozi
     new_shop = (order_dict.get("shop_received", 0) or 0) + 1  # 每确认一个商家地址 +1
     cur.execute(
-        _q("UPDATE orders SET baozi_received=?, shop_received=?, delivery_address=? WHERE order_no=?"),
+        _q("UPDATE orders SET baozi_received=?, shop_received=?, delivery_address=?, status='လက်ခံပြီးပါပြီ' WHERE order_no=?"),
         (new_baozi, new_shop, address, order_no),
     )
     conn.commit()
     conn.close()
-    return jsonify({"ok": True, "msg": "လက်ခံပြီးပါပြီ", "baozi_received": new_baozi, "shop_received": new_shop})
+    return jsonify({"ok": True, "msg": "လက်ခံပြီးပါပြီ", "status": "လက်ခံပြီးပါပြီ", "baozi_received": new_baozi, "shop_received": new_shop})
 
 
 @app.route("/api/rider/info", methods=["GET"])
@@ -344,10 +383,13 @@ def rider_info():
     latest_row = cur.fetchone()
     conn.close()
     latest = _row_to_dict(cur, latest_row) if latest_row else None
+    if latest:
+        latest["address"] = reverse_geocode(latest["lat"], latest["lng"])
     return jsonify(
         {
             "ok": True,
             "order_no": order_no,
+            "status": order_dict.get("status", ""),
             "delivery_address": order_dict.get("delivery_address", ""),
             "baozi_total": order_dict.get("baozi_total", 0),
             "shop_total": order_dict.get("shop_total", 0),
@@ -408,6 +450,8 @@ def track():
     conn.close()
     track_list = _rows_to_dicts(cur, points)
     latest = track_list[-1] if track_list else None
+    if latest:
+        latest["address"] = reverse_geocode(latest["lat"], latest["lng"])
     order_dict = _row_to_dict(cur, order)
     rider_dict = _row_to_dict(cur, rider) if rider else None
     return jsonify(

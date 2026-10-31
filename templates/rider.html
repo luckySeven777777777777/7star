@@ -107,9 +107,9 @@
       <span class="dot"></span>နောက်ဆုံး တင်ပြချိန်：<span id="lastTime">-</span>
     </div>
     <div class="status-box" id="statusBox">
-      <button onclick="requestStatus('အစားအစာယူရန် စောင့်ဆိုင်း')">အစားအစာယူရန် စောင့်ဆိုင်း</button>
-      <button onclick="requestStatus('ပို့ဆောင်နေသည်')">ပို့ဆောင်နေသည်</button>
-      <button onclick="requestStatus('ရောက်ရှိပြီး')">ရောက်ရှိပြီး</button>
+      <button data-status="အစားအစာယူရန် စောင့်ဆိုင်း" onclick="requestStatus('အစားအစာယူရန် စောင့်ဆိုင်း')">အစားအစာယူရန် စောင့်ဆိုင်း</button>
+      <button data-status="ပို့ဆောင်နေသည်" onclick="requestStatus('ပို့ဆောင်နေသည်')">ပို့ဆောင်နေသည်</button>
+      <button data-status="ရောက်ရှိပြီး" onclick="requestStatus('ရောက်ရှိပြီး')">ရောက်ရှိပြီး</button>
     </div>
     <button class="btn btn-green" id="confirmDeliveredBtn" onclick="confirmDelivered()">လက်ခံပြီးပါပြီ</button>
     <div class="row2">
@@ -168,6 +168,7 @@
 var state = {
   orderNo: "", phone: "", name: "", status: "",
   statusLocked: false, pendingStatus: "",
+  confirmedStatuses: [],
   gpsTimer: null, simTimer: null, refreshTimer: null, gpsWatchId: null,
   curLat: null, curLng: null, gpsEnabled: true
 };
@@ -238,10 +239,10 @@ async function bindOrder() {
   }
 }
 
-// ---------- အခြေအနေ ပြောင်းခြင်း（需确认弹窗，确认后锁定） ----------
+// ---------- အခြေအနေ ပြောင်းခြင်း（需确认弹窗，确认后仅锁定该状态键） ----------
 function requestStatus(status) {
-  if (state.statusLocked) {
-    showInfo("Status is already confirmed and locked. You cannot change it again.");
+  if ((state.confirmedStatuses || []).indexOf(status) >= 0) {
+    showInfo("This status has already been confirmed and locked.");
     return;
   }
   state.pendingStatus = status;
@@ -255,23 +256,33 @@ async function doConfirmState() {
   document.getElementById("stateConfirmModal").style.display = "none";
   state.status = state.pendingStatus;
   state.statusLocked = true;
+  if (!state.confirmedStatuses) state.confirmedStatuses = [];
+  if (state.confirmedStatuses.indexOf(state.pendingStatus) < 0) state.confirmedStatuses.push(state.pendingStatus);
   document.getElementById("curStatus").textContent = state.status;
-  lockStatusButtons();
+  disableStatusButton(state.pendingStatus);
   saveLockLocal();
   if (state.curLat !== null && state.curLat !== undefined) {
     reportLocation(state.curLat, state.curLng, state.status);
   }
 }
+// 仅禁用"已确认过"的状态键（其他状态键保持可点击，可继续推进状态）
+function disableStatusButton(status) {
+  document.querySelectorAll("#statusBox button").forEach(function(btn) {
+    if (btn.getAttribute("data-status") === status) btn.disabled = true;
+  });
+}
 function lockStatusButtons() {
-  document.querySelectorAll("#statusBox button").forEach(function(btn) { btn.disabled = true; });
-  document.getElementById("confirmDeliveredBtn").disabled = true;
+  (state.confirmedStatuses || []).forEach(function(s) { disableStatusButton(s); });
+  if ((state.confirmedStatuses || []).indexOf("လက်ခံပြီးပါပြီ") >= 0) {
+    document.getElementById("confirmDeliveredBtn").disabled = true;
+  }
 }
 function saveLockLocal() {
   try {
     var d = new Date();
     localStorage.setItem("riderLock_" + state.phone, JSON.stringify({
       order_no: state.orderNo, status: state.status, locked: state.statusLocked,
-      date: d.toISOString(), name: state.name
+      date: d.toISOString(), name: state.name, confirmed: state.confirmedStatuses || []
     }));
   } catch (e) {}
 }
@@ -376,6 +387,8 @@ async function doConfirmDelivered() {
     closeConfirmModal();
     state.status = "လက်ခံပြီးပါပြီ";
     state.statusLocked = true;
+    if (!state.confirmedStatuses) state.confirmedStatuses = [];
+    if (state.confirmedStatuses.indexOf("လက်ခံပြီးပါပြီ") < 0) state.confirmedStatuses.push("လက်ခံပြီးပါပြီ");
     document.getElementById("curStatus").textContent = "လက်ခံပြီးပါပြီ";
     document.getElementById("curStatus").style.color = "#2e7d32";
     lockStatusButtons();
@@ -485,6 +498,7 @@ async function refreshRiderInfo() {
     state.name = saved.name || "";
     state.status = saved.status || "";
     state.statusLocked = true;
+    state.confirmedStatuses = saved.confirmed || (saved.status ? [saved.status] : []);
     document.getElementById("reportPanel").style.display = "block";
     document.getElementById("curOrder").textContent = saved.order_no;
     document.getElementById("curDate").textContent = formatEnglishDate(saved.date || new Date().toISOString());

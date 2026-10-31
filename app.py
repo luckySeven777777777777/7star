@@ -81,6 +81,12 @@ def init_db():
                 order_no TEXT UNIQUE NOT NULL,
                 customer_name TEXT DEFAULT '',
                 address TEXT DEFAULT '',
+                delivery_address TEXT DEFAULT '',
+                baozi_total INTEGER DEFAULT 0,
+                shop_total INTEGER DEFAULT 0,
+                baozi_received INTEGER DEFAULT 0,
+                shop_received INTEGER DEFAULT 0,
+                gps_enabled INTEGER DEFAULT 1,
                 status TEXT DEFAULT '待取餐',
                 created_at TEXT
             )
@@ -90,7 +96,11 @@ def init_db():
                 id SERIAL PRIMARY KEY,
                 name TEXT DEFAULT '',
                 phone TEXT UNIQUE NOT NULL,
-                order_no TEXT DEFAULT ''
+                order_no TEXT DEFAULT '',
+                rider_name TEXT DEFAULT '',
+                gps_enabled INTEGER DEFAULT 1,
+                sim_mode INTEGER DEFAULT 0,
+                created_at TEXT
             )
         """))
         cur.execute(_q("""
@@ -101,6 +111,7 @@ def init_db():
                 lat DOUBLE PRECISION NOT NULL,
                 lng DOUBLE PRECISION NOT NULL,
                 status TEXT DEFAULT '配送中',
+                is_sim INTEGER DEFAULT 0,
                 report_time TEXT
             )
         """))
@@ -111,6 +122,12 @@ def init_db():
                 order_no TEXT UNIQUE NOT NULL,
                 customer_name TEXT DEFAULT '',
                 address TEXT DEFAULT '',
+                delivery_address TEXT DEFAULT '',
+                baozi_total INTEGER DEFAULT 0,
+                shop_total INTEGER DEFAULT 0,
+                baozi_received INTEGER DEFAULT 0,
+                shop_received INTEGER DEFAULT 0,
+                gps_enabled INTEGER DEFAULT 1,
                 status TEXT DEFAULT '待取餐',
                 created_at TEXT
             );
@@ -118,7 +135,11 @@ def init_db():
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT DEFAULT '',
                 phone TEXT UNIQUE NOT NULL,
-                order_no TEXT DEFAULT ''
+                order_no TEXT DEFAULT '',
+                rider_name TEXT DEFAULT '',
+                gps_enabled INTEGER DEFAULT 1,
+                sim_mode INTEGER DEFAULT 0,
+                created_at TEXT
             );
             CREATE TABLE IF NOT EXISTS locations (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -127,6 +148,7 @@ def init_db():
                 lat REAL NOT NULL,
                 lng REAL NOT NULL,
                 status TEXT DEFAULT '配送中',
+                is_sim INTEGER DEFAULT 0,
                 report_time TEXT
             );
         """)
@@ -200,6 +222,14 @@ def rider_bind():
     name = (data.get("name") or "").strip()
     phone = (data.get("phone") or "").strip()
     order_no = (data.get("order_no") or "").strip()
+    rider_name = (data.get("rider_name") or name).strip()
+    try:
+        baozi_total = int(data.get("baozi_total") or 0)
+        shop_total = int(data.get("shop_total") or 0)
+    except (TypeError, ValueError):
+        baozi_total = 0
+        shop_total = 0
+    delivery_address = (data.get("delivery_address") or "").strip()
     if not phone or not order_no:
         return jsonify({"ok": False, "msg": "ဖုန်းနံပါတ်နှင့် အမှာစာနံပါတ် နှစ်ခုလုံး ထည့်သွင်းပါ"}), 400
     conn = get_db()
@@ -210,14 +240,17 @@ def rider_bind():
         conn.close()
         return jsonify({"ok": False, "msg": "အမှာစာနံပါတ် မရှိပါ။ ဦးစွာ အမှာစာ ဖန်တီးပါ"}), 404
     cur.execute(
-        _q("INSERT INTO riders (name, phone, order_no) VALUES (?,?,?) "
-           "ON CONFLICT(phone) DO UPDATE SET name=excluded.name, order_no=excluded.order_no"),
-        (name, phone, order_no),
+        _q("INSERT INTO riders (name, phone, order_no, rider_name, gps_enabled, sim_mode) VALUES (?,?,?,?,1,0) "
+           "ON CONFLICT(phone) DO UPDATE SET name=excluded.name, order_no=excluded.order_no, rider_name=excluded.rider_name, gps_enabled=1, sim_mode=0"),
+        (name, phone, order_no, rider_name),
     )
-    cur.execute(_q("UPDATE orders SET status='配送中' WHERE order_no=?"), (order_no,))
+    cur.execute(
+        _q("UPDATE orders SET status='配送中', delivery_address=?, baozi_total=?, shop_total=?, gps_enabled=1 WHERE order_no=?"),
+        (delivery_address, baozi_total, shop_total, order_no),
+    )
     conn.commit()
     conn.close()
-    return jsonify({"ok": True, "msg": "ချိတ်ဆက်မှု အောင်မြင်ပါသည်။ အမှာစာ ပို့ဆောင်နေပြီ"})
+    return jsonify({"ok": True, "msg": "ချိတ်ဆက်မှု အောင်မြင်ပါသည်။ GPS ဖွင့်ပြီး အမှာစာ ပို့ဆောင်နေပြီ"})
 
 
 @app.route("/api/rider/location", methods=["POST"])
@@ -227,6 +260,7 @@ def report_location():
     order_no = (data.get("order_no") or "").strip()
     phone = (data.get("phone") or "").strip()
     status = (data.get("status") or "配送中").strip()
+    is_sim = 1 if data.get("is_sim") else 0
     try:
         lat = float(data.get("lat"))
         lng = float(data.get("lng"))
@@ -242,13 +276,107 @@ def report_location():
         conn.close()
         return jsonify({"ok": False, "msg": "ဤဖုန်းနံပါတ်သည် ဤအမှာစာနှင့် ချိတ်ဆက်မထားပါ။ ဦးစွာ ချိတ်ဆက်ပါ"}), 403
     cur.execute(
-        _q("INSERT INTO locations (order_no, phone, lat, lng, status, report_time) VALUES (?,?,?,?,?,?)"),
-        (order_no, phone, lat, lng, status, now_str()),
+        _q("INSERT INTO locations (order_no, phone, lat, lng, status, is_sim, report_time) VALUES (?,?,?,?,?,?,?)"),
+        (order_no, phone, lat, lng, status, is_sim, now_str()),
     )
     cur.execute(_q("UPDATE orders SET status=? WHERE order_no=?"), (status, order_no))
     conn.commit()
     conn.close()
     return jsonify({"ok": True, "msg": "တည်နေရာ တင်ပြီးပါပြီ"})
+
+
+# ==================== 接口: 骑手确认收货 / 状态刷新 / GPS 开关 ====================
+@app.route("/api/rider/confirm", methods=["POST"])
+def rider_confirm():
+    """商家确认收货：接收确认包子数量与商家地址，扣减剩余数量并更新最新配送地址"""
+    data = request.get_json(silent=True) or {}
+    order_no = (data.get("order_no") or "").strip()
+    phone = (data.get("phone") or "").strip()
+    try:
+        confirm_baozi = int(data.get("confirm_baozi") or 0)
+    except (TypeError, ValueError):
+        confirm_baozi = 0
+    address = (data.get("address") or "").strip()
+    if not order_no or not phone:
+        return jsonify({"ok": False, "msg": "အမှာစာနံပါတ် သို့မဟုတ် ဖုန်းနံပါတ် မပါရှိပါ"}), 400
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute(_q("SELECT * FROM riders WHERE phone=? AND order_no=?"), (phone, order_no))
+    rider = cur.fetchone()
+    if not rider:
+        conn.close()
+        return jsonify({"ok": False, "msg": "ဤဖုန်းနံပါတ်သည် ဤအမှာစာနှင့် ချိတ်ဆက်မထားပါ"}), 403
+    cur.execute(_q("SELECT * FROM orders WHERE order_no=?"), (order_no,))
+    order = cur.fetchone()
+    order_dict = _row_to_dict(cur, order)
+    new_baozi = (order_dict.get("baozi_received", 0) or 0) + confirm_baozi
+    new_shop = (order_dict.get("shop_received", 0) or 0) + 1  # 每确认一个商家地址 +1
+    cur.execute(
+        _q("UPDATE orders SET baozi_received=?, shop_received=?, delivery_address=? WHERE order_no=?"),
+        (new_baozi, new_shop, address, order_no),
+    )
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True, "msg": "လက်ခံပြီးပါပြီ", "baozi_received": new_baozi, "shop_received": new_shop})
+
+
+@app.route("/api/rider/info", methods=["GET"])
+def rider_info():
+    """快递员端刷新最新位置与剩余数量"""
+    order_no = (request.args.get("order_no") or "").strip()
+    phone = (request.args.get("phone") or "").strip()
+    if not order_no or not phone:
+        return jsonify({"ok": False, "msg": "အမှာစာနံပါတ် သို့မဟုတ် ဖုန်းနံပါတ် မပါရှိပါ"}), 400
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute(_q("SELECT * FROM riders WHERE phone=? AND order_no=?"), (phone, order_no))
+    rider = cur.fetchone()
+    if not rider:
+        conn.close()
+        return jsonify({"ok": False, "msg": "ချိတ်ဆက်မှု မရှိပါ"}), 403
+    cur.execute(_q("SELECT * FROM orders WHERE order_no=?"), (order_no,))
+    order = cur.fetchone()
+    order_dict = _row_to_dict(cur, order)
+    cur.execute(
+        _q("SELECT lat, lng, status, report_time FROM locations WHERE order_no=? AND is_sim=0 ORDER BY id DESC LIMIT 1"),
+        (order_no,),
+    )
+    latest_row = cur.fetchone()
+    conn.close()
+    latest = _row_to_dict(cur, latest_row) if latest_row else None
+    return jsonify(
+        {
+            "ok": True,
+            "order_no": order_no,
+            "delivery_address": order_dict.get("delivery_address", ""),
+            "baozi_total": order_dict.get("baozi_total", 0),
+            "shop_total": order_dict.get("shop_total", 0),
+            "baozi_received": order_dict.get("baozi_received", 0),
+            "shop_received": order_dict.get("shop_received", 0),
+            "gps_enabled": order_dict.get("gps_enabled", 1),
+            "latest": latest,
+        }
+    )
+
+
+@app.route("/api/rider/gps", methods=["POST"])
+def rider_gps():
+    """商家页开关快递员 GPS（rider 端绑定后自动开启且不可自行关闭）"""
+    data = request.get_json(silent=True) or {}
+    order_no = (data.get("order_no") or "").strip()
+    phone = (data.get("phone") or "").strip()
+    gps_enabled = 1 if data.get("gps_enabled") else 0
+    if not order_no or not phone:
+        return jsonify({"ok": False, "msg": "အမှာစာနံပါတ် သို့မဟုတ် ဖုန်းနံပါတ် မပါရှိပါ"}), 400
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute(
+        _q("UPDATE orders SET gps_enabled=? WHERE order_no=?"),
+        (gps_enabled, order_no),
+    )
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True, "msg": "GPS အခြေအနေ ပြောင်းပြီးပါပြီ", "gps_enabled": gps_enabled})
 
 
 # ==================== 接口: 客户/商家查询 ====================
@@ -273,7 +401,7 @@ def track():
         conn.close()
         return jsonify({"ok": False, "msg": "ဖုန်းနံပါတ်နှင့် အမှာစာ မကိုက်ညီပါ။ တည်နေရာ ကြည့်ရှု၍ မရပါ"}), 403
     cur.execute(
-        _q("SELECT lat, lng, status, report_time FROM locations WHERE order_no=? ORDER BY id ASC"),
+        _q("SELECT lat, lng, status, report_time FROM locations WHERE order_no=? AND is_sim=0 ORDER BY id ASC"),
         (order_no,),
     )
     points = cur.fetchall()
@@ -281,13 +409,23 @@ def track():
     track_list = _rows_to_dicts(cur, points)
     latest = track_list[-1] if track_list else None
     order_dict = _row_to_dict(cur, order)
+    rider_dict = _row_to_dict(cur, rider) if rider else None
     return jsonify(
         {
             "ok": True,
             "order_no": order_no,
             "status": order_dict["status"],
             "address": order_dict["address"],
+            "delivery_address": order_dict.get("delivery_address") or order_dict["address"],
             "customer_name": order_dict["customer_name"],
+            "rider_name": (rider_dict.get("rider_name") or rider_dict.get("name") or "") if rider_dict else "",
+            "gps_enabled": order_dict.get("gps_enabled", 1),
+            "baozi_total": order_dict.get("baozi_total", 0),
+            "shop_total": order_dict.get("shop_total", 0),
+            "baozi_received": order_dict.get("baozi_received", 0),
+            "shop_received": order_dict.get("shop_received", 0),
+            "baozi_remaining": (order_dict.get("baozi_total", 0) or 0) - (order_dict.get("baozi_received", 0) or 0),
+            "shop_remaining": (order_dict.get("shop_total", 0) or 0) - (order_dict.get("shop_received", 0) or 0),
             "latest": latest,
             "track": track_list,
             "update_time": latest["report_time"] if latest else None,

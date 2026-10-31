@@ -79,7 +79,7 @@
 <script>
 var state = {
   orderNo: "", phone: "", status: "ပို့ဆောင်နေသည်",
-  gpsTimer: null, simTimer: null,
+  gpsTimer: null, simTimer: null, gpsWatchId: null,
   curLat: null, curLng: null
 };
 
@@ -175,22 +175,37 @@ function startGps() {
   document.getElementById("gpsBtn").textContent = "GPS ဖွင့်ပြီး အလိုအလျောက် တင်နေသည်...";
   stopSim();
 
-  navigator.geolocation.watchPosition(function(pos) {
+  var gotFix = false;
+  var timeoutId = null;
+
+  function restoreBtn() {
+    clearTimeout(timeoutId);
+    document.getElementById("gpsBtn").disabled = false;
+    document.getElementById("gpsBtn").textContent = "GPS ဖွင့်၍ တင်မည်";
+  }
+
+  function gpsOk(pos) {
+    gotFix = true;
     state.curLat = pos.coords.latitude;
     state.curLng = pos.coords.longitude;
     reportLocation(state.curLat, state.curLng, state.status);
-  }, function(err) {
-    alert("တည်နေရာ ရယူမအောင်မြင်ပါ：" + err.message + "\nGPS မရနိုင်ပါက 「ပို့ဆောင်မှု သရုပ်ပြ」ကို နှိပ်ပါ");
-    document.getElementById("gpsBtn").disabled = false;
-    document.getElementById("gpsBtn").textContent = "GPS ဖွင့်၍ တင်မည်";
-  }, { enableHighAccuracy: true, maximumAge: 5000, timeout: 10000 });
+  }
+
+  function gpsFail() {
+    if (gotFix) return;
+    if (state.gpsWatchId !== null) { navigator.geolocation.clearWatch(state.gpsWatchId); state.gpsWatchId = null; }
+    clearInterval(state.gpsTimer); state.gpsTimer = null;
+    restoreBtn();
+    alert("ဤစက်/ဘရောက်ဆာတွင် GPS ရယူ၍ မရပါ။ 「ပို့ဆောင်မှု သရုပ်ပြ」ကို နှိပ်ပါ（当前设备/浏览器无法获取GPS，请改用「模拟配送」）");
+  }
+
+  timeoutId = setTimeout(gpsFail, 15000); // 15 秒拿不到定位就自动恢复按钮
+
+  state.gpsWatchId = navigator.geolocation.watchPosition(gpsOk, gpsFail, { enableHighAccuracy: true, maximumAge: 5000, timeout: 10000 });
 
   state.gpsTimer = setInterval(function() {
-    navigator.geolocation.getCurrentPosition(function(pos) {
-      state.curLat = pos.coords.latitude;
-      state.curLng = pos.coords.longitude;
-      reportLocation(state.curLat, state.curLng, state.status);
-    }, function(){});
+    if (gotFix) return;
+    navigator.geolocation.getCurrentPosition(gpsOk, function() {}, { timeout: 8000 });
   }, 5000);
 }
 
@@ -199,6 +214,8 @@ function startSim() {
   document.getElementById("simBtn").disabled = true;
   document.getElementById("simBtn").textContent = "သရုပ်ပြ ပို့ဆောင်နေသည်...";
   document.getElementById("gpsBtn").disabled = true;
+  if (state.gpsWatchId !== null) { navigator.geolocation.clearWatch(state.gpsWatchId); state.gpsWatchId = null; }
+  clearInterval(state.gpsTimer); state.gpsTimer = null;
 
   if (state.curLat === null || state.curLat === undefined) {
     state.curLat = 31.2304;

@@ -10,6 +10,14 @@
     font-family: "Noto Sans Myanmar", "Myanmar Text", "Microsoft YaHei", Arial, sans-serif;
     background:#f5f5f5; padding: 16px;
   }
+  .top {
+    background: linear-gradient(135deg, #f6d365, #fda085);
+    margin: -16px -16px 20px;
+    padding: 20px 16px 34px;
+    color:#fff;
+  }
+  .top h2 { font-size:22px; color:#fff; margin-bottom:4px; }
+  .top .sub { font-size:13px; opacity:.9; margin-top:4px; line-height:1.8; color:#fff; }
   h2 { text-align:center; color:#333; margin-bottom: 4px; }
   .sub { text-align:center; color:#999; font-size:13px; margin-bottom: 16px; }
   .panel { background:#fff; border-radius: 12px; padding: 18px; margin-bottom: 14px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
@@ -74,11 +82,13 @@
 </style>
 </head>
 <body>
-  <h2>🛵 7Star Delivery</h2>
-  <div class="sub">Orderချိတ်ဆက်ပြီးပါက သင့်တည်နေရာကို အလိုအလျောက် တင်ပေးမည်</div>
+  <div class="top">
+    <h2>🛵 7Star Delivery</h2>
+    <div class="sub">Orderချိတ်ဆက်ပြီးပါက သင့်တည်နေရာကို အလိုအလျောက် တင်ပေးမည်</div>
+  </div>
 
   <div class="panel">
-    <button class="btn btn-gray" onclick="createOrder()">Get New Orders</button>
+    <button class="btn" onclick="createOrder()">Get New Orders</button>
     <div class="info" id="orderBox" style="display:none">Order Number：<b id="newOrder"></b></div>
   </div>
 
@@ -456,6 +466,25 @@ function resetAfterCompletion() {
   document.getElementById("gpsBtn").textContent = "GPS ဖွင့်ထားသည်";
   // 清除本地锁定记录，刷新后不残留旧订单锁定
   try { localStorage.removeItem("riderLock_" + oldPhone); } catch (e) {}
+  // 自动带出扣减后的剩余数量，骑手无需重新输入
+  if (oldPhone) { loadRemaining(oldPhone); }
+}
+
+// ---------- ကျန်ရှိသော အရေအတွက် အလိုအလျောက် ဖြည့်ခြင်း ----------
+async function loadRemaining(phone) {
+  if (!phone) return;
+  try {
+    var r = await fetch("/api/order/history?phone=" + encodeURIComponent(phone));
+    var j = await r.json();
+    if (!j.ok || !j.history || j.history.length === 0) return;
+    var h = j.history[0];
+    if (h.baozi_remaining !== undefined && h.baozi_remaining !== null && h.baozi_remaining !== "") {
+      document.getElementById("baoziCount").value = h.baozi_remaining;
+    }
+    if (h.shop_remaining !== undefined && h.shop_remaining !== null && h.shop_remaining !== "") {
+      document.getElementById("shopCount").value = h.shop_remaining;
+    }
+  } catch (e) {}
 }
 
 // ---------- နောက်ဆုံးအခြေအနေ ပြန်လည် ရယူခြင်း ----------

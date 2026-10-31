@@ -42,6 +42,22 @@
   .modal-box { background:#fff; border-radius:12px; padding:20px; width:90%; max-width:360px; position:relative; box-shadow:0 4px 20px rgba(0,0,0,0.25); }
   .modal-close { position:absolute; top:6px; right:10px; background:none; border:none; font-size:24px; line-height:1; cursor:pointer; color:#888; }
   .modal-box h3 { margin:0 0 6px; color:#333; font-size:17px; }
+  .modal-info { text-align:center; padding:28px 22px 22px; }
+  .info-icon {
+    width:58px; height:58px; margin:0 auto 12px; border-radius:50%;
+    background:linear-gradient(135deg, #56ab2f, #a8e063); color:#fff;
+    font-size:30px; line-height:58px; font-weight:bold;
+    box-shadow:0 4px 12px rgba(86,171,47,0.4);
+  }
+  .info-text { font-size:15px; color:#555; line-height:1.8; margin:4px 0 18px; word-break:break-word; }
+  .btn-ok { background:linear-gradient(135deg, #56ab2f, #a8e063); margin-top:0; }
+  .modal-confirm { text-align:center; }
+  .confirm-icon {
+    width:58px; height:58px; margin:0 auto 12px; border-radius:50%;
+    background:linear-gradient(135deg, #56ab2f, #a8e063); color:#fff;
+    font-size:30px; line-height:58px; font-weight:bold;
+    box-shadow:0 4px 12px rgba(86,171,47,0.4);
+  }
 </style>
 </head>
 <body>
@@ -91,8 +107,9 @@
   </div>
 
   <div class="modal-overlay" id="confirmModal" style="display:none">
-    <div class="modal-box">
+    <div class="modal-box modal-confirm">
       <button class="modal-close" onclick="closeConfirmModal()">×</button>
+      <div class="confirm-icon">✓</div>
       <h3>လက်ခံပြီးပါပြီ</h3>
       <label>လက်ခံရရှိပေါက်စီအလုံးအရေတွက်</label>
       <input id="confirmBaozi" type="number" min="0" placeholder="အရေအတွက် ထည့်ပါ">
@@ -102,6 +119,16 @@
         <button class="btn btn-green" onclick="doConfirmDelivered()">သေချာပါသည်✅</button>
         <button class="btn btn-gray" onclick="closeConfirmModal()">မသေချာပါ❌</button>
       </div>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="infoModal" style="display:none">
+    <div class="modal-box modal-info">
+      <button class="modal-close" onclick="closeInfoModal()">×</button>
+      <div class="info-icon" id="infoIcon">✓</div>
+      <h3 id="infoTitle">အသိပေးချက်</h3>
+      <p class="info-text" id="infoText"></p>
+      <button class="btn btn-ok" onclick="closeInfoModal()">အိုကေ</button>
     </div>
   </div>
 
@@ -126,10 +153,10 @@ async function createOrder() {
       document.getElementById("orderBox").style.display = "block";
       document.getElementById("orderNo").value = j.order_no;
     } else {
-      alert(j.msg || "ဖန်တီးမှု မအောင်မြင်ပါ");
+      showInfo(j.msg || "ဖန်တီးမှု မအောင်မြင်ပါ");
     }
   } catch (e) {
-    alert("ဆာဗာနှင့် ချိတ်ဆက်၍ မရပါ။ ဝန်ဆောင်မှု စတင်ထားခြင်း ရှိမရှိ စစ်ဆေးပါ（请检查后端服务是否已启动，并用 http:// 地址访问）");
+    showInfo("ဆာဗာနှင့် ချိတ်ဆက်၍ မရပါ။ ဝန်ဆောင်မှု စတင်ထားခြင်း ရှိမရှိ စစ်ဆေးပါ（请检查后端服务是否已启动，并用 http:// 地址访问）");
   }
 }
 
@@ -138,7 +165,7 @@ async function bindOrder() {
   var phone = document.getElementById("riderPhone").value.trim();
   var orderNo = document.getElementById("orderNo").value.trim();
   var name = document.getElementById("riderName").value.trim();
-  if (!phone || !orderNo) { alert("ဖုန်းနံပါတ်နှင့် အမှာစာနံပါတ် နှစ်ခုလုံး ထည့်သွင်းပါ"); return; }
+  if (!phone || !orderNo) { showInfo("ဖုန်းနံပါတ်နှင့် အမှာစာနံပါတ် နှစ်ခုလုံး ထည့်သွင်းပါ"); return; }
 
   try {
     var baoziTotal = document.getElementById("baoziCount").value.trim();
@@ -154,7 +181,7 @@ async function bindOrder() {
       })
     });
     var j = await r.json();
-    if (!j.ok) { alert(j.msg); return; }
+    if (!j.ok) { showInfo(j.msg); return; }
 
     state.orderNo = orderNo;
     state.phone = phone;
@@ -163,7 +190,7 @@ async function bindOrder() {
     document.getElementById("curOrder").textContent = orderNo;
     document.getElementById("bindBtn").disabled = true;
     document.getElementById("bindBtn").textContent = "ချိတ်ဆက်ပြီးပါပြီ";
-    alert("ချိတ်ဆက်မှု အောင်မြင်ပါသည်။ GPS ဖွင့်ပြီး တည်နေရာ တင်နေပါသည်");
+    showInfo("ချိတ်ဆက်မှု အောင်မြင်ပါသည်။ GPS ဖွင့်ပြီး တည်နေရာ တင်နေပါသည်");
     // GPS 强制开启：绑定成功后自动开启，快递员端不可关闭（仅 track 商家页可关）
     document.getElementById("gpsBtn").disabled = true;
     document.getElementById("gpsBtn").textContent = "GPS ဖွင့်ထားသည်";
@@ -173,7 +200,7 @@ async function bindOrder() {
     if (state.refreshTimer) clearInterval(state.refreshTimer);
     state.refreshTimer = setInterval(refreshRiderInfo, 5000);
   } catch (e) {
-    alert("ဆာဗာနှင့် ချိတ်ဆက်၍ မရပါ။ ဝန်ဆောင်မှု စတင်ထားခြင်း ရှိမရှိ စစ်ဆေးပါ（请检查后端服务是否已启动，并用 http:// 地址访问）");
+    showInfo("ဆာဗာနှင့် ချိတ်ဆက်၍ မရပါ။ ဝန်ဆောင်မှု စတင်ထားခြင်း ရှိမရှိ စစ်ဆေးပါ（请检查后端服务是否已启动，并用 http:// 地址访问）");
   }
 }
 
@@ -207,16 +234,16 @@ async function reportLocation(lat, lng, status, isSim) {
       document.getElementById("lastTime").textContent =
         now.getHours() + ":" + String(now.getMinutes()).padStart(2,"0") + ":" + String(now.getSeconds()).padStart(2,"0");
     } else {
-      alert(j.msg);
+      showInfo(j.msg);
     }
   } catch (e) {
-    alert("ဆာဗာနှင့် ချိတ်ဆက်၍ မရပါ။ ဝန်ဆောင်မှု စတင်ထားခြင်း ရှိမရှိ စစ်ဆေးပါ（请检查后端服务是否已启动）");
+    showInfo("ဆာဗာနှင့် ချိတ်ဆက်၍ မရပါ။ ဝန်ဆောင်မှု စတင်ထားခြင်း ရှိမရှိ စစ်ဆေးပါ（请检查后端服务是否已启动）");
   }
 }
 
 // ---------- နည်းလမ်း ၁ - GPS တိုက်ရိုက်တင်ခြင်း ----------
 function startGps() {
-  if (!navigator.geolocation) { alert("သင့်ဘရောက်ဆာသည် တည်နေရာကို မထောက်ပံ့ပါ။ ဖုန်းဘရောက်ဆာ သို့မဟုတ် Chrome ဖြင့် ဖွင့်ပါ"); return; }
+  if (!navigator.geolocation) { showInfo("သင့်ဘရောက်ဆာသည် တည်နေရာကို မထောက်ပံ့ပါ။ ဖုန်းဘရောက်ဆာ သို့မဟုတ် Chrome ဖြင့် ဖွင့်ပါ"); return; }
   document.getElementById("gpsBtn").disabled = true;
   document.getElementById("gpsBtn").textContent = "GPS ဖွင့်ပြီး အလိုအလျောက် တင်နေသည်...";
   stopSim();
@@ -243,7 +270,7 @@ function startGps() {
     if (state.gpsWatchId !== null) { navigator.geolocation.clearWatch(state.gpsWatchId); state.gpsWatchId = null; }
     clearInterval(state.gpsTimer); state.gpsTimer = null;
     restoreBtn();
-    alert("ဤစက်/ဘရောက်ဆာတွင် GPS ရယူ၍ မရပါ။ 「ပို့ဆောင်မှု သရုပ်ပြ」ကို နှိပ်ပါ（当前设备/浏览器无法获取GPS，请改用「模拟配送」）");
+    showInfo("ဤစက်/ဘရောက်ဆာတွင် GPS ရယူ၍ မရပါ။ 「ပို့ဆောင်မှု သရုပ်ပြ」ကို နှိပ်ပါ（当前设备/浏览器无法获取GPS，请改用「模拟配送」）");
   }
 
   timeoutId = setTimeout(gpsFail, 15000); // 15 秒拿不到定位就自动恢复按钮
@@ -293,7 +320,7 @@ function closeConfirmModal() {
 async function doConfirmDelivered() {
   var baozi = parseInt(document.getElementById("confirmBaozi").value) || 0;
   var address = document.getElementById("confirmAddress").value.trim();
-  if (baozi <= 0 && !address) { alert("အရေအတွက် သို့မဟုတ် လိပ်စာ ထည့်ပါ"); return; }
+  if (baozi <= 0 && !address) { showInfo("အရေအတွက် သို့မဟုတ် လိပ်စာ ထည့်ပါ"); return; }
   try {
     var r = await fetch("/api/rider/confirm", {
       method: "POST",
@@ -301,23 +328,46 @@ async function doConfirmDelivered() {
       body: JSON.stringify({ order_no: state.orderNo, phone: state.phone, confirm_baozi: baozi, address: address })
     });
     var j = await r.json();
-    if (!j.ok) { alert(j.msg); return; }
+    if (!j.ok) { showInfo(j.msg); return; }
     closeConfirmModal();
-    alert("လက်ခံပြီးပါပြီ။ ကျန်ရှိသော အရေအတွက် ပြန်လည်တွက်ချက်ပြီးပါပြီ");
+    showInfo("လက်ခံပြီးပါပြီ။ ကျန်ရှိသော အရေအတွက် ပြန်လည်တွက်ချက်ပြီးပါပြီ");
     refreshRiderInfo();
   } catch (e) {
-    alert("ဆာဗာနှင့် ချိတ်ဆက်၍ မရပါ။ ဝန်ဆောင်မှု စတင်ထားခြင်း ရှိမရှိ စစ်ဆေးပါ");
+    showInfo("ဆာဗာနှင့် ချိတ်ဆက်၍ မရပါ။ ဝန်ဆောင်မှု စတင်ထားခြင်း ရှိမရှိ စစ်ဆေးပါ");
   }
 }
 
 // ---------- နောက်ဆုံးအခြေအနေ ပြန်လည် ရယူခြင်း ----------
+// 专业提示弹窗（替代原生 alert）
+function showInfo(msg) {
+  document.getElementById("infoText").textContent = msg;
+  document.getElementById("infoModal").style.display = "flex";
+}
+function closeInfoModal() {
+  document.getElementById("infoModal").style.display = "none";
+}
+
 async function refreshRiderInfo() {
   if (!state.orderNo || !state.phone) return;
   try {
     var r = await fetch("/api/rider/info?order_no=" + encodeURIComponent(state.orderNo) + "&phone=" + encodeURIComponent(state.phone));
     var j = await r.json();
     if (!j.ok) return;
-    document.getElementById("curLocation").textContent = j.latest ? (j.latest.lat.toFixed(6) + ", " + j.latest.lng.toFixed(6)) : "-";
+    // 状态同步：商家确认签收后此处也显示「လက်ခံပြီးပါပြီ」
+    if (j.status) {
+      state.status = j.status;
+      document.getElementById("curStatus").textContent = j.status;
+      document.querySelectorAll("#statusBox button").forEach(function(btn) {
+        btn.classList.remove("active");
+      });
+      if (j.status === "လက်ခံပြီးပါပြီ") {
+        document.getElementById("curStatus").style.color = "#2e7d32";
+      } else {
+        document.getElementById("curStatus").style.color = "";
+      }
+    }
+    // 位置显示地名（反向地理编码），失败时回退经纬度
+    document.getElementById("curLocation").textContent = j.latest ? (j.latest.address || (j.latest.lat.toFixed(6) + ", " + j.latest.lng.toFixed(6))) : "-";
     document.getElementById("curBaozi").textContent = (j.baozi_total - j.baozi_received) + " / " + j.baozi_total;
     document.getElementById("curShop").textContent = (j.shop_total - j.shop_received) + " / " + j.shop_total;
     // 商家关闭 GPS 后：立即停止本端上报（GPS 与模拟配送均停止），且不能自行重新开启
@@ -329,7 +379,7 @@ async function refreshRiderInfo() {
       document.getElementById("gpsBtn").disabled = true;
       document.getElementById("gpsBtn").textContent = "GPS ပိတ်ထားသည်";
       document.getElementById("simBtn").disabled = true;
-      alert("商家已关闭 GPS 追踪，本端已停止位置上报");
+      showInfo("商家已关闭 GPS 追踪，本端已停止位置上报");
     }
   } catch (e) {}
 }

@@ -42,11 +42,21 @@
   .st-အစားအစာယူရန် { background:#fff3e0; color:#e65100; }
   .st-ပို့ဆောင်နေသည် { background:#e3f2fd; color:#1565c0; }
   .st-ရောက်ရှိပြီး { background:#e8f5e9; color:#2e7d32; }
+  .st-လက်ခံပြီးပါပြီ { background:#e8f5e9; color:#2e7d32; }
   .err { color:#d32f2f; font-size:13px; margin-top:8px; display:none; }
   .modal-overlay { position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.45); display:flex; align-items:center; justify-content:center; z-index:99; }
   .modal-box { background:#fff; border-radius:12px; padding:20px; width:90%; max-width:360px; position:relative; box-shadow:0 4px 20px rgba(0,0,0,0.25); }
   .modal-close { position:absolute; top:6px; right:10px; background:none; border:none; font-size:24px; line-height:1; cursor:pointer; color:#888; }
   .modal-box h3 { margin:0 0 6px; color:#333; font-size:17px; }
+  .modal-info { text-align:center; padding:28px 22px 22px; }
+  .info-icon {
+    width:58px; height:58px; margin:0 auto 12px; border-radius:50%;
+    background:linear-gradient(135deg, #56ab2f, #a8e063); color:#fff;
+    font-size:30px; line-height:58px; font-weight:bold;
+    box-shadow:0 4px 12px rgba(86,171,47,0.4);
+  }
+  .info-text { font-size:15px; color:#555; line-height:1.8; margin:4px 0 18px; word-break:break-word; }
+  .btn-ok { background:linear-gradient(135deg, #56ab2f, #a8e063); margin-top:0; }
   .gps-state { font-size:14px; color:#333; margin:10px 0; }
   .btn-on { background: linear-gradient(135deg, #56ab2f, #a8e063) !important; }
   .btn-off { background: #d32f2f !important; }
@@ -95,6 +105,16 @@
     </div>
   </div>
 
+  <div class="modal-overlay" id="infoModal" style="display:none">
+    <div class="modal-box modal-info">
+      <button class="modal-close" onclick="closeInfoModal()">×</button>
+      <div class="info-icon" id="infoIcon">✓</div>
+      <h3 id="infoTitle">အသိပေးချက်</h3>
+      <p class="info-text" id="infoText"></p>
+      <button class="btn btn-ok" onclick="closeInfoModal()">အိုကေ</button>
+    </div>
+  </div>
+
   <div id="map"></div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -136,7 +156,7 @@ function render(j) {
   document.getElementById("rCustomer").textContent = j.rider_name || "Delivery";
   document.getElementById("rAddress").textContent = j.delivery_address || j.address || "မဖြည့်ထားပါ";
   document.getElementById("rTime").textContent = j.update_time || "-";
-  document.getElementById("rLatest").textContent = j.latest ? (j.latest.lat.toFixed(6) + ", " + j.latest.lng.toFixed(6)) : "-";
+  document.getElementById("rLatest").textContent = j.latest ? (j.latest.address || (j.latest.lat.toFixed(6) + ", " + j.latest.lng.toFixed(6))) : "-";
   document.getElementById("rBaozi").textContent = (j.baozi_remaining !== undefined && j.baozi_remaining !== null) ? (j.baozi_remaining + " / " + (j.baozi_total || 0)) : "-";
   document.getElementById("rShop").textContent = (j.shop_remaining !== undefined && j.shop_remaining !== null) ? (j.shop_remaining + " / " + (j.shop_total || 0)) : "-";
 
@@ -171,18 +191,26 @@ function render(j) {
   map.setView(latest, 15);
 }
 
-// 骑手模型图标：绿色圆底 + 摩托车骑手
+// 骑手模型图标：绿色圆底 + 摩托车骑手（专业剪影）
 function riderIcon() {
   return L.divIcon({
     className: "",
     html: '<svg viewBox="0 0 64 64" width="46" height="46" style="filter:drop-shadow(0 2px 4px rgba(0,0,0,0.35))">' +
       '<circle cx="32" cy="32" r="30" fill="#00b14f" stroke="#fff" stroke-width="3"/>' +
-      '<g transform="translate(20,6)">' +
-      '<circle cx="12" cy="13" r="5.5" fill="#fff"/>' +
-      '<path d="M4 28 q0-11 8-12.5 q8 1.5 8 12.5 z" fill="#fff"/>' +
-      '<path d="M2 28 h20 v9 a9 9 0 0 1 -18 0 z" fill="#fff"/>' +
-      '<circle cx="4" cy="31" r="3" fill="#00b14f" stroke="#fff" stroke-width="1.5"/>' +
-      '<circle cx="20" cy="31" r="3" fill="#00b14f" stroke="#fff" stroke-width="1.5"/>' +
+      '<g transform="translate(0,0)">' +
+      '<!-- 摩托车后轮 -->' +
+      '<circle cx="19" cy="44" r="6.5" fill="#fff"/>' +
+      '<!-- 摩托车前轮 -->' +
+      '<circle cx="45" cy="44" r="6.5" fill="#fff"/>' +
+      '<!-- 车身 -->' +
+      '<path d="M19 44 L30 32 L34 32 L45 44" fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>' +
+      '<path d="M24 40 L30 33 L34 33 L38 40 Z" fill="#fff"/>' +
+      '<!-- 车把 -->' +
+      '<path d="M34 33 L44 39 L46 44" fill="none" stroke="#fff" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>' +
+      '<!-- 骑手头 -->' +
+      '<circle cx="31" cy="18" r="5.5" fill="#fff"/>' +
+      '<!-- 骑手身体 -->' +
+      '<path d="M25.5 31 Q25 22 31 22 Q37 22 36.5 31 Z" fill="#fff"/>' +
       '</g></svg>',
     iconSize: [46, 46],
     iconAnchor: [23, 23]
@@ -212,6 +240,15 @@ function clearErr() {
   var e = document.getElementById("err");
   e.textContent = "";
   e.style.display = "none";
+}
+
+// 专业提示弹窗（替代原生 alert）
+function showInfo(msg) {
+  document.getElementById("infoText").textContent = msg;
+  document.getElementById("infoModal").style.display = "flex";
+}
+function closeInfoModal() {
+  document.getElementById("infoModal").style.display = "none";
 }
 
 // ---------- GPS ထိန်းချုပ်ခြင်း (ဆိုင်မှ ပိတ်နိုင်/ဖွင့်နိုင်) ----------
@@ -246,12 +283,12 @@ async function setGps(on) {
       body: JSON.stringify({ order_no: orderNo, phone: phone, gps_enabled: on ? 1 : 0 })
     });
     var j = await r.json();
-    if (!j.ok) { alert(j.msg); return; }
+    if (!j.ok) { showInfo(j.msg); return; }
     document.getElementById("gpsState").textContent = on ? "GPS ဖွင့်ထားသည်" : "GPS ပိတ်ထားသည်";
-    alert(on ? "GPS ဖွင့်ပြီးပါပြီ" : "GPS ပိတ်ပြီးပါပြီ");
+    showInfo(on ? "GPS ဖွင့်ပြီးပါပြီ" : "GPS ပိတ်ပြီးပါပြီ");
     setTimeout(closeGpsModal, 600);
   } catch (e) {
-    alert("ဆာဗာနှင့် ချိတ်ဆက်၍ မရပါ");
+    showInfo("ဆာဗာနှင့် ချိတ်ဆက်၍ မရပါ");
   }
 }
 </script>

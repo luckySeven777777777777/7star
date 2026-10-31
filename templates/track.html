@@ -60,6 +60,13 @@
   .gps-state { font-size:14px; color:#333; margin:10px 0; }
   .btn-on { background: linear-gradient(135deg, #56ab2f, #a8e063) !important; }
   .btn-off { background: #d32f2f !important; }
+  .btn-gray { background:#999 !important; }
+  .history-item {
+    background:#f9f9f9; border:1px solid #eee; border-radius:10px;
+    padding:12px; margin:10px 0; text-align:left; font-size:13px; line-height:2; color:#333;
+  }
+  .history-item b { color:#e07b00; }
+  .history-empty { text-align:center; color:#999; padding:24px 0; font-size:14px; }
 </style>
 </head>
 <body>
@@ -78,11 +85,13 @@
     <div class="row2">
       <button id="searchBtn" onclick="search()">တည်နေရာ ရှာမည်</button>
       <button class="btn btn-gray" id="gpsBtn" onclick="toggleGpsModal()">GPS ထိန်းချုပ်ရန်</button>
+      <button class="btn btn-gray" id="historyBtn" onclick="openHistory()">Order History</button>
     </div>
     <div class="err" id="err"></div>
   </div>
 
   <div class="result" id="result">
+    Date：<b id="rDate"></b><br>
     Order Number：<b id="rOrderNo"></b>（<span id="rCustomer"></span>）
     <span class="status-tag st-ပို့ဆောင်နေသည်" id="rStatusTag">ပို့ဆောင်နေသည်</span><br>
     ပို့ရမည့်လိပ်စာ：<span id="rAddress"></span><br>
@@ -112,6 +121,14 @@
       <h3 id="infoTitle">အသိပေးချက်</h3>
       <p class="info-text" id="infoText"></p>
       <button class="btn btn-ok" onclick="closeInfoModal()">အိုကေ</button>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="historyModal" style="display:none">
+    <div class="modal-box">
+      <button class="modal-close" onclick="closeHistory()">×</button>
+      <h3>Order History</h3>
+      <div id="historyList" style="max-height:60vh; overflow-y:auto;"></div>
     </div>
   </div>
 
@@ -152,6 +169,7 @@ async function search() {
 function render(j) {
   var box = document.getElementById("result");
   box.style.display = "block";
+  document.getElementById("rDate").textContent = formatEnglishDate(j.created_at);
   document.getElementById("rOrderNo").textContent = j.order_no;
   document.getElementById("rCustomer").textContent = j.rider_name || "Delivery";
   document.getElementById("rAddress").textContent = j.delivery_address || j.address || "မဖြည့်ထားပါ";
@@ -160,9 +178,16 @@ function render(j) {
   document.getElementById("rBaozi").textContent = (j.baozi_remaining !== undefined && j.baozi_remaining !== null) ? (j.baozi_remaining + " / " + (j.baozi_total || 0)) : "-";
   document.getElementById("rShop").textContent = (j.shop_remaining !== undefined && j.shop_remaining !== null) ? (j.shop_remaining + " / " + (j.shop_total || 0)) : "-";
 
+  // 快递员未选择状态前显示 "-"（不显示配送中）
   var tag = document.getElementById("rStatusTag");
-  tag.className = "status-tag st-" + (j.status || "ပို့ဆောင်နေသည်");
-  tag.textContent = j.status || "ပို့ဆောင်နေသည်";
+  var st = j.status || "";
+  if (!st || st === "待取餐") {
+    tag.className = "status-tag";
+    tag.textContent = "-";
+  } else {
+    tag.className = "status-tag st-" + st;
+    tag.textContent = st;
+  }
 
   var latLngs = (j.track || []).map(function(p) { return [p.lat, p.lng]; });
   if (latLngs.length === 0) {
@@ -191,26 +216,28 @@ function render(j) {
   map.setView(latest, 15);
 }
 
-// 骑手模型图标：绿色圆底 + 摩托车骑手（专业剪影）
+// 骑手模型图标：红色圆底 + 白色边框 + 白色线条骑手骑踏板车送包子（仿附件第三张图）
 function riderIcon() {
   return L.divIcon({
     className: "",
     html: '<svg viewBox="0 0 64 64" width="46" height="46" style="filter:drop-shadow(0 2px 4px rgba(0,0,0,0.35))">' +
-      '<circle cx="32" cy="32" r="30" fill="#00b14f" stroke="#fff" stroke-width="3"/>' +
+      '<circle cx="32" cy="32" r="30" fill="#e53935" stroke="#fff" stroke-width="3"/>' +
       '<g transform="translate(0,0)">' +
-      '<!-- 摩托车后轮 -->' +
-      '<circle cx="19" cy="44" r="6.5" fill="#fff"/>' +
-      '<!-- 摩托车前轮 -->' +
-      '<circle cx="45" cy="44" r="6.5" fill="#fff"/>' +
-      '<!-- 车身 -->' +
-      '<path d="M19 44 L30 32 L34 32 L45 44" fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>' +
-      '<path d="M24 40 L30 33 L34 33 L38 40 Z" fill="#fff"/>' +
+      '<!-- 踏板车后轮 -->' +
+      '<circle cx="18" cy="47" r="6" fill="none" stroke="#fff" stroke-width="3.5"/>' +
+      '<!-- 踏板车前轮 -->' +
+      '<circle cx="46" cy="47" r="6" fill="none" stroke="#fff" stroke-width="3.5"/>' +
+      '<!-- 踏板车身 -->' +
+      '<path d="M18 47 L29 35 L35 35 L46 47" fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>' +
+      '<path d="M24 41 L30 35 L35 35 L40 41 Z" fill="#fff"/>' +
       '<!-- 车把 -->' +
-      '<path d="M34 33 L44 39 L46 44" fill="none" stroke="#fff" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>' +
+      '<path d="M35 35 L43 41 L46 47" fill="none" stroke="#fff" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>' +
       '<!-- 骑手头 -->' +
-      '<circle cx="31" cy="18" r="5.5" fill="#fff"/>' +
+      '<circle cx="30.5" cy="17" r="5.5" fill="#fff"/>' +
       '<!-- 骑手身体 -->' +
-      '<path d="M25.5 31 Q25 22 31 22 Q37 22 36.5 31 Z" fill="#fff"/>' +
+      '<path d="M25 32 Q24.5 23 30.5 23 Q36.5 23 36 32 Z" fill="#fff"/>' +
+      '<!-- 后座送餐箱 -->' +
+      '<path d="M19 40 L23 33 L30 36 L26 43 Z" fill="none" stroke="#fff" stroke-width="2.5" stroke-linejoin="round"/>' +
       '</g></svg>',
     iconSize: [46, 46],
     iconAnchor: [23, 23]
@@ -249,6 +276,54 @@ function showInfo(msg) {
 }
 function closeInfoModal() {
   document.getElementById("infoModal").style.display = "none";
+}
+
+// 英文日期格式：年/月/日（如 2026/10/31）
+function formatEnglishDate(input) {
+  if (!input) return "-";
+  var d = (input instanceof Date) ? input : new Date(input);
+  if (isNaN(d.getTime())) return "-";
+  return d.toLocaleDateString("en-GB", { year: "numeric", month: "long", day: "numeric" });
+}
+
+// ---------- Order History（永久订单记录） ----------
+async function openHistory() {
+  var phone = document.getElementById("phone").value.trim();
+  if (!phone) { showInfo("ပို့ဆောင်သူ ဖုန်းနံပါတ် ထည့်သွင်းပါ"); return; }
+  document.getElementById("historyList").innerHTML = '<div class="history-empty">Loading...</div>';
+  document.getElementById("historyModal").style.display = "flex";
+  try {
+    var r = await fetch("/api/order/history?phone=" + encodeURIComponent(phone));
+    var j = await r.json();
+    if (!j.ok || !j.history || j.history.length === 0) {
+      document.getElementById("historyList").innerHTML = '<div class="history-empty">No order history yet.</div>';
+      return;
+    }
+    var html = "";
+    j.history.forEach(function(h) {
+      var dt = formatEnglishDate(h.bind_time);
+      var loc = h.latest ? (h.latest.address || (h.latest.lat.toFixed(6) + ", " + h.latest.lng.toFixed(6))) : "-";
+      var lastT = h.latest ? (h.latest.report_time || "-") : "-";
+      html += '<div class="history-item">'
+        + 'Date：<b>' + dt + '</b><br>'
+        + 'ပို့ဆောင်သူအမည်：<b>' + (h.rider_name || "-") + '</b><br>'
+        + 'ပို့ဆောင်သူ ဖုန်းနံပါတ်：<b>' + (h.rider_phone || "-") + '</b><br>'
+        + 'လက်ရှိOrder Number：<b>' + h.order_no + '</b><br>'
+        + 'လက်ရှိအခြေအနေ：<b>' + ((h.status && h.status !== "待取餐") ? h.status : "-") + '</b><br>'
+        + 'ပို့ဆောင်သူ နောက်ဆုံးတည်နေရာ：<b>' + loc + '</b><br>'
+        + 'ပို့ရမည့်ဆိုင်လိပ်စာ：<b>' + (h.delivery_address || "-") + '</b><br>'
+        + 'ကျန်ရှိသောပေါက်စီအလုံးအရေတွက်：<b>' + h.baozi_remaining + ' / ' + h.baozi_total + '</b><br>'
+        + 'ကျန်ရှိသောဆိုင်အရေတွက်：<b>' + h.shop_remaining + ' / ' + h.shop_total + '</b><br>'
+        + 'နောက်ဆုံး တင်ပြချိန်：<b>' + lastT + '</b>'
+        + '</div>';
+    });
+    document.getElementById("historyList").innerHTML = html;
+  } catch (e) {
+    document.getElementById("historyList").innerHTML = '<div class="history-empty">Failed to load history.</div>';
+  }
+}
+function closeHistory() {
+  document.getElementById("historyModal").style.display = "none";
 }
 
 // ---------- GPS ထိန်းချုပ်ခြင်း (ဆိုင်မှ ပိတ်နိုင်/ဖွင့်နိုင်) ----------

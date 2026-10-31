@@ -58,11 +58,19 @@
     font-size:30px; line-height:58px; font-weight:bold;
     box-shadow:0 4px 12px rgba(86,171,47,0.4);
   }
+  .history-item {
+    background:#f9f9f9; border:1px solid #eee; border-radius:10px;
+    padding:12px; margin:10px 0; text-align:left; font-size:13px; line-height:2; color:#333;
+  }
+  .history-item b { color:#e07b00; }
+  .history-empty { text-align:center; color:#999; padding:24px 0; font-size:14px; }
+  .status-box button:disabled { background:#eee; color:#bbb; cursor:not-allowed; border-color:#eee; }
+  #confirmDeliveredBtn:disabled { background:#ccc; cursor:not-allowed; }
 </style>
 </head>
 <body>
-  <h2>🛵 ပို့ဆောင်သူ</h2>
-  <div class="sub">အမှာစာ ချိတ်ဆက်ပြီးပါက သင့်တည်နေရာကို အလိုအလျောက် တင်ပေးမည်</div>
+  <h2>🛵 7Star Delivery</h2>
+  <div class="sub">Orderချိတ်ဆက်ပြီးပါက သင့်တည်နေရာကို အလိုအလျောက် တင်ပေးမည်</div>
 
   <div class="panel">
     <button class="btn btn-gray" onclick="createOrder()">Get New Orders</button>
@@ -82,27 +90,43 @@
     <input id="deliveryAddress" placeholder="ပို့ရမည့် ဆိုင်လိပ်စာ ထည့်ပါ">
     <label>Order Number</label>
     <input id="orderNo" placeholder="ဥပမာ - BZ1001102030">
-    <button class="btn" id="bindBtn" onclick="bindOrder()">အမှာစာ ချိတ်ဆက်၍ ပို့ဆောင်စမည်</button>
+    <div class="row2">
+      <button class="btn" id="bindBtn" onclick="bindOrder()">အမှာစာ ချိတ်ဆက်၍ ပို့ဆောင်စမည်</button>
+      <button class="btn btn-gray" id="historyBtn" onclick="openHistory()">Order History</button>
+    </div>
   </div>
 
   <div class="panel" id="reportPanel" style="display:none">
     <div class="info">
+      <span class="dot"></span>Date：<b id="curDate">-</b><br>
       <span class="dot"></span>လက်ရှိOrder Number：<b id="curOrder"></b><br>
-      <span class="dot"></span>လက်ရှိအခြေအနေ：<b id="curStatus">ပို့ဆောင်နေသည်</b><br>
+      <span class="dot"></span>လက်ရှိအခြေအနေ：<b id="curStatus">-</b><br>
       <span class="dot"></span>လက်ရှိနေရာ:<span id="curLocation">-</span><br>
       <span class="dot"></span>ကျန်ရှိသောပေါက်စီအလုံးအရေတွက်：<span id="curBaozi">-</span><br>
       <span class="dot"></span>ကျန်ရှိသောဆိုင်အရေတွက်：<span id="curShop">-</span><br>
       <span class="dot"></span>နောက်ဆုံး တင်ပြချိန်：<span id="lastTime">-</span>
     </div>
     <div class="status-box" id="statusBox">
-      <button onclick="setStatus('အစားအစာယူရန် စောင့်ဆိုင်း')">အစားအစာယူရန် စောင့်ဆိုင်း</button>
-      <button class="active" onclick="setStatus('ပို့ဆောင်နေသည်')">ပို့ဆောင်နေသည်</button>
-      <button onclick="setStatus('ရောက်ရှိပြီး')">ရောက်ရှိပြီး</button>
+      <button onclick="requestStatus('အစားအစာယူရန် စောင့်ဆိုင်း')">အစားအစာယူရန် စောင့်ဆိုင်း</button>
+      <button onclick="requestStatus('ပို့ဆောင်နေသည်')">ပို့ဆောင်နေသည်</button>
+      <button onclick="requestStatus('ရောက်ရှိပြီး')">ရောက်ရှိပြီး</button>
     </div>
-    <button class="btn btn-green" onclick="confirmDelivered()">လက်ခံပြီးပါပြီ</button>
+    <button class="btn btn-green" id="confirmDeliveredBtn" onclick="confirmDelivered()">လက်ခံပြီးပါပြီ</button>
     <div class="row2">
       <button class="btn" id="gpsBtn" onclick="startGps()" disabled>GPS ဖွင့်ထားသည်</button>
-      <button class="btn btn-green" id="simBtn" onclick="startSim()">ပို့ဆောင်မှု သရုပ်ပြ</button>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="stateConfirmModal" style="display:none">
+    <div class="modal-box modal-confirm">
+      <button class="modal-close" onclick="closeStateConfirm()">×</button>
+      <div class="confirm-icon">?</div>
+      <h3>Confirm Status</h3>
+      <p class="info-text" id="stateConfirmText"></p>
+      <div class="row2">
+        <button class="btn btn-green" onclick="doConfirmState()">Confirm ✅</button>
+        <button class="btn btn-gray" onclick="closeStateConfirm()">Cancel ❌</button>
+      </div>
     </div>
   </div>
 
@@ -116,9 +140,17 @@
       <label>လက်ခံရရှိဆိုင်လိပ်စာ</label>
       <input id="confirmAddress" placeholder="ဆိုင်လိပ်စာ ထည့်ပါ">
       <div class="row2">
-        <button class="btn btn-green" onclick="doConfirmDelivered()">သေချာပါသည်✅</button>
-        <button class="btn btn-gray" onclick="closeConfirmModal()">မသေချာပါ❌</button>
+        <button class="btn btn-green" onclick="doConfirmDelivered()">Confirm ✅</button>
+        <button class="btn btn-gray" onclick="closeConfirmModal()">Cancel ❌</button>
       </div>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="historyModal" style="display:none">
+    <div class="modal-box modal-info" style="max-width:480px; max-height:82vh; overflow-y:auto;">
+      <button class="modal-close" onclick="closeHistory()">×</button>
+      <h3>Order History</h3>
+      <div id="historyList"></div>
     </div>
   </div>
 
@@ -134,7 +166,8 @@
 
 <script>
 var state = {
-  orderNo: "", phone: "", name: "", status: "ပို့ဆောင်နေသည်",
+  orderNo: "", phone: "", name: "", status: "",
+  statusLocked: false, pendingStatus: "",
   gpsTimer: null, simTimer: null, refreshTimer: null, gpsWatchId: null,
   curLat: null, curLng: null, gpsEnabled: true
 };
@@ -188,6 +221,7 @@ async function bindOrder() {
     state.name = name;
     document.getElementById("reportPanel").style.display = "block";
     document.getElementById("curOrder").textContent = orderNo;
+    document.getElementById("curDate").textContent = formatEnglishDate(new Date());
     document.getElementById("bindBtn").disabled = true;
     document.getElementById("bindBtn").textContent = "ချိတ်ဆက်ပြီးပါပြီ";
     showInfo("ချိတ်ဆက်မှု အောင်မြင်ပါသည်။ GPS ဖွင့်ပြီး တည်နေရာ တင်နေပါသည်");
@@ -204,17 +238,47 @@ async function bindOrder() {
   }
 }
 
-// ---------- အခြေအနေ ပြောင်းခြင်း ----------
-function setStatus(status) {
-  state.status = status;
-  document.getElementById("curStatus").textContent = status;
-  document.querySelectorAll("#statusBox button").forEach(function(btn) {
-    btn.classList.remove("active");
-  });
-  event.target.classList.add("active");
-  if (state.curLat !== null && state.curLat !== undefined) {
-    reportLocation(state.curLat, state.curLng, status);
+// ---------- အခြေအနေ ပြောင်းခြင်း（需确认弹窗，确认后锁定） ----------
+function requestStatus(status) {
+  if (state.statusLocked) {
+    showInfo("Status is already confirmed and locked. You cannot change it again.");
+    return;
   }
+  state.pendingStatus = status;
+  document.getElementById("stateConfirmText").textContent = "Change status to: " + status;
+  document.getElementById("stateConfirmModal").style.display = "flex";
+}
+function closeStateConfirm() {
+  document.getElementById("stateConfirmModal").style.display = "none";
+}
+async function doConfirmState() {
+  document.getElementById("stateConfirmModal").style.display = "none";
+  state.status = state.pendingStatus;
+  state.statusLocked = true;
+  document.getElementById("curStatus").textContent = state.status;
+  lockStatusButtons();
+  saveLockLocal();
+  if (state.curLat !== null && state.curLat !== undefined) {
+    reportLocation(state.curLat, state.curLng, state.status);
+  }
+}
+function lockStatusButtons() {
+  document.querySelectorAll("#statusBox button").forEach(function(btn) { btn.disabled = true; });
+  document.getElementById("confirmDeliveredBtn").disabled = true;
+}
+function saveLockLocal() {
+  try {
+    var d = new Date();
+    localStorage.setItem("riderLock_" + state.phone, JSON.stringify({
+      order_no: state.orderNo, status: state.status, locked: state.statusLocked,
+      date: d.toISOString(), name: state.name
+    }));
+  } catch (e) {}
+}
+function formatEnglishDate(input) {
+  var d = (input instanceof Date) ? input : new Date(input);
+  if (isNaN(d.getTime())) return "-";
+  return d.toLocaleDateString("en-GB", { year: "numeric", month: "long", day: "numeric" });
 }
 
 // ---------- တည်နေရာ တင်ခြင်း ----------
@@ -270,7 +334,7 @@ function startGps() {
     if (state.gpsWatchId !== null) { navigator.geolocation.clearWatch(state.gpsWatchId); state.gpsWatchId = null; }
     clearInterval(state.gpsTimer); state.gpsTimer = null;
     restoreBtn();
-    showInfo("ဤစက်/ဘရောက်ဆာတွင် GPS ရယူ၍ မရပါ။ 「ပို့ဆောင်မှု သရုပ်ပြ」ကို နှိပ်ပါ（当前设备/浏览器无法获取GPS，请改用「模拟配送」）");
+    showInfo("ဤစက်/ဘရောက်ဆာတွင် GPS ရယူ၍ မရပါ။ ဘရောက်ဆာ တည်နေရာခွင့်ပြုချက် ဖွင့်ပြီး ပြန်ကြိုးစားပါ（当前设备/浏览器无法获取GPS，请开启浏览器定位权限后重试）");
   }
 
   timeoutId = setTimeout(gpsFail, 15000); // 15 秒拿不到定位就自动恢复按钮
@@ -283,27 +347,7 @@ function startGps() {
   }, 5000);
 }
 
-// ---------- နည်းလမ်း ၂ - သရုပ်ပြ ပို့ဆောင်ခြင်း ----------
-function startSim() {
-  document.getElementById("simBtn").disabled = true;
-  document.getElementById("simBtn").textContent = "သရုပ်ပြ ပို့ဆောင်နေသည်...";
-  document.getElementById("gpsBtn").disabled = true;
-  if (state.gpsWatchId !== null) { navigator.geolocation.clearWatch(state.gpsWatchId); state.gpsWatchId = null; }
-  clearInterval(state.gpsTimer); state.gpsTimer = null;
-
-  if (state.curLat === null || state.curLat === undefined) {
-    state.curLat = 31.2304;
-    state.curLng = 121.4737;
-  }
-  reportLocation(state.curLat, state.curLng, state.status, 1);
-
-  state.simTimer = setInterval(function() {
-    state.curLat += 0.0005;
-    state.curLng += 0.0005;
-    reportLocation(state.curLat, state.curLng, state.status, 1);
-  }, 5000);
-}
-
+// ---------- နည်းလမ်း ၂ - သရုပ်ပြ ပို့ဆောင်ခြင်း（已移除，不再使用） ----------
 function stopSim() {
   if (state.simTimer) { clearInterval(state.simTimer); state.simTimer = null; }
 }
@@ -330,6 +374,12 @@ async function doConfirmDelivered() {
     var j = await r.json();
     if (!j.ok) { showInfo(j.msg); return; }
     closeConfirmModal();
+    state.status = "လက်ခံပြီးပါပြီ";
+    state.statusLocked = true;
+    document.getElementById("curStatus").textContent = "လက်ခံပြီးပါပြီ";
+    document.getElementById("curStatus").style.color = "#2e7d32";
+    lockStatusButtons();
+    saveLockLocal();
     showInfo("လက်ခံပြီးပါပြီ။ ကျန်ရှိသော အရေအတွက် ပြန်လည်တွက်ချက်ပြီးပါပြီ");
     refreshRiderInfo();
   } catch (e) {
@@ -347,14 +397,55 @@ function closeInfoModal() {
   document.getElementById("infoModal").style.display = "none";
 }
 
+// ---------- Order History（永久订单记录） ----------
+async function openHistory() {
+  var phone = document.getElementById("riderPhone").value.trim();
+  if (!phone) { showInfo("ဖုန်းနံပါတ် ထည့်သွင်းပါ"); return; }
+  document.getElementById("historyList").innerHTML = '<div class="history-empty">Loading...</div>';
+  document.getElementById("historyModal").style.display = "flex";
+  try {
+    var r = await fetch("/api/order/history?phone=" + encodeURIComponent(phone));
+    var j = await r.json();
+    if (!j.ok || !j.history || j.history.length === 0) {
+      document.getElementById("historyList").innerHTML = '<div class="history-empty">No order history yet.</div>';
+      return;
+    }
+    var html = "";
+    j.history.forEach(function(h) {
+      var dt = formatEnglishDate(h.bind_time);
+      var loc = h.latest ? (h.latest.address || (h.latest.lat.toFixed(6) + ", " + h.latest.lng.toFixed(6))) : "-";
+      var lastT = h.latest ? (h.latest.report_time || "-") : "-";
+      html += '<div class="history-item">'
+        + 'Date：<b>' + dt + '</b><br>'
+        + 'ပို့ဆောင်သူအမည်：<b>' + (h.rider_name || "-") + '</b><br>'
+        + 'ပို့ဆောင်သူ ဖုန်းနံပါတ်：<b>' + (h.rider_phone || "-") + '</b><br>'
+        + 'လက်ရှိOrder Number：<b>' + h.order_no + '</b><br>'
+        + 'လက်ရှိအခြေအနေ：<b>' + ((h.status && h.status !== "待取餐") ? h.status : "-") + '</b><br>'
+        + 'လက်ရှိနေရာ：<b>' + loc + '</b><br>'
+        + 'ပို့ရမည့်ဆိုင်လိပ်စာ：<b>' + (h.delivery_address || "-") + '</b><br>'
+        + 'ကျန်ရှိသောပေါက်စီအလုံးအရေတွက်：<b>' + h.baozi_remaining + ' / ' + h.baozi_total + '</b><br>'
+        + 'ကျန်ရှိသောဆိုင်အရေတွက်：<b>' + h.shop_remaining + ' / ' + h.shop_total + '</b><br>'
+        + 'နောက်ဆုံး တင်ပြချိန်：<b>' + lastT + '</b>'
+        + '</div>';
+    });
+    document.getElementById("historyList").innerHTML = html;
+  } catch (e) {
+    document.getElementById("historyList").innerHTML = '<div class="history-empty">Failed to load history.</div>';
+  }
+}
+function closeHistory() {
+  document.getElementById("historyModal").style.display = "none";
+}
+
 async function refreshRiderInfo() {
   if (!state.orderNo || !state.phone) return;
   try {
     var r = await fetch("/api/rider/info?order_no=" + encodeURIComponent(state.orderNo) + "&phone=" + encodeURIComponent(state.phone));
     var j = await r.json();
     if (!j.ok) return;
-    // 状态同步：商家确认签收后此处也显示「လက်ခံပြီးပါပြီ」
-    if (j.status) {
+    // 状态同步：仅当快递员已确认锁定状态后才同步后端状态显示；
+    // 未选择前保持 "-"，不显示配送中
+    if (j.status && state.statusLocked) {
       state.status = j.status;
       document.getElementById("curStatus").textContent = j.status;
       document.querySelectorAll("#statusBox button").forEach(function(btn) {
@@ -370,7 +461,7 @@ async function refreshRiderInfo() {
     document.getElementById("curLocation").textContent = j.latest ? (j.latest.address || (j.latest.lat.toFixed(6) + ", " + j.latest.lng.toFixed(6))) : "-";
     document.getElementById("curBaozi").textContent = (j.baozi_total - j.baozi_received) + " / " + j.baozi_total;
     document.getElementById("curShop").textContent = (j.shop_total - j.shop_received) + " / " + j.shop_total;
-    // 商家关闭 GPS 后：立即停止本端上报（GPS 与模拟配送均停止），且不能自行重新开启
+    // 商家关闭 GPS 后：立即停止本端上报（GPS 停止），且不能自行重新开启
     if (j.gps_enabled === 0 && state.gpsEnabled) {
       state.gpsEnabled = false;
       if (state.gpsWatchId !== null) { navigator.geolocation.clearWatch(state.gpsWatchId); state.gpsWatchId = null; }
@@ -378,11 +469,36 @@ async function refreshRiderInfo() {
       stopSim();
       document.getElementById("gpsBtn").disabled = true;
       document.getElementById("gpsBtn").textContent = "GPS ပိတ်ထားသည်";
-      document.getElementById("simBtn").disabled = true;
-      showInfo("商家已关闭 GPS 追踪，本端已停止位置上报");
+      showInfo("ဆိုင်က GPS ခြေရာခံခြင်းကို ပိတ်ထားပါသည်။ ဤဘက်မှ တည်နေရာ တင်ခြင်း ရပ်တန့်ပြီးပါပြီ");
     }
   } catch (e) {}
 }
+
+// ---------- 页面加载：恢复已锁定状态（刷新后仍不可修改） ----------
+(function() {
+  var phone = document.getElementById("riderPhone").value.trim();
+  var saved = null;
+  try { saved = JSON.parse(localStorage.getItem("riderLock_" + phone)); } catch (e) {}
+  if (saved && saved.locked && saved.order_no) {
+    state.orderNo = saved.order_no;
+    state.phone = phone;
+    state.name = saved.name || "";
+    state.status = saved.status || "";
+    state.statusLocked = true;
+    document.getElementById("reportPanel").style.display = "block";
+    document.getElementById("curOrder").textContent = saved.order_no;
+    document.getElementById("curDate").textContent = formatEnglishDate(saved.date || new Date().toISOString());
+    document.getElementById("curStatus").textContent = saved.status || "-";
+    document.getElementById("orderNo").value = saved.order_no;
+    document.getElementById("bindBtn").disabled = true;
+    document.getElementById("bindBtn").textContent = "ချိတ်ဆက်ပြီးပါပြီ";
+    lockStatusButtons();
+    startGps();
+    refreshRiderInfo();
+    if (state.refreshTimer) clearInterval(state.refreshTimer);
+    state.refreshTimer = setInterval(refreshRiderInfo, 5000);
+  }
+})();
 </script>
 </body>
 </html>

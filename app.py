@@ -545,8 +545,8 @@ def rider_info():
         (order_no,),
     )
     latest_row = cur.fetchone()
-    conn.close()
     latest = _row_to_dict(cur, latest_row) if latest_row else None
+    conn.close()
     if latest:
         latest["address"] = reverse_geocode(latest["lat"], latest["lng"])
     return jsonify(
@@ -666,13 +666,13 @@ def track():
         (order_no,),
     )
     points = cur.fetchall()
-    conn.close()
     track_list = _rows_to_dicts(cur, points)
     latest = track_list[-1] if track_list else None
-    if latest:
-        latest["address"] = reverse_geocode(latest["lat"], latest["lng"])
     order_dict = _row_to_dict(cur, order)
     rider_dict = _row_to_dict(cur, rider) if rider else None
+    conn.close()
+    if latest:
+        latest["address"] = reverse_geocode(latest["lat"], latest["lng"])
     return jsonify(
         {
             "ok": True,

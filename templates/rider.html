@@ -381,7 +381,7 @@ function setShop(lat, lng, linkText) {
     }
   }
 }
-var routeReqInFlight = false;
+var routeAbort = null;
 function drawRouteLine(coords) {
   if (!riderMap) return;
   if (routeLine) riderMap.removeLayer(routeLine);
@@ -389,26 +389,38 @@ function drawRouteLine(coords) {
 }
 function updateRoute() {
   if (state.curLat === null || shopLat === null || !riderMap) return;
-  // 按真实道路规划路线（OSRM），失败时回退为直线
-  if (routeReqInFlight) return;
-  routeReqInFlight = true;
+  // 每次定位更新都重新按道路规划路线（骑手走错路时路线会即时更新）
+  if (routeAbort) routeAbort.abort();
+  var ac = new AbortController();
+  routeAbort = ac;
   var url = "https://router.project-osrm.org/route/v1/driving/" +
     state.curLng + "," + state.curLat + ";" + shopLng + "," + shopLat +
     "?overview=full&geometries=geojson";
-  fetch(url)
+  // 8 秒超时或请求失败时，立即回退为直线，保证路线始终可见
+  var timer = setTimeout(function () {
+    if (routeAbort !== ac) return;
+    ac.abort();
+    drawRouteLine([[state.curLat, state.curLng], [shopLat, shopLng]]);
+    routeAbort = null;
+  }, 8000);
+  fetch(url, { signal: ac.signal })
     .then(function (resp) { return resp.json(); })
     .then(function (d) {
+      if (routeAbort !== ac) return;
+      clearTimeout(timer);
       if (d && d.routes && d.routes.length) {
         var coords = d.routes[0].geometry.coordinates.map(function (p) { return [p[1], p[0]]; });
         drawRouteLine(coords);
       } else {
         drawRouteLine([[state.curLat, state.curLng], [shopLat, shopLng]]);
       }
-      routeReqInFlight = false;
+      routeAbort = null;
     })
     .catch(function () {
+      if (routeAbort !== ac) return;
+      clearTimeout(timer);
       drawRouteLine([[state.curLat, state.curLng], [shopLat, shopLng]]);
-      routeReqInFlight = false;
+      routeAbort = null;
     });
 }
 function updateRiderMarker() {

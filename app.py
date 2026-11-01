@@ -139,7 +139,10 @@ def init_db():
                 status TEXT DEFAULT 'normal',
                 avatar TEXT DEFAULT '',
                 token TEXT DEFAULT '',
-                created_at TEXT
+                created_at TEXT,
+                phone TEXT DEFAULT '',
+                status_updated_at TEXT,
+                operator TEXT DEFAULT ''
             )
         """))
     else:
@@ -194,7 +197,10 @@ def init_db():
                 status TEXT DEFAULT 'normal',
                 avatar TEXT DEFAULT '',
                 token TEXT DEFAULT '',
-                created_at TEXT
+                created_at TEXT,
+                phone TEXT DEFAULT '',
+                status_updated_at TEXT,
+                operator TEXT DEFAULT ''
             );
         """)
     conn.commit()
@@ -202,6 +208,27 @@ def init_db():
 
 
 init_db()
+
+
+def ensure_user_columns():
+    """旧库升级：为 users 表补充 phone / status_updated_at / operator 列（已存在则跳过）"""
+    conn = get_db()
+    cur = conn.cursor()
+    cols = {
+        "phone": "TEXT DEFAULT ''",
+        "status_updated_at": "TEXT",
+        "operator": "TEXT DEFAULT ''",
+    }
+    for col, ddl in cols.items():
+        try:
+            cur.execute(_q("ALTER TABLE users ADD COLUMN " + col + " " + ddl))
+        except Exception:
+            pass
+    conn.commit()
+    conn.close()
+
+
+ensure_user_columns()
 
 
 def now_str():
@@ -691,16 +718,30 @@ def logout_api():
 
 @app.route("/api/user/me", methods=["GET"])
 def user_me():
-    """返回当前登录用户信息（前端用于头像/昵称/按钮显隐）"""
-    user = get_current_user()
+    """返回当前登录用户信息（前端用于头像/昵称/按钮显隐）。
+    账号被禁止/删除时返回 403，前端据此强制退出登录。"""
+    token = (request.headers.get("Authorization") or "").replace("Bearer ", "").strip()
+    if not token:
+        token = (request.cookies.get("token") or "").strip()
+    if not token:
+        return jsonify({"ok": False, "msg": "Not logged in."}), 401
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute(_q("SELECT * FROM users WHERE token=?"), (token,))
+    user = cur.fetchone()
+    conn.close()
     if not user:
         return jsonify({"ok": False, "msg": "Not logged in."}), 401
+    ud = _row_to_dict(cur, user)
+    if ud.get("status") != "normal":
+        return jsonify({"ok": False, "msg": "Account is disabled. Please contact your administrator."}), 403
     return jsonify({
         "ok": True,
-        "username": user["username"],
-        "nickname": user.get("nickname") or "",
-        "avatar": user.get("avatar") or "",
-        "role": user["role"],
+        "username": ud["username"],
+        "nickname": ud.get("nickname") or "",
+        "avatar": ud.get("avatar") or "",
+        "role": ud["role"],
+        "phone": ud.get("phone") or "",
     })
 
 
@@ -735,13 +776,27 @@ def admin_users():
     """管理员查看骑手账号列表（已删除账号不显示）"""
     admin = require_admin()
     if not admin:
-        return jsonify({"ok": False, "msg": "Admin permission required."}), 403
+        return jsonify({"ok": False, "msg": "Admin permission required. Please login with an administrator account."}), 403
     conn = get_db()
     cur = conn.cursor()
-    cur.execute(_q("SELECT id, username, nickname, role, status, created_at FROM users WHERE role='rider' AND status!='deleted' ORDER BY id DESC"))
+    cur.execute(_q("SELECT id, username, nickname, phone, role, status, created_at, status_updated_at, operator FROM users WHERE role='rider' AND status!='deleted' ORDER BY id DESC"))
     rows = cur.fetchall()
     conn.close()
     return jsonify({"ok": True, "users": _rows_to_dicts(cur, rows)})
+
+
+@app.route("/api/admin/user/banned", methods=["GET"])
+def admin_banned_users():
+    """管理员查看禁止/删除账号记录列表（昵称+联系方式+状态+操作人+时间）"""
+    admin = require_admin()
+    if not admin:
+        return jsonify({"ok": False, "msg": "Admin permission required. Please login with an administrator account."}), 403
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute(_q("SELECT username, nickname, phone, status, status_updated_at, operator FROM users WHERE role='rider' AND status IN ('banned','deleted') ORDER BY status_updated_at DESC"))
+    rows = cur.fetchall()
+    conn.close()
+    return jsonify({"ok": True, "records": _rows_to_dicts(cur, rows)})
 
 
 @app.route("/api/admin/user/create", methods=["POST"])
@@ -749,11 +804,12 @@ def admin_create_user():
     """管理员创建骑手账号（User Name 唯一，昵称由管理员指定，骑手不可自改）"""
     admin = require_admin()
     if not admin:
-        return jsonify({"ok": False, "msg": "Admin permission required."}), 403
+        return jsonify({"ok": False, "msg": "Admin permission required. Please login with an administrator account."}), 403
     data = request.get_json(silent=True) or {}
     username = (data.get("username") or "").strip()
     password = data.get("password") or ""
     nickname = (data.get("nickname") or "").strip()
+    phone = (data.get("phone") or "").strip()
     if not username or not password:
         return jsonify({"ok": False, "msg": "User Name and Password are required."}), 400
     conn = get_db()
@@ -763,12 +819,12 @@ def admin_create_user():
         conn.close()
         return jsonify({"ok": False, "msg": "User Name already exists."}), 400
     cur.execute(
-        _q("INSERT INTO users (username, password_hash, nickname, role, status, created_at) VALUES (?,?,?,?,?,?)"),
-        (username, generate_password_hash(password), nickname or username, "rider", "normal", now_str()),
+        _q("INSERT INTO users (username, password_hash, nickname, role, status, created_at, phone) VALUES (?,?,?,?,?,?,?)"),
+        (username, generate_password_hash(password), nickname or username, "rider", "normal", now_str(), phone),
     )
     conn.commit()
     conn.close()
-    return jsonify({"ok": True, "msg": "Rider account created.", "username": username, "nickname": nickname or username})
+    return jsonify({"ok": True, "msg": "Rider account created.", "username": username, "nickname": nickname or username, "phone": phone})
 
 
 @app.route("/api/admin/user/password", methods=["POST"])
@@ -776,7 +832,7 @@ def admin_reset_password():
     """管理员修改骑手登录密码（骑手忘记密码时使用）"""
     admin = require_admin()
     if not admin:
-        return jsonify({"ok": False, "msg": "Admin permission required."}), 403
+        return jsonify({"ok": False, "msg": "Admin permission required. Please login with an administrator account."}), 403
     data = request.get_json(silent=True) or {}
     username = (data.get("username") or "").strip()
     new_password = data.get("new_password") or ""
@@ -799,10 +855,10 @@ def admin_reset_password():
 
 @app.route("/api/admin/user/status", methods=["POST"])
 def admin_set_status():
-    """管理员权限开关：正常登录 / 禁止登录 / 删除账号"""
+    """管理员权限开关（单个骑手）：正常登录 / 禁止登录 / 删除账号，记录操作人与时间"""
     admin = require_admin()
     if not admin:
-        return jsonify({"ok": False, "msg": "Admin permission required."}), 403
+        return jsonify({"ok": False, "msg": "Admin permission required. Please login with an administrator account."}), 403
     data = request.get_json(silent=True) or {}
     username = (data.get("username") or "").strip()
     status = (data.get("status") or "").strip()
@@ -815,12 +871,34 @@ def admin_set_status():
         conn.close()
         return jsonify({"ok": False, "msg": "Rider account not found."}), 404
     cur.execute(
-        _q("UPDATE users SET status=?, token='' WHERE username=? AND role='rider'"),
-        (status, username),
+        _q("UPDATE users SET status=?, token='', status_updated_at=?, operator=? WHERE username=? AND role='rider'"),
+        (status, now_str(), admin["username"], username),
     )
     conn.commit()
     conn.close()
     return jsonify({"ok": True, "msg": "Account status updated."})
+
+
+@app.route("/api/admin/user/status_all", methods=["POST"])
+def admin_set_status_all():
+    """管理员全局权限开关：一键作用于所有骑手账号。
+    ban/delete 后所有骑手立即失效（token 清空），骑手端轮询 /api/user/me 检测到 403 后强制退出。"""
+    admin = require_admin()
+    if not admin:
+        return jsonify({"ok": False, "msg": "Admin permission required. Please login with an administrator account."}), 403
+    data = request.get_json(silent=True) or {}
+    status = (data.get("status") or "").strip()
+    if status not in ("normal", "banned", "deleted"):
+        return jsonify({"ok": False, "msg": "Invalid parameters."}), 400
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute(
+        _q("UPDATE users SET status=?, token='', status_updated_at=?, operator=? WHERE role='rider'"),
+        (status, now_str(), admin["username"]),
+    )
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True, "msg": "All rider accounts set to " + status + "."})
 
 
 if __name__ == "__main__":

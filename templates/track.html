@@ -5,6 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ဖောက်သည်/ဆိုင် - ပို့ဆောင်သူ တည်နေရာ ရှာဖွေခြင်း</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css" />
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css" />
 <style>
   * { margin:0; padding:0; box-sizing:border-box; }
   body {
@@ -16,7 +18,7 @@
   .top .sub { font-size: 13px; opacity:.9; margin-top:4px; line-height:1.8; }
   .search {
     background:#fff; border-radius: 12px; margin: -26px 16px 14px;
-    padding: 16px; box-shadow: 0 2px 10px rgba(0,0,0,0.12); position:relative; z-index:5;
+    padding: 16px; box-shadow: 0 2px 10px rgba(0,0,0,0.12); position:relative; z-index:15;
   }
   label { display:block; font-size:12px; color:#888; margin: 8px 0 4px; }
   input {
@@ -49,8 +51,6 @@
   .modal-close { position:absolute; top:6px; right:10px; background:none; border:none; font-size:24px; line-height:1; cursor:pointer; color:#888; }
   .modal-box h3 { margin:0 0 6px; color:#333; font-size:17px; }
   .modal-info { text-align:center; padding:28px 22px 22px; }
-  /* 铃铛通知下拉面板：贴右上角铃铛下方展开，不遮挡全屏页面 */
-  .bell-pop { position:fixed; top:64px; right:12px; width:min(92vw,360px); max-height:70vh; overflow-y:auto; background:#fff; border-radius:14px; padding:16px; box-shadow:0 6px 24px rgba(0,0,0,0.28); z-index:120; }
   .info-icon {
     width:58px; height:58px; margin:0 auto 12px; border-radius:50%;
     background:linear-gradient(135deg, #56ab2f, #a8e063); color:#fff;
@@ -74,23 +74,26 @@
   .history-head select { padding:6px 8px; border:1px solid #ddd; border-radius:8px; font-size:13px; background:#fff; color:#333; max-width:180px; }
   .history-more { text-align:center; margin-top:10px; }
   .history-more .btn { margin-top:0; padding:8px; font-size:13px; }
-  .top { position:relative; }
-  /* 顶部文字预留用户区空间，避免与头像/昵称/按钮重叠 */
+  .top { position:relative; padding: 20px 16px 64px; }
+  /* 顶部文字预留用户区空间，避免与头像/铃铛/按钮重叠 */
   .top h2, .top .sub { padding-right: 170px; }
-  .user-area { position:absolute; top:8px; right:8px; display:flex; flex-direction:column; align-items:flex-end; gap:4px; z-index:20; background:rgba(255,255,255,0.88); border-radius:14px; padding:8px 10px; box-shadow:0 2px 10px rgba(0,0,0,0.18); }
-  .user-avatar { width:46px; height:46px; border-radius:50%; background:#fff; color:#e07b00; font-size:24px; display:flex; align-items:center; justify-content:center; overflow:hidden; border:2px solid #fff; cursor:pointer; }
+  /* 用户区：一行排列（铃铛线条 + 头像 + Login/Logout），透明无背景框，位于 Order Number 上方 */
+  .user-area { position:absolute; top:8px; right:10px; display:flex; flex-direction:row; align-items:center; justify-content:flex-end; gap:8px; flex-wrap:nowrap; z-index:8; background:transparent; border-radius:0; padding:0; box-shadow:none; }
+  .user-avatar { width:38px; height:38px; border-radius:50%; background:transparent; color:#fff; font-size:22px; display:flex; align-items:center; justify-content:center; overflow:hidden; border:none; cursor:pointer; box-shadow:none; margin:0; padding:0; }
   .user-avatar img { width:100%; height:100%; object-fit:cover; }
-  .user-name { font-size:12px; color:#fff; font-weight:bold; max-width:130px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .user-name { display:none; }
   .user-btns { display:flex; gap:6px; white-space:nowrap; }
-  .user-btns button { padding:4px 12px; border:none; border-radius:8px; font-size:12px; cursor:pointer; }
+  .user-btns button { padding:4px 10px; border:none; border-radius:8px; font-size:12px; cursor:pointer; width:auto; margin:0; }
   .btn-login { background:#fff; color:#e07b00; font-weight:bold; }
-  .btn-logout { background:rgba(255,255,255,.92); color:#c62828; font-weight:bold; }
-  /* 用户区顶部一行：🔔 铃铛 + 🔊 声音开关 + 👤 头像 左右排列，禁止重叠 */
-  .user-top { display:flex; flex-direction:row; align-items:center; justify-content:flex-end; gap:6px; flex-wrap:nowrap; }
+  .btn-logout { background:#fff; color:#c62828; font-weight:bold; }
+  /* 铃铛：线条图标（SVG），无背景框、无边框、无阴影 */
   .bell-wrap { display:flex; align-items:center; gap:4px; flex-shrink:0; }
-  .bell-btn { position:relative; width:44px; height:44px; border-radius:50%; background:#fff; border:none; font-size:22px; cursor:pointer; display:flex; align-items:center; justify-content:center; box-shadow:0 2px 6px rgba(0,0,0,0.2); }
-  .bell-badge { position:absolute; top:-4px; right:-4px; min-width:18px; height:18px; border-radius:10px; background:#d32f2f; color:#fff; font-size:11px; font-weight:bold; display:flex; align-items:center; justify-content:center; padding:0 4px; }
+  .bell-btn { position:relative; width:40px; height:40px; border-radius:50%; background:transparent; border:none; font-size:0; cursor:pointer; display:flex; align-items:center; justify-content:center; box-shadow:none; margin:0; padding:0; color:#fff; }
+  .bell-btn svg { width:24px; height:24px; }
+  .bell-badge { position:absolute; top:-2px; right:-2px; min-width:18px; height:18px; border-radius:10px; background:#d32f2f; color:#fff; font-size:11px; font-weight:bold; display:flex; align-items:center; justify-content:center; padding:0 4px; }
   .sound-toggle { width:30px; height:30px; border-radius:50%; border:none; background:rgba(255,255,255,.92); font-size:15px; cursor:pointer; display:flex; align-items:center; justify-content:center; box-shadow:0 2px 6px rgba(0,0,0,0.15); }
+  /* 铃铛通知弹层：正中央显示 */
+  .bell-pop { position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); width:min(92vw,360px); max-height:70vh; overflow-y:auto; background:#fff; border-radius:14px; padding:16px; box-shadow:0 6px 24px rgba(0,0,0,0.28); z-index:120; }
   .bell-item { background:#f9f9f9; border:1px solid #eee; border-radius:10px; padding:12px; margin:10px 0; text-align:left; font-size:13px; line-height:2; color:#333; }
   .bell-item.unread { background:#fff8e1; border-color:#ffd54f; }
   .bell-item b { color:#e07b00; }
@@ -125,13 +128,17 @@
 <body>
   <div class="top">
     <div class="user-area">
-      <div class="user-top">
-        <div class="bell-wrap" id="bellWrap" style="display:none">
-          <button class="bell-btn" id="bellBtn" onclick="toggleBellPanel()" title="Notifications">🔔<span class="bell-badge" id="bellBadge" style="display:none">0</span></button>
-        </div>
-        <div class="user-avatar" id="userAvatar" title="Upload avatar">
-          <span id="userAvatarIcon">👤</span>
-        </div>
+      <div class="bell-wrap" id="bellWrap" style="display:none">
+        <button class="bell-btn" id="bellBtn" onclick="toggleBellPanel()" title="Notifications">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
+            <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
+          </svg>
+          <span class="bell-badge" id="bellBadge" style="display:none">0</span>
+        </button>
+      </div>
+      <div class="user-avatar" id="userAvatar" title="Upload avatar">
+        <span id="userAvatarIcon">👤</span>
       </div>
       <div class="user-name" id="userName">-</div>
       <div class="user-btns">
@@ -261,8 +268,57 @@
 
   <div id="map"></div>
 
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" onerror="var s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js';document.head.appendChild(s);"></script>
 <script>
+// Leaflet 三源动态加载：unpkg 主源失败自动切换 jsdelivr / cdnjs，杜绝地图白屏
+var _leafletLoading = false;
+function ensureLeaflet(cb) {
+  if (typeof L !== "undefined") { cb(); return; }
+  if (_leafletLoading) { setTimeout(function () { ensureLeaflet(cb); }, 250); return; }
+  _leafletLoading = true;
+  var urls = [
+    "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js",
+    "https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js",
+    "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"
+  ];
+  var i = 0;
+  function next() {
+    if (typeof L !== "undefined") { cb(); return; }
+    if (i >= urls.length) {
+      showErr("Map library failed to load. Please check your network and refresh.");
+      return;
+    }
+    var s = document.createElement("script");
+    s.src = urls[i++];
+    s.onload = function () { cb(); };
+    s.onerror = function () { next(); };
+    document.head.appendChild(s);
+  }
+  next();
+}
+// 地图瓦片多源回退：OSM 主源加载失败自动切换 CARTO / OSM.de，杜绝地图空白
+function addTileLayerWithFallback(mapObj) {
+  var sources = [
+    { url: "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", opt: { attribution: "&copy; OpenStreetMap contributors", maxZoom: 19 } },
+    { url: "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png", opt: { attribution: "&copy; CARTO", maxZoom: 19 } },
+    { url: "https://tile.openstreetmap.de/{z}/{x}/{y}.png", opt: { attribution: "&copy; OpenStreetMap", maxZoom: 19 } }
+  ];
+  var idx = 0, fails = 0, layer = null;
+  function add() {
+    if (idx >= sources.length) return;
+    var src = sources[idx];
+    layer = L.tileLayer(src.url, Object.assign({}, src.opt));
+    layer.on("tileerror", function () {
+      fails++;
+      if (fails >= 5) {
+        fails = 0; idx++;
+        if (layer) mapObj.removeLayer(layer);
+        add();
+      }
+    });
+    layer.addTo(mapObj);
+  }
+  add();
+}
 var map = null;
 var marker = null;
 var trackLine = null;
@@ -326,9 +382,16 @@ function render(j) {
   var latLngs = (j.track || []).map(function(p) { return [p.lat, p.lng]; });
   var DEFAULT_CENTER = [16.8661, 96.1951]; // 仰光默认视野
 
-  // Leaflet 库加载失败防护（CDN 被拦截时给明确提示，避免整页 JS 中断）
+  // Leaflet 库加载失败防护：动态加载三源 CDN 后自动重试，避免地图白屏
   if (typeof L === "undefined") {
-    showErr("Map library failed to load. Please check your network and refresh.");
+    showErr("Map library loading, please wait...");
+    ensureLeaflet(function () {
+      if (typeof L !== "undefined" && currentOrderNo) {
+        render(j);
+      } else {
+        showErr("Map library failed to load. Please check your network and refresh.");
+      }
+    });
     return;
   }
 
@@ -336,9 +399,7 @@ function render(j) {
   if (!map) {
     try {
       map = L.map("map").setView(latLngs.length > 0 ? latLngs[0] : DEFAULT_CENTER, 15);
-      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-        attribution: "&copy; OpenStreetMap contributors", maxZoom: 19
-      }).addTo(map);
+      addTileLayerWithFallback(map);
     } catch (e) {
       showErr("Map init failed: " + (e && e.message ? e.message : e));
       return;
@@ -737,17 +798,18 @@ async function loadNotifications() {
     var badge = document.getElementById("bellBadge");
     if (unread > 0) { badge.textContent = unread; badge.style.display = "flex"; }
     else { badge.style.display = "none"; }
-    // 仅当检测到「新」通知且页面早已初始化（非首轮）时语音播报
-    if (fresh.length > 0 && _bellKnownCount > 0) speakNewOrder();
+    // 新通知播报：首轮若存在未读通知也播报一次（商家进入页面能听到提醒），之后仅播报新到的通知
+    if (fresh.length > 0 && (_bellKnownCount > 0 || unread > 0)) speakNewOrder();
     _bellKnownCount = Object.keys(_bellKnownIds).length;
-    if (document.getElementById("bellModal").style.display === "block") renderBellList(_bellListCache);
+    if (document.getElementById("bellModal").style.display === "flex") renderBellList(_bellListCache);
   } catch (e) {}
 }
 function toggleBellPanel() {
   var m = document.getElementById("bellModal");
-  if (m.style.display === "block") { closeBellPanel(); return; }
-  m.style.display = "block";
+  if (m.style.display === "flex") { closeBellPanel(); return; }
+  m.style.display = "flex"; // flex 配合 .modal-overlay 居中显示在页面正中央
   renderBellList(_bellListCache);
+  loadNotifications(); // 打开时刷新最新通知列表（拉取成功后自动重渲染）
   markAllRead();
 }
 function closeBellPanel() {
@@ -755,7 +817,7 @@ function closeBellPanel() {
 }
 document.addEventListener("click", function (e) {
   var m = document.getElementById("bellModal");
-  if (!m || m.style.display !== "block") return;
+  if (!m || m.style.display !== "flex") return;
   var inPanel = m.contains(e.target);
   var bell = document.getElementById("bellBtn");
   var inBell = bell && bell.contains(e.target);
@@ -780,7 +842,7 @@ function startBellPoll() {
   var wrap = document.getElementById("bellWrap");
   if (wrap) wrap.style.display = "flex";
   updateSoundButtons();
-  _bellKnownCount = 0; // 首轮只记录历史，不播报
+  _bellKnownCount = 0; // 首轮有未读时也会播报提醒，之后仅播报新到通知
   loadNotifications();
   if (!_bellPollTimer) _bellPollTimer = setInterval(loadNotifications, 5000);
 }

@@ -355,6 +355,14 @@ async function doConfirmState() {
   document.getElementById("curStatus").textContent = state.status;
   disableStatusButton(state.pendingStatus);
   saveLockLocal();
+  // 立即同步订单状态到后端（不依赖 GPS 上报），保证商家页与 Order History 状态一致
+  try {
+    await fetch("/api/rider/status", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ order_no: state.orderNo, phone: state.phone, status: state.status })
+    });
+  } catch (e) {}
   if (state.curLat !== null && state.curLat !== undefined) {
     reportLocation(state.curLat, state.curLng, state.status);
   }

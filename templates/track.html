@@ -184,9 +184,12 @@
     <span class="status-tag st-ပို့ဆောင်နေသည်" id="rStatusTag">ပို့ဆောင်နေသည်</span><br>
     ပို့ရမည့်လိပ်စာ：<span id="rAddress"></span><br>
     ပို့ဆောင်သူ နောက်ဆုံးတည်နေရာ အချိန်：<b id="rTime"></b><br>
+    城市：<b id="rCity"></b><br>
     ပို့ဆောင်သူ နောက်ဆုံးတည်နေရာ：<b id="rLatest"></b><br>
     ပို့ဆောင်သူ ကျန်ရှိသော ပေါက်စီအလုံးအရေတွက်：<b id="rBaozi"></b><br>
     ပို့ဆောင်သူ ကျန်ရှိသော ဆိုင်အရေတွက်：<b id="rShop"></b><br>
+    ငွေပေးချေမှုနည်းလမ်း：<b id="rPayment"></b><br>
+    Amount (MMK)：<b id="rAmount"></b><br>
     အချက်အလက်：စာမျက်နှာသည် ၅ စက္ကန့်တိုင်း အလိုအလျောက် ပြန်လည်တင်ပေးသည်
   </div>
 
@@ -268,9 +271,12 @@ function render(j) {
   document.getElementById("rCustomer").textContent = j.rider_name || "Delivery";
   document.getElementById("rAddress").textContent = j.delivery_address || j.address || "မဖြည့်ထားပါ";
   document.getElementById("rTime").textContent = j.update_time || "-";
+  document.getElementById("rCity").textContent = j.city || "-";
   document.getElementById("rLatest").textContent = j.latest ? (j.latest.address || (j.latest.lat.toFixed(6) + ", " + j.latest.lng.toFixed(6))) : "-";
   document.getElementById("rBaozi").textContent = (j.baozi_remaining !== undefined && j.baozi_remaining !== null) ? (j.baozi_remaining + " / " + (j.baozi_total || 0)) : "-";
   document.getElementById("rShop").textContent = (j.shop_remaining !== undefined && j.shop_remaining !== null) ? (j.shop_remaining + " / " + (j.shop_total || 0)) : "-";
+  document.getElementById("rPayment").textContent = j.payment_method || "-";
+  document.getElementById("rAmount").textContent = j.amount || "-";
 
   // 快递员未选择状态前显示 "-"（不显示配送中）
   var tag = document.getElementById("rStatusTag");
@@ -452,10 +458,13 @@ function renderHistory() {
       + 'ပို့ဆောင်သူ ဖုန်းနံပါတ်：<b>' + (h.rider_phone || "-") + '</b><br>'
       + 'လက်ရှိOrder Number：<b>' + h.order_no + '</b><br>'
       + 'လက်ရှိအခြေအနေ：<b>' + ((h.status && h.status !== "待取餐") ? h.status : "-") + '</b><br>'
+      + '城市：<b>' + (h.city || "-") + '</b><br>'
       + 'ပို့ဆောင်သူ နောက်ဆုံးတည်နေရာ：<b>' + loc + '</b><br>'
       + 'ပို့ရမည့်ဆိုင်လိပ်စာ：<b>' + (h.delivery_address || "-") + '</b><br>'
       + 'ကျန်ရှိသောပေါက်စီအလုံးအရေတွက်：<b>' + h.baozi_remaining + ' / ' + h.baozi_total + '</b><br>'
       + 'ကျန်ရှိသောဆိုင်အရေတွက်：<b>' + h.shop_remaining + ' / ' + h.shop_total + '</b><br>'
+      + 'ငွေပေးချေမှုနည်းလမ်း：<b>' + (h.payment_method || "-") + '</b><br>'
+      + 'Amount (MMK)：<b>' + (h.amount || "-") + '</b><br>'
       + 'နောက်ဆုံး တင်ပြချိန်：<b>' + lastT + '</b>'
       + '</div>';
   });

@@ -27,6 +27,10 @@
     font-size:15px; outline:none;
   }
   input:focus { border-color:#fda085; }
+  #citySelect {
+    width:100%; padding:10px; border:1px solid #ddd; border-radius:8px;
+    font-size:15px; outline:none; background:#fff; color:#333;
+  }
   .btn {
     display:block; width:100%; padding:12px; border:none; border-radius:10px;
     font-size:16px; cursor:pointer; margin-top:14px; color:#fff;
@@ -145,6 +149,18 @@
     <input id="baoziCount" placeholder="ပေါက်စီ အရေအတွက် ထည့်ပါ" type="number" min="0">
     <label>ဆိုင်အရေအတွက်</label>
     <input id="shopCount" placeholder="ဆိုင် အရေအတွက် ထည့်ပါ" type="number" min="0">
+    <label>မြို့</label>
+    <select id="citySelect">
+      <option value="">မြို့ ရွေးချယ်ပါ</option>
+      <option value="အင်းစိန်">အင်းစိန်</option>
+      <option value="ရန်ကင်း">ရန်ကင်း</option>
+      <option value="ဗဟန်း">ဗဟန်း</option>
+      <option value="ဗိုလ်တထောင်">ဗိုလ်တထောင်</option>
+      <option value="သာကေတ">သာကေတ</option>
+      <option value="သန်လျှင်">သန်လျှင်</option>
+      <option value="တောင်ဒဂုံ">တောင်ဒဂုံ</option>
+      <option value="မြောက်ဒဂုံ">မြောက်ဒဂုံ</option>
+    </select>
     <label>ပို့ရမည့်ဆိုင်လိပ်စာ：</label>
     <input id="deliveryAddress" placeholder="ပို့ရမည့် ဆိုင်လိပ်စာ ထည့်ပါ">
     <label>Order Number</label>
@@ -160,6 +176,7 @@
       <span class="dot"></span>Date：<b id="curDate">-</b><br>
       <span class="dot"></span>လက်ရှိOrder Number：<b id="curOrder"></b><br>
       <span class="dot"></span>လက်ရှိအခြေအနေ：<b id="curStatus">-</b><br>
+      <span class="dot"></span>城市：<b id="curCity">-</b><br>
       <span class="dot"></span>လက်ရှိနေရာ:<span id="curLocation">-</span><br>
       <span class="dot"></span>ကျန်ရှိသောပေါက်စီအလုံးအရေတွက်：<span id="curBaozi">-</span><br>
       <span class="dot"></span>ကျန်ရှိသောဆိုင်အရေတွက်：<span id="curShop">-</span><br>
@@ -208,13 +225,13 @@
           <span id="paySelectedText">Select payment method</span>
         </div>
         <div class="pay-menu" id="payMenu" style="display:none">
-          <div class="pay-option" data-value="KBZPay" onclick="choosePay(this)">
+          <div class="pay-option" data-value="KBZPay" onclick="choosePay(event, this)">
             <img class="pay-logo" src="https://i.pinimg.com/1200x/16/c3/c2/16c3c27e082278d0c6966a494e25832d.jpg" alt="KBZPay"> KBZPay
           </div>
-          <div class="pay-option" data-value="WaveMoney" onclick="choosePay(this)">
+          <div class="pay-option" data-value="WaveMoney" onclick="choosePay(event, this)">
             <img class="pay-logo" src="https://i.pinimg.com/736x/79/45/0b/79450bab7ed45e1e00df82e51007bbb0.jpg" alt="WaveMoney"> WaveMoney
           </div>
-          <div class="pay-option" data-value="Cash" onclick="choosePay(this)">
+          <div class="pay-option" data-value="Cash" onclick="choosePay(event, this)">
             <img class="pay-logo" src="https://i.pinimg.com/1200x/9e/61/70/9e6170243e6fea37f02c4a29b3cc08bd.jpg" alt="Cash"> Cash
           </div>
         </div>
@@ -255,6 +272,7 @@
 <script>
 var state = {
   orderNo: "", phone: "", name: "", status: "",
+  city: "",
   statusLocked: false, pendingStatus: "",
   confirmedStatuses: [],
   gpsTimer: null, simTimer: null, refreshTimer: null, gpsWatchId: null,
@@ -293,13 +311,15 @@ async function bindOrder() {
     var baoziTotal = document.getElementById("baoziCount").value.trim();
     var shopTotal = document.getElementById("shopCount").value.trim();
     var deliveryAddress = document.getElementById("deliveryAddress").value.trim();
+    var city = document.getElementById("citySelect").value;
     var r = await fetch("/api/rider/bind", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({
         name: name, phone: phone, order_no: orderNo,
         rider_name: name, baozi_total: baoziTotal || 0,
-        shop_total: shopTotal || 0, delivery_address: deliveryAddress
+        shop_total: shopTotal || 0, delivery_address: deliveryAddress,
+        city: city
       })
     });
     var j = await r.json();
@@ -308,6 +328,7 @@ async function bindOrder() {
     state.orderNo = orderNo;
     state.phone = phone;
     state.name = name;
+    state.city = city || "";
     // 新订单绑定：重置状态锁定，保证上一单完成后可重新ချိတ်ဆက်
     state.statusLocked = false;
     state.pendingStatus = "";
@@ -317,6 +338,7 @@ async function bindOrder() {
     document.getElementById("reportPanel").style.display = "block";
     document.getElementById("curOrder").textContent = orderNo;
     document.getElementById("curDate").textContent = formatEnglishDate(new Date());
+    document.getElementById("curCity").textContent = state.city || "-";
     document.getElementById("bindBtn").disabled = true;
     document.getElementById("bindBtn").textContent = "ချိတ်ဆက်ပြီးပါပြီ";
     showInfo("ချိတ်ဆက်မှု အောင်မြင်ပါသည်။ GPS ဖွင့်ပြီး တည်နေရာ တင်နေပါသည်");
@@ -376,7 +398,8 @@ function saveLockLocal() {
     var d = new Date();
     localStorage.setItem("riderLock_" + state.phone, JSON.stringify({
       order_no: state.orderNo, status: state.status, locked: state.statusLocked,
-      date: d.toISOString(), name: state.name, confirmed: state.confirmedStatuses || []
+      date: d.toISOString(), name: state.name, city: state.city || "",
+      confirmed: state.confirmedStatuses || []
     }));
   } catch (e) {}
 }
@@ -481,7 +504,8 @@ function togglePayMenu(ev) {
   var m = document.getElementById("payMenu");
   m.style.display = (m.style.display === "none") ? "block" : "none";
 }
-function choosePay(el) {
+function choosePay(ev, el) {
+  if (ev) ev.stopPropagation();
   document.getElementById("confirmPayment").value = el.getAttribute("data-value");
   document.getElementById("paySelectedText").textContent = el.textContent.trim();
   document.getElementById("paySelectedLogo").src = el.querySelector("img").src;
@@ -540,6 +564,7 @@ function resetAfterCompletion() {
   if (state.simTimer) { clearInterval(state.simTimer); state.simTimer = null; }
   // 重置状态，允许重新绑定/创建新订单
   state.orderNo = ""; state.phone = ""; state.status = ""; state.statusLocked = false; state.pendingStatus = "";
+  state.city = "";
   state.confirmedStatuses = []; state.curLat = null; state.curLng = null;
   // 恢复绑定表单
   document.getElementById("reportPanel").style.display = "none";
@@ -549,6 +574,7 @@ function resetAfterCompletion() {
   document.getElementById("curOrder").textContent = "";
   document.getElementById("curStatus").textContent = "-";
   document.getElementById("curStatus").style.color = "";
+  document.getElementById("curCity").textContent = "-";
   document.getElementById("curLocation").textContent = "-";
   document.getElementById("curBaozi").textContent = "-";
   document.getElementById("curShop").textContent = "-";
@@ -713,6 +739,7 @@ async function refreshRiderInfo() {
     }
     // 位置显示地名（反向地理编码），失败时回退经纬度
     document.getElementById("curLocation").textContent = j.latest ? (j.latest.address || (j.latest.lat.toFixed(6) + ", " + j.latest.lng.toFixed(6))) : "-";
+    document.getElementById("curCity").textContent = (j.city && j.city !== "") ? j.city : "-";
     document.getElementById("curBaozi").textContent = (j.baozi_total - j.baozi_received) + " / " + j.baozi_total;
     document.getElementById("curShop").textContent = (j.shop_total - j.shop_received) + " / " + j.shop_total;
     // 商家关闭 GPS 后：立即停止本端上报（GPS 停止），且不能自行重新开启
@@ -740,10 +767,16 @@ async function refreshRiderInfo() {
     state.status = saved.status || "";
     state.statusLocked = true;
     state.confirmedStatuses = saved.confirmed || (saved.status ? [saved.status] : []);
+    state.city = saved.city || "";
     document.getElementById("reportPanel").style.display = "block";
     document.getElementById("curOrder").textContent = saved.order_no;
     document.getElementById("curDate").textContent = formatEnglishDate(saved.date || new Date().toISOString());
     document.getElementById("curStatus").textContent = saved.status || "-";
+    if (saved.city) {
+      document.getElementById("curCity").textContent = saved.city;
+      var citySel = document.getElementById("citySelect");
+      if (citySel && citySel.value !== saved.city) citySel.value = saved.city;
+    }
     document.getElementById("orderNo").value = saved.order_no;
     document.getElementById("bindBtn").disabled = true;
     document.getElementById("bindBtn").textContent = "ချိတ်ဆက်ပြီးပါပြီ";

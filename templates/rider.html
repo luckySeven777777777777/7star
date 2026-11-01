@@ -247,8 +247,16 @@
       </div>
       <label>Enter Amount MMK</label>
       <input id="confirmAmount" type="number" min="0" placeholder="Enter Amount MMK">
+      <label>Upload / Take Photo 📷</label>
+      <input type="file" id="proofFile" accept="image/*" capture="environment" style="display:none" onchange="uploadProof(event)">
       <div class="row2">
-        <button class="btn btn-green" onclick="doConfirmDelivered()">Confirm ✅</button>
+        <button class="btn btn-gray" onclick="document.getElementById('proofFile').click()">Upload / Take Photo 📷</button>
+        <button class="btn btn-gray" id="proofRemoveBtn" onclick="clearProof()">Remove</button>
+      </div>
+      <img id="proofPreview" style="width:100%; max-height:180px; object-fit:cover; border-radius:8px; margin-top:6px; display:none" alt="proof photo">
+      <div class="sub" id="proofStatus" style="color:#e07b00; margin-top:4px;">Photo not uploaded yet</div>
+      <div class="row2">
+        <button class="btn btn-green" id="confirmOkBtn" onclick="doConfirmDelivered()" disabled>Confirm ✅</button>
         <button class="btn btn-gray" onclick="closeConfirmModal()">Cancel ❌</button>
       </div>
     </div>
@@ -373,12 +381,35 @@ function setShop(lat, lng, linkText) {
     }
   }
 }
+var routeReqInFlight = false;
+function drawRouteLine(coords) {
+  if (!riderMap) return;
+  if (routeLine) riderMap.removeLayer(routeLine);
+  routeLine = L.polyline(coords, { color: "#2e9e44", weight: 5, opacity: 0.9 }).addTo(riderMap);
+}
 function updateRoute() {
   if (state.curLat === null || shopLat === null || !riderMap) return;
-  if (routeLine) riderMap.removeLayer(routeLine);
-  routeLine = L.polyline([[state.curLat, state.curLng], [shopLat, shopLng]], {
-    color: "#2e9e44", weight: 5, opacity: 0.9
-  }).addTo(riderMap);
+  // 按真实道路规划路线（OSRM），失败时回退为直线
+  if (routeReqInFlight) return;
+  routeReqInFlight = true;
+  var url = "https://router.project-osrm.org/route/v1/driving/" +
+    state.curLng + "," + state.curLat + ";" + shopLng + "," + shopLat +
+    "?overview=full&geometries=geojson";
+  fetch(url)
+    .then(function (resp) { return resp.json(); })
+    .then(function (d) {
+      if (d && d.routes && d.routes.length) {
+        var coords = d.routes[0].geometry.coordinates.map(function (p) { return [p[1], p[0]]; });
+        drawRouteLine(coords);
+      } else {
+        drawRouteLine([[state.curLat, state.curLng], [shopLat, shopLng]]);
+      }
+      routeReqInFlight = false;
+    })
+    .catch(function () {
+      drawRouteLine([[state.curLat, state.curLng], [shopLat, shopLng]]);
+      routeReqInFlight = false;
+    });
 }
 function updateRiderMarker() {
   if (state.curLat === null || state.curLat === undefined) return;
@@ -620,6 +651,7 @@ function confirmDelivered() {
   document.getElementById("confirmAddress").value = "";
   document.getElementById("confirmAmount").value = "";
   resetPaySelect();
+  resetProof();
 }
 function closeConfirmModal() {
   document.getElementById("confirmModal").style.display = "none";
@@ -647,7 +679,58 @@ document.addEventListener("click", function () {
   var m = document.getElementById("payMenu");
   if (m) m.style.display = "none";
 });
+// ---------- 收货凭证照片上传（上传成功后才允许 Confirm ✅） ----------
+var proofUploaded = false;
+var proofUrl = "";
+function resetProof() {
+  proofUploaded = false; proofUrl = "";
+  var f = document.getElementById("proofFile");
+  if (f) f.value = "";
+  var p = document.getElementById("proofPreview");
+  if (p) { p.style.display = "none"; p.removeAttribute("src"); }
+  var s = document.getElementById("proofStatus");
+  if (s) s.textContent = "Photo not uploaded yet";
+  var b = document.getElementById("confirmOkBtn");
+  if (b) b.disabled = true;
+}
+function uploadProof(ev) {
+  var file = ev.target.files && ev.target.files[0];
+  if (!file) return;
+  if (!state.orderNo) { showInfo("No active order"); resetProof(); return; }
+  var fd = new FormData();
+  fd.append("order_no", state.orderNo);
+  fd.append("phone", state.phone || "");
+  fd.append("photo", file);
+  var s = document.getElementById("proofStatus");
+  s.textContent = "Uploading...";
+  fetch("/api/upload/proof", { method: "POST", body: fd })
+    .then(function (r) { return r.json(); })
+    .then(function (j) {
+      if (!j.ok) {
+        s.textContent = j.msg || "Upload failed, try again";
+        resetProof();
+        showInfo(j.msg || "Upload failed, try again");
+        return;
+      }
+      proofUploaded = true;
+      proofUrl = j.url || "";
+      var p = document.getElementById("proofPreview");
+      if (p) { p.src = proofUrl; p.style.display = "block"; }
+      s.textContent = "Photo uploaded ✓ (notified to Telegram)";
+      var b = document.getElementById("confirmOkBtn");
+      if (b) b.disabled = false;
+    })
+    .catch(function () {
+      s.textContent = "Upload failed, check server";
+      resetProof();
+      showInfo("Upload failed, check server connection");
+    });
+}
+function clearProof() {
+  resetProof();
+}
 async function doConfirmDelivered() {
+  if (!proofUploaded) { showInfo("Please upload / take photo first"); return; }
   var baozi = parseInt(document.getElementById("confirmBaozi").value) || 0;
   var address = document.getElementById("confirmAddress").value.trim();
   var paymentMethod = document.getElementById("confirmPayment").value;

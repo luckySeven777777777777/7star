@@ -169,6 +169,8 @@
       <input id="shopLocationLink" placeholder="Google Maps Link (e.g. https://maps.app.goo.gl/...)" style="flex:1; min-width:0">
       <input id="shopLocationCoords" placeholder="Coordinates (e.g. 16.856040, 96.238359)" style="flex:1; min-width:0">
     </div>
+    <button class="btn btn-gray" id="updateShopBtn" onclick="updateShopLocation()">Update Shop Location</button>
+    <div class="sub" id="shopHint" style="display:none; color:#e07b00; margin-top:6px;">Shop location missing — enter Google Maps Link / Coordinates above and tap "Update Shop Location" to show marker & route</div>
     <label>Order Number</label>
     <input id="orderNo" placeholder="ဥပမာ - BZ1001102030">
     <div class="row2">
@@ -325,6 +327,30 @@ function resolveShopLocation() {
   var c = parseCoordsText(document.getElementById("shopLocationCoords").value);
   if (c) return c;
   return parseLinkCoords(document.getElementById("shopLocationLink").value);
+}
+async function updateShopLocation() {
+  if (!state.orderNo) { showInfo("Bind an order first"); return; }
+  var link = document.getElementById("shopLocationLink").value.trim();
+  var coords = document.getElementById("shopLocationCoords").value.trim();
+  if (!link && !coords) { showInfo("Enter Google Maps Link or Coordinates"); return; }
+  try {
+    var r = await fetch("/api/rider/update-shop", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ order_no: state.orderNo, phone: state.phone, shop_location_link: link, shop_location_coords: coords })
+    });
+    var j = await r.json();
+    if (!j.ok) { showInfo(j.msg || "Update failed"); return; }
+    if (j.shop_lat !== null && j.shop_lat !== undefined) {
+      setShop(j.shop_lat, j.shop_lng, j.shop_link || "");
+      document.getElementById("shopHint").style.display = "none";
+      showInfo("Shop location updated - marker & route shown");
+    } else {
+      showInfo("Cannot resolve shop location, check link/coords");
+    }
+  } catch (e) {
+    showInfo("Server unreachable");
+  }
 }
 function shopIcon() {
   return L.divIcon({
@@ -505,9 +531,15 @@ async function bindOrder() {
     showRiderMap();
     if (j.shop_lat !== null && j.shop_lat !== undefined) {
       setShop(j.shop_lat, j.shop_lng, j.shop_link || "");
+      document.getElementById("shopHint").style.display = "none";
     } else {
       var shopC = resolveShopLocation();
-      if (shopC) setShop(shopC[0], shopC[1], shopLocationLink);
+      if (shopC) {
+        setShop(shopC[0], shopC[1], shopLocationLink);
+        document.getElementById("shopHint").style.display = "none";
+      } else {
+        document.getElementById("shopHint").style.display = "block";
+      }
     }
     showInfo("ချိတ်ဆက်မှု အောင်မြင်ပါသည်။ GPS ဖွင့်ပြီး တည်နေရာ တင်နေပါသည်");
     // GPS 强制开启：绑定成功后自动开启，快递员端不可关闭（仅 track 商家页可关）
@@ -787,6 +819,7 @@ function resetAfterCompletion() {
   state.orderNo = ""; state.phone = ""; state.status = ""; state.statusLocked = false; state.pendingStatus = "";
   state.city = "";
   state.confirmedStatuses = []; state.curLat = null; state.curLng = null;
+  document.getElementById("shopHint").style.display = "none";
   // 恢复绑定表单
   document.getElementById("reportPanel").style.display = "none";
   document.getElementById("orderNo").value = "";
@@ -966,6 +999,15 @@ async function refreshRiderInfo() {
     // 商家位置同步到骑手端地图（刷新/恢复后重新绘制商家 marker）
     if (j.shop_lat !== null && j.shop_lat !== undefined && (shopLat !== j.shop_lat || shopLng !== j.shop_lng)) {
       setShop(j.shop_lat, j.shop_lng, j.shop_link || "");
+      document.getElementById("shopHint").style.display = "none";
+    } else if (shopLat === null) {
+      var shopC = resolveShopLocation();
+      if (shopC) {
+        setShop(shopC[0], shopC[1], "");
+        document.getElementById("shopHint").style.display = "none";
+      } else {
+        document.getElementById("shopHint").style.display = "block";
+      }
     }
     // 位置显示地名（反向地理编码），失败时回退经纬度
     document.getElementById("curLocation").textContent = j.latest ? (j.latest.address || (j.latest.lat.toFixed(6) + ", " + j.latest.lng.toFixed(6))) : "-";

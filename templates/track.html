@@ -72,10 +72,37 @@
   .history-head select { padding:6px 8px; border:1px solid #ddd; border-radius:8px; font-size:13px; background:#fff; color:#333; max-width:180px; }
   .history-more { text-align:center; margin-top:10px; }
   .history-more .btn { margin-top:0; padding:8px; font-size:13px; }
+  .top { position:relative; }
+  .user-area { position:absolute; top:12px; right:12px; display:flex; flex-direction:column; align-items:center; gap:4px; z-index:5; }
+  .user-avatar { width:46px; height:46px; border-radius:50%; background:#fff; color:#e07b00; font-size:24px; display:flex; align-items:center; justify-content:center; overflow:hidden; border:2px solid #fff; cursor:pointer; }
+  .user-avatar img { width:100%; height:100%; object-fit:cover; }
+  .user-name { font-size:12px; color:#fff; font-weight:bold; max-width:130px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .user-btns { display:flex; gap:6px; }
+  .user-btns button { padding:4px 12px; border:none; border-radius:8px; font-size:12px; cursor:pointer; }
+  .btn-login { background:#fff; color:#e07b00; font-weight:bold; }
+  .btn-logout { background:rgba(255,255,255,.92); color:#c62828; font-weight:bold; }
+  .admin-panel {
+    background:#fff8f0; border:1px solid #ffe0b2; border-radius:12px;
+    padding:14px 16px; margin-top:14px;
+  }
+  .admin-panel h3 { margin:0 0 8px; font-size:15px; color:#e07b00; }
+  .admin-panel hr { border:none; border-top:1px solid #ffe0b2; margin:14px 0; }
+  .admin-panel .btn { margin-top:10px; }
 </style>
 </head>
 <body>
   <div class="top">
+    <div class="user-area">
+      <div class="user-avatar" id="userAvatar" title="Upload avatar">
+        <span id="userAvatarIcon">👤</span>
+      </div>
+      <div class="user-name" id="userName">-</div>
+      <div class="user-btns">
+        <button class="btn-login" id="btnLogin" onclick="goLogin()">Login</button>
+        <button class="btn-logout" id="btnLogout" onclick="doLogout()" style="display:none">Logout</button>
+      </div>
+    </div>
+    <input type="file" id="avatarInput" accept="image/*" style="display:none">
     <h2>📍 ပို့ဆောင်သူ တည်နေရာ ရှာဖွေခြင်း</h2>
     <div class="sub">Order Number + ပို့ဆောင်သူ ဖုန်းနံပါတ် + ပို့ဆောင်သူအမည် ထည့်၍ မည်သည့်နေရာရောက်နေသည်ကို အချိန်နှင့်တပြေးညီ ကြည့်ပါ</div>
   </div>
@@ -91,6 +118,31 @@
       <button id="searchBtn" onclick="search()">တည်နေရာ ရှာမည်</button>
       <button class="btn btn-gray" id="gpsBtn" onclick="toggleGpsModal()">GPS ထိန်းချုပ်ရန်</button>
       <button class="btn btn-gray" id="historyBtn" onclick="openHistory()">Order History</button>
+    </div>
+    <div class="admin-panel" id="adminPanel" style="display:none">
+      <h3>👑 Admin Panel</h3>
+
+      <label>Create Rider Account</label>
+      <input id="admUsername" placeholder="User Name" autocomplete="off">
+      <input id="admPassword" type="password" placeholder="Password" autocomplete="new-password">
+      <input id="admNickname" placeholder="Nickname (shown on rider page)" autocomplete="off">
+      <button class="btn btn-green" onclick="admCreate()">Create Account</button>
+
+      <hr>
+      <label>Change Password (forgot password)</label>
+      <select id="admUserSelect"></select>
+      <input id="admNewPass" type="password" placeholder="New Password" autocomplete="new-password">
+      <button class="btn" onclick="admResetPass()">Change Password</button>
+
+      <hr>
+      <label>Account Permission</label>
+      <select id="admStatusSelect"></select>
+      <div class="row2">
+        <button class="btn btn-on" onclick="admSetStatus('normal')">Enable Login</button>
+        <button class="btn btn-off" onclick="admSetStatus('banned')">Ban Login</button>
+        <button class="btn btn-gray" onclick="admSetStatus('deleted')">Delete Account</button>
+      </div>
+      <div class="gps-state" id="admMsg" style="display:none"></div>
     </div>
     <div class="err" id="err"></div>
   </div>
@@ -440,6 +492,138 @@ async function setGps(on) {
     showInfo("ဆာဗာနှင့် ချိတ်ဆက်၍ မရပါ");
   }
 }
+
+// ===== 登录/用户区（头像+昵称+Login/Logout） =====
+function getToken() { return localStorage.getItem("userToken") || ""; }
+function authHeaders() { var t = getToken(); return t ? { "Authorization": "Bearer " + t } : {}; }
+function goLogin() { location.href = "/login?next=" + encodeURIComponent(location.pathname); }
+async function doLogout() {
+  try { await fetch("/api/logout", { method: "POST", headers: authHeaders() }); } catch (e) {}
+  localStorage.removeItem("userToken");
+  location.href = "/login?next=" + encodeURIComponent(location.pathname);
+}
+function applyUser(u) {
+  var avatarEl = document.getElementById("userAvatar");
+  if (u.avatar) { avatarEl.innerHTML = '<img src="' + u.avatar + '" alt="avatar">'; }
+  else { avatarEl.innerHTML = '<span id="userAvatarIcon">👤</span>'; }
+  document.getElementById("userName").textContent = u.username || "-";
+  document.getElementById("btnLogin").style.display = "none";
+  document.getElementById("btnLogout").style.display = "block";
+}
+async function uploadAvatar(e) {
+  var f = e.target.files && e.target.files[0];
+  if (!f) return;
+  var fd = new FormData();
+  fd.append("avatar", f);
+  try {
+    var r = await fetch("/api/user/avatar", { method: "POST", headers: authHeaders(), body: fd });
+    var j = await r.json();
+    if (j.ok) {
+      var avatarEl = document.getElementById("userAvatar");
+      avatarEl.innerHTML = '<img src="' + j.avatar + '" alt="avatar">';
+      showInfo("Avatar updated.");
+    } else { showInfo(j.msg || "Upload failed."); }
+  } catch (err) { showInfo("Upload failed."); }
+}
+async function checkLogin() {
+  var avatarEl = document.getElementById("userAvatar");
+  var input = document.getElementById("avatarInput");
+  if (avatarEl) avatarEl.onclick = function () { if (input) input.click(); };
+  if (input) input.onchange = uploadAvatar;
+  try {
+    var r = await fetch("/api/user/me", { headers: authHeaders() });
+    var j = await r.json();
+    if (j.ok) {
+      applyUser(j);
+      if (j.role === "super_admin" || j.role === "admin") {
+        document.getElementById("adminPanel").style.display = "block";
+        loadAdminUsers();
+      }
+      return;
+    }
+  } catch (e) {}
+  // 未登录：Login 与 Logout 两个按键都显示
+  document.getElementById("btnLogin").style.display = "block";
+  document.getElementById("btnLogout").style.display = "block";
+  document.getElementById("userName").textContent = "-";
+}
+
+// ===== 管理员面板（超级管理员/管理员） =====
+function admMsg(text, isErr) {
+  var el = document.getElementById("admMsg");
+  el.style.display = "block";
+  el.style.color = isErr ? "#d32f2f" : "#2e7d32";
+  el.textContent = text;
+}
+function fillAdminSelects(users) {
+  [document.getElementById("admUserSelect"), document.getElementById("admStatusSelect")].forEach(function (sel) {
+    sel.innerHTML = "";
+    users.forEach(function (u) {
+      var opt = document.createElement("option");
+      opt.value = u.username;
+      opt.textContent = u.username + (u.nickname && u.nickname !== u.username ? " (" + u.nickname + ")" : "");
+      sel.appendChild(opt);
+    });
+  });
+}
+async function loadAdminUsers() {
+  try {
+    var r = await fetch("/api/admin/users", { headers: authHeaders() });
+    var j = await r.json();
+    if (j.ok) fillAdminSelects(j.users);
+  } catch (e) {}
+}
+async function admCreate() {
+  var username = document.getElementById("admUsername").value.trim();
+  var password = document.getElementById("admPassword").value;
+  var nickname = document.getElementById("admNickname").value.trim();
+  if (!username || !password) { admMsg("User Name and Password are required.", true); return; }
+  try {
+    var r = await fetch("/api/admin/user/create", {
+      method: "POST", headers: Object.assign({ "Content-Type": "application/json" }, authHeaders()),
+      body: JSON.stringify({ username: username, password: password, nickname: nickname })
+    });
+    var j = await r.json();
+    if (!j.ok) { admMsg(j.msg || "Create failed.", true); return; }
+    document.getElementById("admUsername").value = "";
+    document.getElementById("admPassword").value = "";
+    document.getElementById("admNickname").value = "";
+    admMsg("Rider account created: " + j.username);
+    loadAdminUsers();
+  } catch (e) { admMsg("Server error.", true); }
+}
+async function admResetPass() {
+  var username = document.getElementById("admUserSelect").value;
+  var pass = document.getElementById("admNewPass").value;
+  if (!username || !pass) { admMsg("Choose an account and enter new Password.", true); return; }
+  try {
+    var r = await fetch("/api/admin/user/password", {
+      method: "POST", headers: Object.assign({ "Content-Type": "application/json" }, authHeaders()),
+      body: JSON.stringify({ username: username, new_password: pass })
+    });
+    var j = await r.json();
+    if (!j.ok) { admMsg(j.msg || "Change failed.", true); return; }
+    document.getElementById("admNewPass").value = "";
+    admMsg("Password updated for " + username);
+  } catch (e) { admMsg("Server error.", true); }
+}
+async function admSetStatus(status) {
+  var username = document.getElementById("admStatusSelect").value;
+  if (!username) { admMsg("No rider account available.", true); return; }
+  if (status === "deleted" && !confirm("Delete account " + username + "? This cannot be undone.")) return;
+  if (status === "banned" && !confirm("Ban login for " + username + "?")) return;
+  try {
+    var r = await fetch("/api/admin/user/status", {
+      method: "POST", headers: Object.assign({ "Content-Type": "application/json" }, authHeaders()),
+      body: JSON.stringify({ username: username, status: status })
+    });
+    var j = await r.json();
+    if (!j.ok) { admMsg(j.msg || "Update failed.", true); return; }
+    admMsg("Account " + username + " set to " + status + ".");
+    loadAdminUsers();
+  } catch (e) { admMsg("Server error.", true); }
+}
+checkLogin();
 </script>
 </body>
 </html>

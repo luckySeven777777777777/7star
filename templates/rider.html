@@ -79,10 +79,30 @@
   .history-more .btn { margin-top:0; padding:8px; font-size:13px; }
   .status-box button:disabled { background:#eee; color:#bbb; cursor:not-allowed; border-color:#eee; }
   #confirmDeliveredBtn:disabled { background:#ccc; cursor:not-allowed; }
+  .top { position:relative; }
+  .user-area { position:absolute; top:12px; right:12px; display:flex; flex-direction:column; align-items:center; gap:4px; z-index:5; }
+  .user-avatar { width:46px; height:46px; border-radius:50%; background:#fff; color:#e07b00; font-size:24px; display:flex; align-items:center; justify-content:center; overflow:hidden; border:2px solid #fff; cursor:pointer; }
+  .user-avatar img { width:100%; height:100%; object-fit:cover; }
+  .user-name { font-size:12px; color:#fff; font-weight:bold; max-width:130px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .user-btns { display:flex; gap:6px; }
+  .user-btns button { padding:4px 12px; border:none; border-radius:8px; font-size:12px; cursor:pointer; }
+  .btn-login { background:#fff; color:#e07b00; font-weight:bold; }
+  .btn-logout { background:rgba(255,255,255,.92); color:#c62828; font-weight:bold; }
 </style>
 </head>
 <body>
   <div class="top">
+    <div class="user-area">
+      <div class="user-avatar" id="userAvatar" title="Upload avatar">
+        <span id="userAvatarIcon">👤</span>
+      </div>
+      <div class="user-name" id="userName">-</div>
+      <div class="user-btns">
+        <button class="btn-login" id="btnLogin" onclick="goLogin()">Login</button>
+        <button class="btn-logout" id="btnLogout" onclick="doLogout()" style="display:none">Logout</button>
+      </div>
+    </div>
+    <input type="file" id="avatarInput" accept="image/*" style="display:none">
     <h2>🛵 7Star Delivery</h2>
     <div class="sub">Orderချိတ်ဆက်ပြီးပါက သင့်တည်နေရာကို အလိုအလျောက် တင်ပေးမည်</div>
   </div>
@@ -656,6 +676,55 @@ async function refreshRiderInfo() {
     state.refreshTimer = setInterval(refreshRiderInfo, 5000);
   }
 })();
+
+// ===== 登录/用户区（头像+昵称+Login/Logout） =====
+function getToken() { return localStorage.getItem("userToken") || ""; }
+function authHeaders() { var t = getToken(); return t ? { "Authorization": "Bearer " + t } : {}; }
+function goLogin() { location.href = "/login?next=" + encodeURIComponent(location.pathname); }
+async function doLogout() {
+  try { await fetch("/api/logout", { method: "POST", headers: authHeaders() }); } catch (e) {}
+  localStorage.removeItem("userToken");
+  location.href = "/login?next=" + encodeURIComponent(location.pathname);
+}
+function applyUser(u) {
+  var avatarEl = document.getElementById("userAvatar");
+  if (u.avatar) { avatarEl.innerHTML = '<img src="' + u.avatar + '" alt="avatar">'; }
+  else { avatarEl.innerHTML = '<span id="userAvatarIcon">👤</span>'; }
+  document.getElementById("userName").textContent = u.username || "-";
+  document.getElementById("btnLogin").style.display = "none";
+  document.getElementById("btnLogout").style.display = "block";
+}
+async function uploadAvatar(e) {
+  var f = e.target.files && e.target.files[0];
+  if (!f) return;
+  var fd = new FormData();
+  fd.append("avatar", f);
+  try {
+    var r = await fetch("/api/user/avatar", { method: "POST", headers: authHeaders(), body: fd });
+    var j = await r.json();
+    if (j.ok) {
+      var avatarEl = document.getElementById("userAvatar");
+      avatarEl.innerHTML = '<img src="' + j.avatar + '" alt="avatar">';
+      showInfo("Avatar updated.");
+    } else { showInfo(j.msg || "Upload failed."); }
+  } catch (err) { showInfo("Upload failed."); }
+}
+async function checkLogin() {
+  var avatarEl = document.getElementById("userAvatar");
+  var input = document.getElementById("avatarInput");
+  if (avatarEl) avatarEl.onclick = function () { if (input) input.click(); };
+  if (input) input.onchange = uploadAvatar;
+  try {
+    var r = await fetch("/api/user/me", { headers: authHeaders() });
+    var j = await r.json();
+    if (j.ok) { applyUser(j); return; }
+  } catch (e) {}
+  // 未登录：Login 与 Logout 两个按键都显示
+  document.getElementById("btnLogin").style.display = "block";
+  document.getElementById("btnLogout").style.display = "block";
+  document.getElementById("userName").textContent = "-";
+}
+checkLogin();
 </script>
 </body>
 </html>

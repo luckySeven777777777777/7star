@@ -90,6 +90,28 @@
   .user-btns button { padding:4px 12px; border:none; border-radius:8px; font-size:12px; cursor:pointer; }
   .btn-login { background:#fff; color:#e07b00; font-weight:bold; }
   .btn-logout { background:rgba(255,255,255,.92); color:#c62828; font-weight:bold; }
+  /* ---------- 支付方式自定义下拉（logo 显示在输入框内） ---------- */
+  .pay-select { position:relative; margin:6px 0 15px; text-align:left; z-index:20; }
+  .pay-selected {
+    display:flex; align-items:center; gap:10px;
+    width:100%; box-sizing:border-box; padding:11px 13px;
+    background:#fff; border:1px solid #d8d8d8; border-radius:10px;
+    font-size:15px; color:#222; cursor:pointer;
+  }
+  .pay-selected img.pay-logo { width:30px; height:30px; object-fit:contain; border-radius:6px; }
+  .pay-selected span { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .pay-selected::after { content:"▾"; color:#888; font-size:14px; }
+  .pay-menu {
+    position:absolute; left:0; right:0; top:calc(100% + 4px);
+    background:#fff; border:1px solid #d8d8d8; border-radius:10px;
+    box-shadow:0 6px 18px rgba(0,0,0,.14); overflow:hidden;
+  }
+  .pay-option {
+    display:flex; align-items:center; gap:10px;
+    padding:11px 13px; font-size:15px; color:#222; cursor:pointer;
+  }
+  .pay-option:hover { background:#f2f6ff; }
+  .pay-option img.pay-logo { width:30px; height:30px; object-fit:contain; border-radius:6px; }
 </style>
 </head>
 <body>
@@ -141,6 +163,8 @@
       <span class="dot"></span>လက်ရှိနေရာ:<span id="curLocation">-</span><br>
       <span class="dot"></span>ကျန်ရှိသောပေါက်စီအလုံးအရေတွက်：<span id="curBaozi">-</span><br>
       <span class="dot"></span>ကျန်ရှိသောဆိုင်အရေတွက်：<span id="curShop">-</span><br>
+      <span class="dot"></span>ငွေပေးချေမှုနည်းလမ်း：<b id="curPayment">-</b><br>
+      <span class="dot"></span>Amount (MMK)：<b id="curAmount">-</b><br>
       <span class="dot"></span>နောက်ဆုံး တင်ပြချိန်：<span id="lastTime">-</span>
     </div>
     <div class="status-box" id="statusBox">
@@ -176,6 +200,27 @@
       <input id="confirmBaozi" type="number" min="0" placeholder="အရေအတွက် ထည့်ပါ">
       <label>လက်ခံရရှိဆိုင်လိပ်စာ</label>
       <input id="confirmAddress" placeholder="ဆိုင်လိပ်စာ ထည့်ပါ">
+      <label>Please select payment method</label>
+      <input type="hidden" id="confirmPayment" value="">
+      <div class="pay-select" id="paySelect" onclick="togglePayMenu(event)">
+        <div class="pay-selected" id="paySelected">
+          <img class="pay-logo" id="paySelectedLogo" alt="">
+          <span id="paySelectedText">Select payment method</span>
+        </div>
+        <div class="pay-menu" id="payMenu" style="display:none">
+          <div class="pay-option" data-value="KBZPay" onclick="choosePay(this)">
+            <img class="pay-logo" src="https://i.pinimg.com/1200x/16/c3/c2/16c3c27e082278d0c6966a494e25832d.jpg" alt="KBZPay"> KBZPay
+          </div>
+          <div class="pay-option" data-value="WaveMoney" onclick="choosePay(this)">
+            <img class="pay-logo" src="https://i.pinimg.com/736x/79/45/0b/79450bab7ed45e1e00df82e51007bbb0.jpg" alt="WaveMoney"> WaveMoney
+          </div>
+          <div class="pay-option" data-value="Cash" onclick="choosePay(this)">
+            <img class="pay-logo" src="https://i.pinimg.com/1200x/9e/61/70/9e6170243e6fea37f02c4a29b3cc08bd.jpg" alt="Cash"> Cash
+          </div>
+        </div>
+      </div>
+      <label>Enter Amount MMK</label>
+      <input id="confirmAmount" type="number" min="0" placeholder="Enter Amount MMK">
       <div class="row2">
         <button class="btn btn-green" onclick="doConfirmDelivered()">Confirm ✅</button>
         <button class="btn btn-gray" onclick="closeConfirmModal()">Cancel ❌</button>
@@ -424,19 +469,46 @@ function confirmDelivered() {
   document.getElementById("confirmModal").style.display = "flex";
   document.getElementById("confirmBaozi").value = "";
   document.getElementById("confirmAddress").value = "";
+  document.getElementById("confirmAmount").value = "";
+  resetPaySelect();
 }
 function closeConfirmModal() {
   document.getElementById("confirmModal").style.display = "none";
 }
+// ---------- 支付方式下拉（logo 显示在输入框内） ----------
+function togglePayMenu(ev) {
+  if (ev) ev.stopPropagation();
+  var m = document.getElementById("payMenu");
+  m.style.display = (m.style.display === "none") ? "block" : "none";
+}
+function choosePay(el) {
+  document.getElementById("confirmPayment").value = el.getAttribute("data-value");
+  document.getElementById("paySelectedText").textContent = el.textContent.trim();
+  document.getElementById("paySelectedLogo").src = el.querySelector("img").src;
+  document.getElementById("payMenu").style.display = "none";
+}
+function resetPaySelect() {
+  document.getElementById("confirmPayment").value = "";
+  document.getElementById("paySelectedText").textContent = "Select payment method";
+  document.getElementById("paySelectedLogo").removeAttribute("src");
+  document.getElementById("payMenu").style.display = "none";
+}
+document.addEventListener("click", function () {
+  var m = document.getElementById("payMenu");
+  if (m) m.style.display = "none";
+});
 async function doConfirmDelivered() {
   var baozi = parseInt(document.getElementById("confirmBaozi").value) || 0;
   var address = document.getElementById("confirmAddress").value.trim();
+  var paymentMethod = document.getElementById("confirmPayment").value;
+  var amount = document.getElementById("confirmAmount").value.trim();
   if (baozi <= 0 && !address) { showInfo("အရေအတွက် သို့မဟုတ် လိပ်စာ ထည့်ပါ"); return; }
+  if (!paymentMethod) { showInfo("Please select payment method"); return; }
   try {
     var r = await fetch("/api/rider/confirm", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({ order_no: state.orderNo, phone: state.phone, confirm_baozi: baozi, address: address })
+      body: JSON.stringify({ order_no: state.orderNo, phone: state.phone, confirm_baozi: baozi, address: address, payment_method: paymentMethod, amount: amount })
     });
     var j = await r.json();
     if (!j.ok) { showInfo(j.msg); return; }
@@ -480,6 +552,8 @@ function resetAfterCompletion() {
   document.getElementById("curLocation").textContent = "-";
   document.getElementById("curBaozi").textContent = "-";
   document.getElementById("curShop").textContent = "-";
+  document.getElementById("curPayment").textContent = "-";
+  document.getElementById("curAmount").textContent = "-";
   document.getElementById("lastTime").textContent = "-";
   // 恢复状态键与确认键可点击
   document.querySelectorAll("#statusBox button").forEach(function(btn) { btn.disabled = false; });
@@ -588,6 +662,8 @@ function renderHistory() {
       + 'ပို့ရမည့်ဆိုင်လိပ်စာ：<b>' + (h.delivery_address || "-") + '</b><br>'
       + 'ကျန်ရှိသောပေါက်စီအလုံးအရေတွက်：<b>' + h.baozi_remaining + ' / ' + h.baozi_total + '</b><br>'
       + 'ကျန်ရှိသောဆိုင်အရေတွက်：<b>' + h.shop_remaining + ' / ' + h.shop_total + '</b><br>'
+      + 'ငွေပေးချေမှုနည်းလမ်း：<b>' + (h.payment_method || "-") + '</b><br>'
+      + 'Amount (MMK)：<b>' + (h.amount || "-") + '</b><br>'
       + 'နောက်ဆုံး တင်ပြချိန်：<b>' + lastT + '</b>'
       + '</div>';
   });

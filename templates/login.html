@@ -153,16 +153,16 @@
     <h1 id="login-title">Login</h1>
     <p class="subtitle">Welcome back</p>
 
-    <form id="login-form">
+    <form id="login-form" autocomplete="off">
       <label class="field" aria-label="User Name">
-        <input name="username" type="text" placeholder="User Name" autocomplete="username" required />
+        <input id="username" name="username" type="text" placeholder="User Name" autocomplete="off" required />
         <span class="icon-button" aria-hidden="true">
           <svg viewBox="0 0 32 32"><circle cx="16" cy="10" r="6.5"/><path d="M3.5 28c1.7-6.5 6.2-10 12.5-10s10.8 3.5 12.5 10"/></svg>
         </span>
       </label>
 
       <label class="field" aria-label="Password">
-        <input id="password" name="password" type="password" placeholder="Password" autocomplete="current-password" required />
+        <input id="password" name="password" type="password" placeholder="Password" autocomplete="new-password" required />
         <button class="icon-button" id="toggle-password" type="button" aria-label="Show password">
           <svg viewBox="0 0 32 32"><path d="M3 16s4.5-9 13-9c3.1 0 5.7 1.1 7.8 2.7M29 16s-4.5 9-13 9c-3.1 0-5.7-1.1-7.8-2.7"/><path d="M12.3 12.3a5.2 5.2 0 0 0 7.4 7.4M4 4l24 24"/></svg>
         </button>
@@ -177,12 +177,31 @@
 
   <script>
     const passwordInput = document.getElementById('password');
+    const usernameInput = document.getElementById('username');
+    const rememberCheck = document.querySelector('input[name="remember"]');
     const toggleButton = document.getElementById('toggle-password');
     toggleButton.addEventListener('click', () => {
       const showing = passwordInput.type === 'password';
       passwordInput.type = showing ? 'text' : 'password';
       toggleButton.setAttribute('aria-label', showing ? 'Hide password' : 'Show password');
     });
+
+    // 登录页默认保持空白：阻止浏览器/密码管理器自动填充账号密码
+    usernameInput.setAttribute('readonly', '');
+    passwordInput.setAttribute('readonly', '');
+    setTimeout(() => {
+      usernameInput.removeAttribute('readonly');
+      passwordInput.removeAttribute('readonly');
+    }, 500);
+
+    // 仅当用户上次勾选 Remember me 时才回填账号密码，否则保持空白
+    try {
+      if (localStorage.getItem('marvis_remember') === '1') {
+        usernameInput.value = localStorage.getItem('marvis_remember_user') || '';
+        passwordInput.value = localStorage.getItem('marvis_remember_pass') || '';
+        if (usernameInput.value) rememberCheck.checked = true;
+      }
+    } catch (e) {}
 
     document.getElementById('login-form').addEventListener('submit', async (event) => {
       event.preventDefault();
@@ -218,6 +237,18 @@
           localStorage.setItem('userToken', data.token);
           localStorage.removeItem('riderToken');
         }
+        // Remember me：仅勾选时才本地保存账号密码用于下次回填；未勾选保持登录页空白
+        try {
+          if (form.remember && form.remember.checked) {
+            localStorage.setItem('marvis_remember', '1');
+            localStorage.setItem('marvis_remember_user', form.username.value.trim());
+            localStorage.setItem('marvis_remember_pass', form.password.value);
+          } else {
+            localStorage.setItem('marvis_remember', '0');
+            localStorage.removeItem('marvis_remember_user');
+            localStorage.removeItem('marvis_remember_pass');
+          }
+        } catch (e) {}
         location.href = (next && next.startsWith('/')) ? next : '/rider';
       } catch (e) {
         msgEl.textContent = 'Cannot connect to server. Please try again.';

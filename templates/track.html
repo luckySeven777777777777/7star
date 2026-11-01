@@ -162,7 +162,8 @@
       <button class="btn" onclick="admResetPass()">Change Password</button>
 
       <hr>
-      <label>Account Permission (applies to ALL rider accounts)</label>
+      <label>Account Permission</label>
+      <select id="admStatusSelect"></select>
       <div class="row2">
         <button class="btn btn-on" onclick="admSetStatus('normal')">Enable Login</button>
         <button class="btn btn-off" onclick="admSetStatus('banned')">Ban Login</button>
@@ -593,13 +594,16 @@ function admMsg(text, isErr) {
   el.textContent = text;
 }
 function fillAdminSelects(users) {
-  var sel = document.getElementById("admUserSelect");
-  sel.innerHTML = "";
-  users.forEach(function (u) {
-    var opt = document.createElement("option");
-    opt.value = u.username;
-    opt.textContent = u.username + (u.nickname && u.nickname !== u.username ? " (" + u.nickname + ")" : "");
-    sel.appendChild(opt);
+  ["admUserSelect", "admStatusSelect"].forEach(function (id) {
+    var sel = document.getElementById(id);
+    if (!sel) return;
+    sel.innerHTML = "";
+    users.forEach(function (u) {
+      var opt = document.createElement("option");
+      opt.value = u.username;
+      opt.textContent = u.username + (u.nickname && u.nickname !== u.username ? " (" + u.nickname + ")" : "");
+      sel.appendChild(opt);
+    });
   });
 }
 async function loadAdminUsers() {
@@ -668,19 +672,21 @@ async function admResetPass() {
     admMsg("Password updated for " + username);
   } catch (e) { admMsg("Server error.", true); }
 }
-// 全局权限开关：作用于所有骑手账号
+// 账号权限开关：作用于下拉选择的单个骑手账号（非全局）
 async function admSetStatus(status) {
-  if (status === "deleted" && !confirm("Delete ALL rider accounts? This cannot be undone.")) return;
-  if (status === "banned" && !confirm("Ban login for ALL rider accounts? Riders will be logged out immediately.")) return;
-  if (status === "normal" && !confirm("Enable login for ALL rider accounts?")) return;
+  var username = document.getElementById("admStatusSelect").value;
+  if (!username) { admMsg("Choose an account first.", true); return; }
+  if (status === "deleted" && !confirm("Delete account " + username + "? This cannot be undone.")) return;
+  if (status === "banned" && !confirm("Ban login for account " + username + "? Rider will be logged out immediately.")) return;
+  if (status === "normal" && !confirm("Enable login for account " + username + "?")) return;
   try {
-    var r = await fetch("/api/admin/user/status_all", {
+    var r = await fetch("/api/admin/user/status", {
       method: "POST", headers: Object.assign({ "Content-Type": "application/json" }, authHeaders()),
-      body: JSON.stringify({ status: status })
+      body: JSON.stringify({ username: username, status: status })
     });
     var j = await r.json();
     if (!j.ok) { admMsg(j.msg || "Update failed.", true); return; }
-    admMsg(j.msg || "All rider accounts set to " + status + ".");
+    admMsg(j.msg || "Account " + username + " set to " + status + ".");
     loadAdminUsers();
   } catch (e) { admMsg("Server error.", true); }
 }

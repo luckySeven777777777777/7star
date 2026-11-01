@@ -23,6 +23,7 @@ import json
 import uuid
 import urllib.request
 import urllib.parse
+import re
 from datetime import datetime
 from flask import Flask, request, jsonify, render_template, redirect
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -87,6 +88,9 @@ def init_db():
                 customer_name TEXT DEFAULT '',
                 address TEXT DEFAULT '',
                 delivery_address TEXT DEFAULT '',
+                shop_lat DOUBLE PRECISION,
+                shop_lng DOUBLE PRECISION,
+                shop_link TEXT DEFAULT '',
                 baozi_total INTEGER DEFAULT 0,
                 shop_total INTEGER DEFAULT 0,
                 baozi_received INTEGER DEFAULT 0,
@@ -154,6 +158,9 @@ def init_db():
                 customer_name TEXT DEFAULT '',
                 address TEXT DEFAULT '',
                 delivery_address TEXT DEFAULT '',
+                shop_lat REAL,
+                shop_lng REAL,
+                shop_link TEXT DEFAULT '',
                 baozi_total INTEGER DEFAULT 0,
                 shop_total INTEGER DEFAULT 0,
                 baozi_received INTEGER DEFAULT 0,
@@ -241,6 +248,9 @@ def ensure_order_columns():
         "payment_method": "TEXT DEFAULT ''",
         "amount": "TEXT DEFAULT ''",
         "city": "TEXT DEFAULT ''",
+        "shop_lat": "REAL",
+        "shop_lng": "REAL",
+        "shop_link": "TEXT DEFAULT ''",
     }
     for col, ddl in cols.items():
         try:
@@ -252,6 +262,53 @@ def ensure_order_columns():
 
 
 ensure_order_columns()
+
+
+def parse_coords_text(text):
+    """从用户输入文本提取 纬度,经度（支持英文逗号/缅甸逗号分隔）"""
+    if not text:
+        return None
+    m = re.search(r"(-?\d{1,2}(?:\.\d+)?)\s*[,،]\s*(-?\d{1,3}(?:\.\d+)?)", str(text))
+    if m:
+        return (float(m.group(1)), float(m.group(2)))
+    return None
+
+
+def parse_link_coords(text):
+    """从 Google Maps 链接提取坐标：@lat,lng / ?q=lat,lng / !3d..!4d"""
+    s = str(text or "")
+    m = re.search(r"@(-?\d+\.\d+),(-?\d+\.\d+)", s)
+    if m:
+        return (float(m.group(1)), float(m.group(2)))
+    m = re.search(r"[?&]q=(-?\d+\.\d+),(-?\d+\.\d+)", s)
+    if m:
+        return (float(m.group(1)), float(m.group(2)))
+    m = re.search(r"!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)", s)
+    if m:
+        return (float(m.group(1)), float(m.group(2)))
+    return None
+
+
+def resolve_shop_location(link, coords_text):
+    """骑手输入的商家位置解析：优先坐标文本，其次链接正则，最后展开 goo.gl 短链再解析。
+    返回 (lat, lng, link)；解析失败时 lat/lng 为 None，仅保留链接原文。"""
+    c = parse_coords_text(coords_text)
+    if c:
+        return c[0], c[1], (link or "").strip()
+    if link:
+        c = parse_link_coords(link)
+        if c:
+            return c[0], c[1], link.strip()
+        try:
+            req = urllib.request.Request(link, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=6) as resp:
+                final_url = resp.geturl()
+            c = parse_link_coords(final_url)
+            if c:
+                return c[0], c[1], link.strip()
+        except Exception:
+            pass
+    return None, None, (link or "").strip()
 
 
 def now_str():
@@ -417,6 +474,9 @@ def rider_bind():
         shop_total = 0
     delivery_address = (data.get("delivery_address") or "").strip()
     city = (data.get("city") or "").strip()
+    shop_location_link = (data.get("shop_location_link") or "").strip()
+    shop_location_coords = (data.get("shop_location_coords") or "").strip()
+    shop_lat, shop_lng, shop_link = resolve_shop_location(shop_location_link, shop_location_coords)
     if not phone or not order_no:
         return jsonify({"ok": False, "msg": "ဖုန်းနံပါတ်နှင့် အမှာစာနံပါတ် နှစ်ခုလုံး ထည့်သွင်းပါ"}), 400
     conn = get_db()
@@ -432,8 +492,8 @@ def rider_bind():
         (name, phone, order_no, rider_name),
     )
     cur.execute(
-        _q("UPDATE orders SET delivery_address=?, baozi_total=?, shop_total=?, city=?, gps_enabled=1 WHERE order_no=?"),
-        (delivery_address, baozi_total, shop_total, city, order_no),
+        _q("UPDATE orders SET delivery_address=?, baozi_total=?, shop_total=?, city=?, gps_enabled=1, shop_lat=?, shop_lng=?, shop_link=? WHERE order_no=?"),
+        (delivery_address, baozi_total, shop_total, city, shop_lat, shop_lng, shop_link, order_no),
     )
     # 永久订单历史：每次绑定订单都记入 order_history（不因刷新/重绑丢失）
     cur.execute(_q("SELECT id FROM order_history WHERE order_no=? AND rider_phone=?"), (order_no, phone))
@@ -449,7 +509,8 @@ def rider_bind():
         )
     conn.commit()
     conn.close()
-    return jsonify({"ok": True, "msg": "ချိတ်ဆက်မှု အောင်မြင်ပါသည်။ GPS ဖွင့်ပြီး အမှာစာ ပို့ဆောင်နေပြီ"})
+    return jsonify({"ok": True, "msg": "ချိတ်ဆက်မှု အောင်မြင်ပါသည်။ GPS ဖွင့်ပြီး အမှာစာ ပို့ဆောင်နေပြီ",
+                    "shop_lat": shop_lat, "shop_lng": shop_lng, "shop_link": shop_link})
 
 
 @app.route("/api/rider/location", methods=["POST"])
@@ -555,6 +616,9 @@ def rider_info():
             "order_no": order_no,
             "status": order_dict.get("status", ""),
             "delivery_address": order_dict.get("delivery_address", ""),
+            "shop_lat": order_dict.get("shop_lat"),
+            "shop_lng": order_dict.get("shop_lng"),
+            "shop_link": order_dict.get("shop_link", "") or "",
             "city": order_dict.get("city", ""),
             "payment_method": order_dict.get("payment_method", ""),
             "amount": order_dict.get("amount", ""),
@@ -680,6 +744,9 @@ def track():
             "status": order_dict["status"],
             "address": order_dict["address"],
             "delivery_address": order_dict.get("delivery_address") or order_dict["address"],
+            "shop_lat": order_dict.get("shop_lat"),
+            "shop_lng": order_dict.get("shop_lng"),
+            "shop_link": order_dict.get("shop_link", "") or "",
             "city": order_dict.get("city", "") or "",
             "payment_method": order_dict.get("payment_method", "") or "",
             "amount": order_dict.get("amount", "") or "",
@@ -746,6 +813,9 @@ def track_multi():
                 "payment_method": order_dict.get("payment_method", "") or "",
                 "amount": order_dict.get("amount", "") or "",
                 "delivery_address": order_dict.get("delivery_address") or order_dict.get("address", ""),
+                "shop_lat": order_dict.get("shop_lat"),
+                "shop_lng": order_dict.get("shop_lng"),
+                "shop_link": order_dict.get("shop_link", "") or "",
                 "latest": latest,
                 "track": track_list,
                 "update_time": latest["report_time"] if latest else None,

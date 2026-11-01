@@ -106,7 +106,7 @@
   .admin-panel .btn { margin-top:10px; }
   .multi-panel {
     background:#fff8f0; border:1px solid #ffe0b2; border-radius:12px;
-    padding:14px 16px; margin-top:14px;
+    padding:14px 16px; margin:14px auto 0; max-width:560px; text-align:center;
   }
   .multi-panel h3 { margin:0 0 8px; font-size:15px; color:#e07b00; }
   .multi-panel .btn { margin-top:10px; }
@@ -148,6 +148,16 @@
       <button class="btn btn-gray" id="gpsBtn" onclick="toggleGpsModal()">GPS ထိန်းချုပ်ရန်</button>
       <button class="btn btn-gray" id="historyBtn" onclick="openHistory()">Order History</button>
     </div>
+    <div class="multi-panel">
+      <h3>🛵 ပို့ဆောင်သူ အများအပြား တည်နေရာ ကြည့်ရှုခြင်း</h3>
+      <div class="sub" style="margin-bottom:10px;">Order Number + ဖုန်းနံပါတ် (+ အမည်) ထည့်၍ ပို့ဆောင်သူ အများအပြား၏ တည်နေရာကို တစ်ပြိုင်နက် ကြည့်ပါ</div>
+      <div id="multiRows"></div>
+      <div class="row2">
+        <button class="btn btn-gray" onclick="addMultiRow()">+ Add Rider</button>
+        <button id="multiBtn" onclick="searchMulti()">Search All</button>
+      </div>
+      <div class="multi-summary" id="multiSummary" style="display:none"></div>
+    </div>
     <div class="admin-panel" id="adminPanel" style="display:none">
       <h3>👑 Admin Panel</h3>
 
@@ -187,16 +197,6 @@
       <hr>
       <label>ပိတ်ထားသောစာရင်း (Banned Records)</label>
       <div id="bannedRecords"></div>
-    </div>
-    <div class="multi-panel">
-      <h3>🛵 ပို့ဆောင်သူ အများအပြား တည်နေရာ ကြည့်ရှုခြင်း</h3>
-      <div class="sub" style="margin-bottom:10px;">Order Number + ဖုန်းနံပါတ် (+ အမည်) ထည့်၍ ပို့ဆောင်သူ အများအပြား၏ တည်နေရာကို တစ်ပြိုင်နက် ကြည့်ပါ</div>
-      <div id="multiRows"></div>
-      <div class="row2">
-        <button class="btn btn-gray" onclick="addMultiRow()">+ Add Rider</button>
-        <button id="multiBtn" onclick="searchMulti()">Search All</button>
-      </div>
-      <div class="multi-summary" id="multiSummary" style="display:none"></div>
     </div>
     <div class="err" id="err"></div>
   </div>

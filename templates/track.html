@@ -73,14 +73,30 @@
   .history-more { text-align:center; margin-top:10px; }
   .history-more .btn { margin-top:0; padding:8px; font-size:13px; }
   .top { position:relative; }
+  /* 顶部文字预留用户区空间，避免与头像/昵称/按钮重叠 */
+  .top h2, .top .sub { padding-right: 118px; }
   .user-area { position:absolute; top:12px; right:12px; display:flex; flex-direction:column; align-items:center; gap:4px; z-index:5; }
   .user-avatar { width:46px; height:46px; border-radius:50%; background:#fff; color:#e07b00; font-size:24px; display:flex; align-items:center; justify-content:center; overflow:hidden; border:2px solid #fff; cursor:pointer; }
   .user-avatar img { width:100%; height:100%; object-fit:cover; }
   .user-name { font-size:12px; color:#fff; font-weight:bold; max-width:130px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .user-btns { display:flex; gap:6px; }
+  .user-btns { display:flex; gap:6px; white-space:nowrap; }
   .user-btns button { padding:4px 12px; border:none; border-radius:8px; font-size:12px; cursor:pointer; }
   .btn-login { background:#fff; color:#e07b00; font-weight:bold; }
   .btn-logout { background:rgba(255,255,255,.92); color:#c62828; font-weight:bold; }
+  /* 密码可见性切换（眼睛按钮） */
+  .input-wrap { position:relative; }
+  .input-wrap input { padding-right:44px; }
+  .eye-btn {
+    position:absolute; right:2px; top:50%; transform:translateY(-50%);
+    width:36px; height:36px; margin:0; padding:0; border:none; background:transparent; cursor:pointer;
+    display:flex; align-items:center; justify-content:center;
+  }
+  .eye-btn svg { width:22px; height:22px; stroke:#888; fill:none; stroke-width:1.6; stroke-linecap:round; stroke-linejoin:round; }
+  /* 禁止记录列表 */
+  .banned-table { width:100%; border-collapse:collapse; font-size:12px; margin-top:6px; background:#fff; }
+  .banned-table th, .banned-table td { border:1px solid #ffe0b2; padding:6px 5px; text-align:left; word-break:break-word; }
+  .banned-table th { background:#fff3e0; color:#e65100; font-weight:bold; }
+  .banned-empty { font-size:12px; color:#999; padding:8px 0; }
   .admin-panel {
     background:#fff8f0; border:1px solid #ffe0b2; border-radius:12px;
     padding:14px 16px; margin-top:14px;
@@ -124,25 +140,39 @@
 
       <label>Create Rider Account</label>
       <input id="admUsername" placeholder="User Name" autocomplete="off">
-      <input id="admPassword" type="password" placeholder="Password" autocomplete="new-password">
       <input id="admNickname" placeholder="Nickname (shown on rider page)" autocomplete="off">
+      <input id="admPhone" placeholder="ပို့ဆောင်သူ ဖုန်းနံပါတ် (Phone)" autocomplete="off">
+      <div class="input-wrap">
+        <input id="admPassword" type="password" placeholder="Password" autocomplete="new-password">
+        <button class="eye-btn" type="button" id="toggleAdmPass" aria-label="Show password">
+          <svg viewBox="0 0 32 32"><path d="M3 16s4.5-9 13-9c3.1 0 5.7 1.1 7.8 2.7M29 16s-4.5 9-13 9c-3.1 0-5.7-1.1-7.8-2.7"/><path d="M12.3 12.3a5.2 5.2 0 0 0 7.4 7.4M4 4l24 24"/></svg>
+        </button>
+      </div>
       <button class="btn btn-green" onclick="admCreate()">Create Account</button>
 
       <hr>
       <label>Change Password (forgot password)</label>
       <select id="admUserSelect"></select>
-      <input id="admNewPass" type="password" placeholder="New Password" autocomplete="new-password">
+      <div class="input-wrap">
+        <input id="admNewPass" type="password" placeholder="New Password" autocomplete="new-password">
+        <button class="eye-btn" type="button" id="toggleAdmNewPass" aria-label="Show password">
+          <svg viewBox="0 0 32 32"><path d="M3 16s4.5-9 13-9c3.1 0 5.7 1.1 7.8 2.7M29 16s-4.5 9-13 9c-3.1 0-5.7-1.1-7.8-2.7"/><path d="M12.3 12.3a5.2 5.2 0 0 0 7.4 7.4M4 4l24 24"/></svg>
+        </button>
+      </div>
       <button class="btn" onclick="admResetPass()">Change Password</button>
 
       <hr>
-      <label>Account Permission</label>
-      <select id="admStatusSelect"></select>
+      <label>Account Permission (applies to ALL rider accounts)</label>
       <div class="row2">
         <button class="btn btn-on" onclick="admSetStatus('normal')">Enable Login</button>
         <button class="btn btn-off" onclick="admSetStatus('banned')">Ban Login</button>
         <button class="btn btn-gray" onclick="admSetStatus('deleted')">Delete Account</button>
       </div>
       <div class="gps-state" id="admMsg" style="display:none"></div>
+
+      <hr>
+      <label>ပိတ်ထားသောစာရင်း (Banned Records)</label>
+      <div id="bannedRecords"></div>
     </div>
     <div class="err" id="err"></div>
   </div>
@@ -506,7 +536,7 @@ function applyUser(u) {
   var avatarEl = document.getElementById("userAvatar");
   if (u.avatar) { avatarEl.innerHTML = '<img src="' + u.avatar + '" alt="avatar">'; }
   else { avatarEl.innerHTML = '<span id="userAvatarIcon">👤</span>'; }
-  document.getElementById("userName").textContent = u.username || "-";
+  document.getElementById("userName").textContent = u.nickname || u.username || "-";
   document.getElementById("btnLogin").style.display = "none";
   document.getElementById("btnLogout").style.display = "block";
 }
@@ -525,6 +555,12 @@ async function uploadAvatar(e) {
     } else { showInfo(j.msg || "Upload failed."); }
   } catch (err) { showInfo("Upload failed."); }
 }
+async function forceLogout(msg) {
+  try { await fetch("/api/logout", { method: "POST", headers: authHeaders() }); } catch (e) {}
+  localStorage.removeItem("userToken");
+  if (msg) { try { alert(msg); } catch (e) {} }
+  location.href = "/login?next=" + encodeURIComponent(location.pathname);
+}
 async function checkLogin() {
   var avatarEl = document.getElementById("userAvatar");
   var input = document.getElementById("avatarInput");
@@ -541,6 +577,7 @@ async function checkLogin() {
       }
       return;
     }
+    if (r.status === 403) { forceLogout("သင့်အကောင့်ကို ပိတ်ထားပါသည်။ စီမံခန့်ခွဲသူကို ဆက်သွယ်ပါ။"); return; }
   } catch (e) {}
   // 未登录：Login 与 Logout 两个按键都显示
   document.getElementById("btnLogin").style.display = "block";
@@ -556,14 +593,13 @@ function admMsg(text, isErr) {
   el.textContent = text;
 }
 function fillAdminSelects(users) {
-  [document.getElementById("admUserSelect"), document.getElementById("admStatusSelect")].forEach(function (sel) {
-    sel.innerHTML = "";
-    users.forEach(function (u) {
-      var opt = document.createElement("option");
-      opt.value = u.username;
-      opt.textContent = u.username + (u.nickname && u.nickname !== u.username ? " (" + u.nickname + ")" : "");
-      sel.appendChild(opt);
-    });
+  var sel = document.getElementById("admUserSelect");
+  sel.innerHTML = "";
+  users.forEach(function (u) {
+    var opt = document.createElement("option");
+    opt.value = u.username;
+    opt.textContent = u.username + (u.nickname && u.nickname !== u.username ? " (" + u.nickname + ")" : "");
+    sel.appendChild(opt);
   });
 }
 async function loadAdminUsers() {
@@ -572,22 +608,47 @@ async function loadAdminUsers() {
     var j = await r.json();
     if (j.ok) fillAdminSelects(j.users);
   } catch (e) {}
+  loadBannedRecords();
+}
+// 禁止记录列表：昵称 + 联系方式 + 状态 + 操作人 + 时间
+async function loadBannedRecords() {
+  var box = document.getElementById("bannedRecords");
+  if (!box) return;
+  try {
+    var r = await fetch("/api/admin/user/banned", { headers: authHeaders() });
+    var j = await r.json();
+    if (!j.ok || !j.records || !j.records.length) {
+      box.innerHTML = '<div class="banned-empty">No banned / deleted records.</div>';
+      return;
+    }
+    var statusText = { banned: "Ban Login", deleted: "Deleted" };
+    var html = '<table class="banned-table"><tr><th>ပို့ဆောင်သူအမည်</th><th>ဖုန်းနံပါတ်</th><th>Status</th><th>Operator</th><th>Time</th></tr>';
+    j.records.forEach(function (rec) {
+      html += "<tr><td>" + (rec.nickname || rec.username || "-") + "</td><td>" + (rec.phone || "-") + "</td><td>" + (statusText[rec.status] || rec.status) + "</td><td>" + (rec.operator || "-") + "</td><td>" + (rec.status_updated_at || "-") + "</td></tr>";
+    });
+    html += "</table>";
+    box.innerHTML = html;
+  } catch (e) {
+    box.innerHTML = '<div class="banned-empty">Cannot load records.</div>';
+  }
 }
 async function admCreate() {
   var username = document.getElementById("admUsername").value.trim();
   var password = document.getElementById("admPassword").value;
   var nickname = document.getElementById("admNickname").value.trim();
+  var phone = document.getElementById("admPhone").value.trim();
   if (!username || !password) { admMsg("User Name and Password are required.", true); return; }
   try {
     var r = await fetch("/api/admin/user/create", {
       method: "POST", headers: Object.assign({ "Content-Type": "application/json" }, authHeaders()),
-      body: JSON.stringify({ username: username, password: password, nickname: nickname })
+      body: JSON.stringify({ username: username, password: password, nickname: nickname, phone: phone })
     });
     var j = await r.json();
     if (!j.ok) { admMsg(j.msg || "Create failed.", true); return; }
     document.getElementById("admUsername").value = "";
     document.getElementById("admPassword").value = "";
     document.getElementById("admNickname").value = "";
+    document.getElementById("admPhone").value = "";
     admMsg("Rider account created: " + j.username);
     loadAdminUsers();
   } catch (e) { admMsg("Server error.", true); }
@@ -607,22 +668,35 @@ async function admResetPass() {
     admMsg("Password updated for " + username);
   } catch (e) { admMsg("Server error.", true); }
 }
+// 全局权限开关：作用于所有骑手账号
 async function admSetStatus(status) {
-  var username = document.getElementById("admStatusSelect").value;
-  if (!username) { admMsg("No rider account available.", true); return; }
-  if (status === "deleted" && !confirm("Delete account " + username + "? This cannot be undone.")) return;
-  if (status === "banned" && !confirm("Ban login for " + username + "?")) return;
+  if (status === "deleted" && !confirm("Delete ALL rider accounts? This cannot be undone.")) return;
+  if (status === "banned" && !confirm("Ban login for ALL rider accounts? Riders will be logged out immediately.")) return;
+  if (status === "normal" && !confirm("Enable login for ALL rider accounts?")) return;
   try {
-    var r = await fetch("/api/admin/user/status", {
+    var r = await fetch("/api/admin/user/status_all", {
       method: "POST", headers: Object.assign({ "Content-Type": "application/json" }, authHeaders()),
-      body: JSON.stringify({ username: username, status: status })
+      body: JSON.stringify({ status: status })
     });
     var j = await r.json();
     if (!j.ok) { admMsg(j.msg || "Update failed.", true); return; }
-    admMsg("Account " + username + " set to " + status + ".");
+    admMsg(j.msg || "All rider accounts set to " + status + ".");
     loadAdminUsers();
   } catch (e) { admMsg("Server error.", true); }
 }
+// 密码可见性切换（眼睛按钮）
+(function bindEyeBtns() {
+  [["admPassword", "toggleAdmPass"], ["admNewPass", "toggleAdmNewPass"]].forEach(function (pair) {
+    var input = document.getElementById(pair[0]);
+    var btn = document.getElementById(pair[1]);
+    if (!input || !btn) return;
+    btn.addEventListener("click", function () {
+      var showing = input.type === "password";
+      input.type = showing ? "text" : "password";
+      btn.setAttribute("aria-label", showing ? "Hide password" : "Show password");
+    });
+  });
+})();
 checkLogin();
 </script>
 </body>

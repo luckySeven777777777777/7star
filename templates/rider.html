@@ -80,11 +80,13 @@
   .status-box button:disabled { background:#eee; color:#bbb; cursor:not-allowed; border-color:#eee; }
   #confirmDeliveredBtn:disabled { background:#ccc; cursor:not-allowed; }
   .top { position:relative; }
+  /* 顶部文字预留用户区空间，避免与头像/昵称/按钮重叠 */
+  .top h2, .top .sub { padding-right: 118px; }
   .user-area { position:absolute; top:12px; right:12px; display:flex; flex-direction:column; align-items:center; gap:4px; z-index:5; }
   .user-avatar { width:46px; height:46px; border-radius:50%; background:#fff; color:#e07b00; font-size:24px; display:flex; align-items:center; justify-content:center; overflow:hidden; border:2px solid #fff; cursor:pointer; }
   .user-avatar img { width:100%; height:100%; object-fit:cover; }
   .user-name { font-size:12px; color:#fff; font-weight:bold; max-width:130px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .user-btns { display:flex; gap:6px; }
+  .user-btns { display:flex; gap:6px; white-space:nowrap; }
   .user-btns button { padding:4px 12px; border:none; border-radius:8px; font-size:12px; cursor:pointer; }
   .btn-login { background:#fff; color:#e07b00; font-weight:bold; }
   .btn-logout { background:rgba(255,255,255,.92); color:#c62828; font-weight:bold; }
@@ -678,21 +680,47 @@ async function refreshRiderInfo() {
 })();
 
 // ===== 登录/用户区（头像+昵称+Login/Logout） =====
-function getToken() { return localStorage.getItem("userToken") || ""; }
+// 骑手页与商家/管理页登录态隔离：骑手页只读取 riderToken，管理员 token 不会串进来
+function getToken() { return localStorage.getItem("riderToken") || ""; }
 function authHeaders() { var t = getToken(); return t ? { "Authorization": "Bearer " + t } : {}; }
 function goLogin() { location.href = "/login?next=" + encodeURIComponent(location.pathname); }
 async function doLogout() {
   try { await fetch("/api/logout", { method: "POST", headers: authHeaders() }); } catch (e) {}
-  localStorage.removeItem("userToken");
+  localStorage.removeItem("riderToken");
   location.href = "/login?next=" + encodeURIComponent(location.pathname);
 }
 function applyUser(u) {
   var avatarEl = document.getElementById("userAvatar");
   if (u.avatar) { avatarEl.innerHTML = '<img src="' + u.avatar + '" alt="avatar">'; }
   else { avatarEl.innerHTML = '<span id="userAvatarIcon">👤</span>'; }
-  document.getElementById("userName").textContent = u.username || "-";
+  document.getElementById("userName").textContent = u.nickname || u.username || "-";
   document.getElementById("btnLogin").style.display = "none";
   document.getElementById("btnLogout").style.display = "block";
+  // 登录成功后每 5 秒检查账号状态，被管理员禁用/删除时立即强制退出
+  if (!window._riderAccountCheck) {
+    window._riderAccountCheck = setInterval(checkAccountStatus, 5000);
+  }
+}
+async function forceLogout(msg) {
+  try { await fetch("/api/logout", { method: "POST", headers: authHeaders() }); } catch (e) {}
+  localStorage.removeItem("riderToken");
+  if (msg) { try { alert(msg); } catch (e) {} }
+  location.href = "/login?next=" + encodeURIComponent(location.pathname);
+}
+async function checkAccountStatus() {
+  try {
+    var r = await fetch("/api/user/me", { headers: authHeaders() });
+    if (r.status === 401) {
+      // token 失效（被清除/过期）：退出
+      localStorage.removeItem("riderToken");
+      location.href = "/login?next=" + encodeURIComponent(location.pathname);
+      return;
+    }
+    if (r.status === 403) {
+      forceLogout("သင့်အကောင့်ကို ပိတ်ထားပါသည်။ စီမံခန့်ခွဲသူကို ဆက်သွယ်ပါ။");
+      return;
+    }
+  } catch (e) {}
 }
 async function uploadAvatar(e) {
   var f = e.target.files && e.target.files[0];
@@ -717,9 +745,11 @@ async function checkLogin() {
   try {
     var r = await fetch("/api/user/me", { headers: authHeaders() });
     var j = await r.json();
-    if (j.ok) { applyUser(j); return; }
+    if (j.ok && j.role === "rider") { applyUser(j); return; }
+    if (r.status === 403) { forceLogout("သင့်အကောင့်ကို ပိတ်ထားပါသည်။ စီမံခန့်ခွဲသူကို ဆက်သွယ်ပါ။"); return; }
   } catch (e) {}
-  // 未登录：Login 与 Logout 两个按键都显示
+  // 未登录或 token 不属于骑手（如管理员登录态）：不显示用户信息，仅显示 Login/Logout
+  localStorage.removeItem("riderToken");
   document.getElementById("btnLogin").style.display = "block";
   document.getElementById("btnLogout").style.display = "block";
   document.getElementById("userName").textContent = "-";

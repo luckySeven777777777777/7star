@@ -207,6 +207,14 @@
         }
         localStorage.setItem('userToken', data.token);
         const next = new URLSearchParams(location.search).get('next');
+        // 骑手页(rider)与商家页(track)登录态隔离：骑手页存 riderToken，商家/管理页存 userToken
+        if (next && next.indexOf('/rider') >= 0) {
+          localStorage.setItem('riderToken', data.token);
+          localStorage.removeItem('userToken');
+        } else {
+          localStorage.setItem('userToken', data.token);
+          localStorage.removeItem('riderToken');
+        }
         location.href = (next && next.startsWith('/')) ? next : '/rider';
       } catch (e) {
         msgEl.textContent = 'Cannot connect to server. Please try again.';

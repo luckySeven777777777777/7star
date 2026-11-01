@@ -231,6 +231,26 @@ def ensure_user_columns():
 ensure_user_columns()
 
 
+def ensure_order_columns():
+    """旧库升级：为 orders 表补充 payment_method / amount 列（已存在则跳过）"""
+    conn = get_db()
+    cur = conn.cursor()
+    cols = {
+        "payment_method": "TEXT DEFAULT ''",
+        "amount": "TEXT DEFAULT ''",
+    }
+    for col, ddl in cols.items():
+        try:
+            cur.execute(_q("ALTER TABLE orders ADD COLUMN " + col + " " + ddl))
+        except Exception:
+            pass
+    conn.commit()
+    conn.close()
+
+
+ensure_order_columns()
+
+
 def now_str():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -474,6 +494,8 @@ def rider_confirm():
     except (TypeError, ValueError):
         confirm_baozi = 0
     address = (data.get("address") or "").strip()
+    payment_method = (data.get("payment_method") or "").strip()
+    amount = (data.get("amount") or "").strip()
     if not order_no or not phone:
         return jsonify({"ok": False, "msg": "အမှာစာနံပါတ် သို့မဟုတ် ဖုန်းနံပါတ် မပါရှိပါ"}), 400
     conn = get_db()
@@ -489,12 +511,12 @@ def rider_confirm():
     new_baozi = (order_dict.get("baozi_received", 0) or 0) + confirm_baozi
     new_shop = (order_dict.get("shop_received", 0) or 0) + 1  # 每确认一个商家地址 +1
     cur.execute(
-        _q("UPDATE orders SET baozi_received=?, shop_received=?, delivery_address=?, status='လက်ခံပြီးပါပြီ' WHERE order_no=?"),
-        (new_baozi, new_shop, address, order_no),
+        _q("UPDATE orders SET baozi_received=?, shop_received=?, delivery_address=?, payment_method=?, amount=?, status='လက်ခံပြီးပါပြီ' WHERE order_no=?"),
+        (new_baozi, new_shop, address, payment_method, amount, order_no),
     )
     conn.commit()
     conn.close()
-    return jsonify({"ok": True, "msg": "လက်ခံပြီးပါပြီ", "status": "လက်ခံပြီးပါပြီ", "baozi_received": new_baozi, "shop_received": new_shop})
+    return jsonify({"ok": True, "msg": "လက်ခံပြီးပါပြီ", "status": "လက်ခံပြီးပါပြီ", "baozi_received": new_baozi, "shop_received": new_shop, "payment_method": payment_method, "amount": amount})
 
 
 @app.route("/api/rider/info", methods=["GET"])
@@ -529,6 +551,8 @@ def rider_info():
             "order_no": order_no,
             "status": order_dict.get("status", ""),
             "delivery_address": order_dict.get("delivery_address", ""),
+            "payment_method": order_dict.get("payment_method", ""),
+            "amount": order_dict.get("amount", ""),
             "baozi_total": order_dict.get("baozi_total", 0),
             "shop_total": order_dict.get("shop_total", 0),
             "baozi_received": order_dict.get("baozi_received", 0),
@@ -575,6 +599,8 @@ def order_history_api():
                 "bind_time": h.get("bind_time", "") or "",
                 "status": od.get("status", "") or "",
                 "delivery_address": od.get("delivery_address", "") or "",
+                "payment_method": od.get("payment_method", "") or "",
+                "amount": od.get("amount", "") or "",
                 "baozi_total": od.get("baozi_total", 0) or 0,
                 "shop_total": od.get("shop_total", 0) or 0,
                 "baozi_received": od.get("baozi_received", 0) or 0,

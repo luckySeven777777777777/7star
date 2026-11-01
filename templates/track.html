@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ဖောက်သည်/ဆိုင် - ပို့ဆောင်သူ တည်နေရာ ရှာဖွေခြင်း</title>
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css" />
 <style>
   * { margin:0; padding:0; box-sizing:border-box; }
   body {
@@ -74,8 +74,8 @@
   .history-more .btn { margin-top:0; padding:8px; font-size:13px; }
   .top { position:relative; }
   /* 顶部文字预留用户区空间，避免与头像/昵称/按钮重叠 */
-  .top h2, .top .sub { padding-right: 118px; }
-  .user-area { position:absolute; top:12px; right:12px; display:flex; flex-direction:column; align-items:center; gap:4px; z-index:5; }
+  .top h2, .top .sub { padding-right: 170px; }
+  .user-area { position:absolute; top:8px; right:8px; display:flex; flex-direction:column; align-items:flex-end; gap:4px; z-index:20; background:rgba(255,255,255,0.88); border-radius:14px; padding:8px 10px; box-shadow:0 2px 10px rgba(0,0,0,0.18); }
   .user-avatar { width:46px; height:46px; border-radius:50%; background:#fff; color:#e07b00; font-size:24px; display:flex; align-items:center; justify-content:center; overflow:hidden; border:2px solid #fff; cursor:pointer; }
   .user-avatar img { width:100%; height:100%; object-fit:cover; }
   .user-name { font-size:12px; color:#fff; font-weight:bold; max-width:130px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -83,6 +83,20 @@
   .user-btns button { padding:4px 12px; border:none; border-radius:8px; font-size:12px; cursor:pointer; }
   .btn-login { background:#fff; color:#e07b00; font-weight:bold; }
   .btn-logout { background:rgba(255,255,255,.92); color:#c62828; font-weight:bold; }
+  /* 用户区顶部一行：🔔 铃铛 + 🔊 声音开关 + 👤 头像 左右排列，禁止重叠 */
+  .user-top { display:flex; flex-direction:row; align-items:center; justify-content:flex-end; gap:6px; flex-wrap:nowrap; }
+  .bell-wrap { display:flex; align-items:center; gap:4px; flex-shrink:0; }
+  .bell-btn { position:relative; width:44px; height:44px; border-radius:50%; background:#fff; border:none; font-size:22px; cursor:pointer; display:flex; align-items:center; justify-content:center; box-shadow:0 2px 6px rgba(0,0,0,0.2); }
+  .bell-badge { position:absolute; top:-4px; right:-4px; min-width:18px; height:18px; border-radius:10px; background:#d32f2f; color:#fff; font-size:11px; font-weight:bold; display:flex; align-items:center; justify-content:center; padding:0 4px; }
+  .sound-toggle { width:30px; height:30px; border-radius:50%; border:none; background:rgba(255,255,255,.92); font-size:15px; cursor:pointer; display:flex; align-items:center; justify-content:center; box-shadow:0 2px 6px rgba(0,0,0,0.15); }
+  .bell-item { background:#f9f9f9; border:1px solid #eee; border-radius:10px; padding:12px; margin:10px 0; text-align:left; font-size:13px; line-height:2; color:#333; }
+  .bell-item.unread { background:#fff8e1; border-color:#ffd54f; }
+  .bell-item b { color:#e07b00; }
+  .bell-item .copy-btn { margin-top:6px; padding:4px 14px; border:none; border-radius:8px; background:linear-gradient(135deg,#f6d365,#fda085); color:#fff; font-size:12px; cursor:pointer; }
+  .bell-empty { text-align:center; color:#999; padding:24px 0; font-size:14px; }
+  .bell-actions { display:flex; gap:8px; margin:10px 0 4px; }
+  .bell-actions .btn { margin-top:0; padding:8px; font-size:13px; }
+  .btn-sm { width:auto; }
   /* 密码可见性切换（眼睛按钮） */
   .input-wrap { position:relative; }
   .input-wrap input { padding-right:44px; }
@@ -246,7 +260,7 @@
 
   <div id="map"></div>
 
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
 var map = null;
 var marker = null;
@@ -304,16 +318,33 @@ function render(j) {
   }
 
   var latLngs = (j.track || []).map(function(p) { return [p.lat, p.lng]; });
-  if (latLngs.length === 0) {
-    showErr("ဤအမှာစာအတွက် တည်နေရာဒေတာ မရှိသေးပါ။ ပို့ဆောင်သူသည် 「ပို့ဆောင်သူ」စာမျက်နှာတွင် ချိတ်ဆက်၍ တည်နေရာ တင်ရန် လိုအပ်ပါသည်");
+  var DEFAULT_CENTER = [16.8661, 96.1951]; // 仰光默认视野
+
+  // Leaflet 库加载失败防护（CDN 被拦截时给明确提示，避免整页 JS 中断）
+  if (typeof L === "undefined") {
+    showErr("Map library failed to load. Please check your network and refresh.");
     return;
   }
 
+  // 地图始终初始化：即使暂无轨迹，也显示地图默认视野
   if (!map) {
-    map = L.map("map").setView(latLngs[0], 15);
-    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-      attribution: "&copy; OpenStreetMap contributors", maxZoom: 19
-    }).addTo(map);
+    try {
+      map = L.map("map").setView(latLngs.length > 0 ? latLngs[0] : DEFAULT_CENTER, 15);
+      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        attribution: "&copy; OpenStreetMap contributors", maxZoom: 19
+      }).addTo(map);
+    } catch (e) {
+      showErr("Map init failed: " + (e && e.message ? e.message : e));
+      return;
+    }
+  }
+
+  if (latLngs.length === 0) {
+    showErr("ဤအမှာစာအတွက် တည်နေရာဒေတာ မရှိသေးပါ။ ပို့ဆောင်သူသည် 「ပို့ဆောင်သူ」စာမျက်နှာတွင် ချိတ်ဆက်၍ တည်နေရာ တင်ရန် လိုအပ်ပါသည်");
+    if (trackLine) { map.removeLayer(trackLine); trackLine = null; }
+    if (marker) { map.removeLayer(marker); marker = null; }
+    map.setView(DEFAULT_CENTER, 13);
+    return;
   }
 
   if (trackLine) map.removeLayer(trackLine);

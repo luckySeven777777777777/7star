@@ -569,16 +569,16 @@ async function checkLogin() {
   try {
     var r = await fetch("/api/user/me", { headers: authHeaders() });
     var j = await r.json();
-    if (j.ok) {
+    if (j.ok && (j.role === "super_admin" || j.role === "admin")) {
       applyUser(j);
-      if (j.role === "super_admin" || j.role === "admin") {
-        document.getElementById("adminPanel").style.display = "block";
-        loadAdminUsers();
-      }
+      document.getElementById("adminPanel").style.display = "block";
+      loadAdminUsers();
       return;
     }
     if (r.status === 403) { forceLogout("သင့်အကောင့်ကို ပိတ်ထားပါသည်။ စီမံခန့်ခွဲသူကို ဆက်သွယ်ပါ။"); return; }
   } catch (e) {}
+  // 未登录，或 token 不属于管理员（如骑手登录态）：不显示用户信息、不显示管理面板
+  localStorage.removeItem("userToken");
   // 未登录：Login 与 Logout 两个按键都显示
   document.getElementById("btnLogin").style.display = "block";
   document.getElementById("btnLogout").style.display = "block";

@@ -189,9 +189,13 @@
       const msgEl = document.getElementById('formMsg');
       msgEl.classList.remove('show', 'ok');
       const form = event.target;
+      const next = new URLSearchParams(location.search).get('next');
+      // 目标页面角色隔离：/rider 只允许骑手账号登录，/track 只允许管理员账号登录
+      const page = (!next || next.indexOf('/rider') >= 0) ? 'rider' : 'track';
       const payload = {
         username: form.username.value.trim(),
-        password: form.password.value
+        password: form.password.value,
+        page: page
       };
       try {
         const resp = await fetch('/api/login', {
@@ -206,7 +210,6 @@
           return;
         }
         localStorage.setItem('userToken', data.token);
-        const next = new URLSearchParams(location.search).get('next');
         // 骑手页(rider)与商家页(track)登录态隔离：骑手页存 riderToken，商家/管理页存 userToken
         if (next && next.indexOf('/rider') >= 0) {
           localStorage.setItem('riderToken', data.token);

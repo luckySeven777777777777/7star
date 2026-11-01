@@ -610,6 +610,28 @@ def upload_proof():
         return jsonify({"ok": False, "msg": "Save failed: %s" % str(e)}), 500
 
 
+@app.route("/api/rider/update-shop", methods=["POST"])
+def rider_update_shop():
+    """骑手绑定后补充/更新商家位置（Link 或 Coordinates），供地图标记与引导路线使用"""
+    data = request.get_json(silent=True) or {}
+    order_no = (data.get("order_no") or "").strip()
+    phone = (data.get("phone") or "").strip()
+    link = (data.get("shop_location_link") or "").strip()
+    coords_text = (data.get("shop_location_coords") or "").strip()
+    if not order_no:
+        return jsonify({"ok": False, "msg": "Order number required"}), 400
+    shop_lat, shop_lng, shop_link = resolve_shop_location(link, coords_text)
+    if shop_lat is None or shop_lng is None:
+        return jsonify({"ok": False, "msg": "Cannot resolve shop location from link/coordinates"}), 400
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute(_q("UPDATE orders SET shop_lat=?, shop_lng=?, shop_link=? WHERE order_no=?"),
+                (shop_lat, shop_lng, shop_link, order_no))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True, "shop_lat": shop_lat, "shop_lng": shop_lng, "shop_link": shop_link})
+
+
 @app.route("/api/rider/confirm", methods=["POST"])
 def rider_confirm():
     """商家确认收货：接收确认包子数量与商家地址，扣减剩余数量并更新最新配送地址"""

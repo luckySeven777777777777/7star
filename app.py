@@ -130,16 +130,6 @@ def init_db():
             )
         """))
         cur.execute(_q("""
-            CREATE TABLE IF NOT EXISTS notifications (
-                id SERIAL PRIMARY KEY,
-                order_no TEXT UNIQUE NOT NULL,
-                rider_name TEXT DEFAULT '',
-                rider_phone TEXT DEFAULT '',
-                created_at TEXT,
-                is_read INTEGER DEFAULT 0
-            )
-        """))
-        cur.execute(_q("""
             CREATE TABLE IF NOT EXISTS users (
                 id SERIAL PRIMARY KEY,
                 username TEXT UNIQUE NOT NULL,
@@ -211,14 +201,6 @@ def init_db():
                 phone TEXT DEFAULT '',
                 status_updated_at TEXT,
                 operator TEXT DEFAULT ''
-            );
-            CREATE TABLE IF NOT EXISTS notifications (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                order_no TEXT UNIQUE NOT NULL,
-                rider_name TEXT DEFAULT '',
-                rider_phone TEXT DEFAULT '',
-                created_at TEXT,
-                is_read INTEGER DEFAULT 0
             );
         """)
     conn.commit()
@@ -394,12 +376,6 @@ def create_order():
         _q("INSERT INTO orders (order_no, customer_name, address, status, created_at) VALUES (?,?,?,?,?)"),
         (order_no, customer_name, address, "待取餐", now_str()),
     )
-    # 铃铛通知：订单创建后立即通知商家（骑手名/手机号待绑定后更新），track 页铃铛红标+语音播报
-    cur.execute(
-        _q("INSERT INTO notifications (order_no, rider_name, rider_phone, created_at, is_read) VALUES (?,?,?,?,0) "
-           "ON CONFLICT(order_no) DO UPDATE SET created_at=excluded.created_at, is_read=0"),
-        (order_no, "", "", now_str()),
-    )
     conn.commit()
     conn.close()
     return jsonify({"ok": True, "order_no": order_no, "msg": "အမှာစာ ဖန်တီးမှု အောင်မြင်ပါသည်"})
@@ -467,12 +443,6 @@ def rider_bind():
             _q("INSERT INTO order_history (order_no, rider_phone, rider_name, bind_time) VALUES (?,?,?,?)"),
             (order_no, phone, rider_name, now_str()),
         )
-    # 铃铛通知：骑手绑定订单时写入通知（同一订单号去重），track 页轮询展示并语音播报
-    cur.execute(
-        _q("INSERT INTO notifications (order_no, rider_name, rider_phone, created_at, is_read) VALUES (?,?,?,?,0) "
-           "ON CONFLICT(order_no) DO UPDATE SET rider_name=excluded.rider_name, rider_phone=excluded.rider_phone, created_at=excluded.created_at, is_read=0"),
-        (order_no, rider_name, phone, now_str()),
-    )
     conn.commit()
     conn.close()
     return jsonify({"ok": True, "msg": "ချိတ်ဆက်မှု အောင်မြင်ပါသည်။ GPS ဖွင့်ပြီး အမှာစာ ပို့ဆောင်နေပြီ"})
@@ -510,28 +480,6 @@ def report_location():
     conn.commit()
     conn.close()
     return jsonify({"ok": True, "msg": "တည်နေရာ တင်ပြီးပါပြီ"})
-
-
-# ==================== 接口: 骑手状态同步（不依赖 GPS 上报） ====================
-@app.route("/api/rider/status", methods=["POST"])
-def rider_status():
-    """骑手确认状态后立即同步订单状态，保证商家页与 Order History 状态一致"""
-    data = request.get_json(silent=True) or {}
-    order_no = (data.get("order_no") or "").strip()
-    phone = (data.get("phone") or "").strip()
-    status = (data.get("status") or "").strip()
-    if not order_no or not phone or not status:
-        return jsonify({"ok": False, "msg": "အချက်အလက် မပြည့်စုံပါ"}), 400
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute(_q("SELECT id FROM riders WHERE phone=? AND order_no=?"), (phone, order_no))
-    if not cur.fetchone():
-        conn.close()
-        return jsonify({"ok": False, "msg": "ဤဖုန်းနံပါတ်သည် ဤအမှာစာနှင့် ချိတ်ဆက်မထားပါ"}), 403
-    cur.execute(_q("UPDATE orders SET status=? WHERE order_no=?"), (status, order_no))
-    conn.commit()
-    conn.close()
-    return jsonify({"ok": True, "msg": "အခြေအနေ ပြောင်းလဲပြီးပါပြီ"})
 
 
 # ==================== 接口: 骑手确认收货 / 状态刷新 / GPS 开关 ====================
@@ -858,43 +806,6 @@ def upload_avatar():
 
 
 # ==================== 接口: 管理员（超级管理员/管理员） ====================
-@app.route("/api/admin/notifications", methods=["GET"])
-def admin_notifications():
-    """铃铛通知列表：骑手绑定新订单后产生，管理员端轮询获取（含已读/未读状态）"""
-    admin = require_admin()
-    if not admin:
-        return jsonify({"ok": False, "msg": "Admin permission required. Please login with an administrator account."}), 403
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute(_q("SELECT id, order_no, rider_name, rider_phone, created_at, is_read FROM notifications ORDER BY id DESC LIMIT 100"))
-    rows = cur.fetchall()
-    conn.close()
-    return jsonify({"ok": True, "notifications": _rows_to_dicts(cur, rows)})
-
-
-@app.route("/api/admin/notifications/read", methods=["POST"])
-def admin_notifications_read():
-    """标记铃铛通知已读：传 ids 标记指定通知，不传则全部已读"""
-    admin = require_admin()
-    if not admin:
-        return jsonify({"ok": False, "msg": "Admin permission required. Please login with an administrator account."}), 403
-    data = request.get_json(silent=True) or {}
-    ids = data.get("ids")
-    conn = get_db()
-    cur = conn.cursor()
-    if ids:
-        for nid in ids:
-            try:
-                cur.execute(_q("UPDATE notifications SET is_read=1 WHERE id=?"), (int(nid),))
-            except (TypeError, ValueError):
-                pass
-    else:
-        cur.execute(_q("UPDATE notifications SET is_read=1"))
-    conn.commit()
-    conn.close()
-    return jsonify({"ok": True})
-
-
 @app.route("/api/admin/users", methods=["GET"])
 def admin_users():
     """管理员查看骑手账号列表（已删除账号不显示）"""

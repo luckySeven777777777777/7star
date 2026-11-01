@@ -688,6 +688,15 @@ def login_api():
     if ud.get("status") != "normal":
         conn.close()
         return jsonify({"ok": False, "msg": "Account is disabled. Please contact your administrator."}), 403
+    # 页面角色隔离：rider 页仅允许骑手账号，track 页仅允许管理员账号
+    page = (data.get("page") or "").strip()
+    role = ud["role"]
+    if page == "rider" and role != "rider":
+        conn.close()
+        return jsonify({"ok": False, "msg": "This page is for rider accounts only. Please login with a rider account."}), 403
+    if page == "track" and role not in ("super_admin", "admin"):
+        conn.close()
+        return jsonify({"ok": False, "msg": "This page is for administrator accounts only. Please login with an administrator account."}), 403
     token = uuid.uuid4().hex
     cur.execute(_q("UPDATE users SET token=? WHERE id=?"), (token, ud["id"]))
     conn.commit()

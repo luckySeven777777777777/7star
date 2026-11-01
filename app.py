@@ -700,6 +700,61 @@ def track():
     )
 
 
+@app.route("/api/track/multi", methods=["POST"])
+def track_multi():
+    """多骑手同时查询: 一次 POST 多个 {order_no, phone, name}，返回每个骑手的位置与轨迹"""
+    data = request.get_json(silent=True) or {}
+    riders = data.get("riders") or []
+    if not isinstance(riders, list) or len(riders) == 0:
+        return jsonify({"ok": False, "msg": "Rider list is empty."}), 400
+    conn = get_db()
+    cur = conn.cursor()
+    results = []
+    for item in riders:
+        order_no = (item.get("order_no") or "").strip()
+        phone = (item.get("phone") or "").strip()
+        if not order_no or not phone:
+            results.append({"ok": False, "order_no": order_no, "msg": "Order Number + Phone are required."})
+            continue
+        cur.execute(_q("SELECT * FROM orders WHERE order_no=?"), (order_no,))
+        order = cur.fetchone()
+        if not order:
+            results.append({"ok": False, "order_no": order_no, "msg": "အမှာစာနံပါတ် မရှိပါ။ စစ်ဆေးပါ"})
+            continue
+        order_dict = _row_to_dict(cur, order)
+        cur.execute(_q("SELECT * FROM riders WHERE order_no=?"), (order_no,))
+        rider = cur.fetchone()
+        rider_dict = _row_to_dict(cur, rider) if rider else None
+        if not rider_dict or rider_dict["phone"] != phone:
+            results.append({"ok": False, "order_no": order_no, "msg": "ဖုန်းနံပါတ်နှင့် အမှာစာ မကိုက်ညီပါ။ တည်နေရာ ကြည့်ရှု၍ မရပါ"})
+            continue
+        cur.execute(
+            _q("SELECT lat, lng, status, report_time FROM locations WHERE order_no=? AND is_sim=0 ORDER BY id ASC"),
+            (order_no,),
+        )
+        points = cur.fetchall()
+        track_list = _rows_to_dicts(cur, points)
+        latest = track_list[-1] if track_list else None
+        # 批量接口不串行调用逆地理编码（10-20 个骑手时避免阻塞），前端以坐标兜底显示
+        results.append(
+            {
+                "ok": True,
+                "order_no": order_no,
+                "status": order_dict["status"],
+                "rider_name": (rider_dict.get("rider_name") or rider_dict.get("name") or "") if rider_dict else "",
+                "city": order_dict.get("city", "") or "",
+                "payment_method": order_dict.get("payment_method", "") or "",
+                "amount": order_dict.get("amount", "") or "",
+                "delivery_address": order_dict.get("delivery_address") or order_dict.get("address", ""),
+                "latest": latest,
+                "track": track_list,
+                "update_time": latest["report_time"] if latest else None,
+            }
+        )
+    conn.close()
+    return jsonify({"ok": True, "results": results})
+
+
 # ==================== 接口: 登录 / 登出 / 当前用户 ====================
 @app.route("/api/login", methods=["POST"])
 def login_api():

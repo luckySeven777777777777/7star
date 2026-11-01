@@ -104,6 +104,19 @@
   .admin-panel h3 { margin:0 0 8px; font-size:15px; color:#e07b00; }
   .admin-panel hr { border:none; border-top:1px solid #ffe0b2; margin:14px 0; }
   .admin-panel .btn { margin-top:10px; }
+  .multi-panel {
+    background:#fff8f0; border:1px solid #ffe0b2; border-radius:12px;
+    padding:14px 16px; margin-top:14px;
+  }
+  .multi-panel h3 { margin:0 0 8px; font-size:15px; color:#e07b00; }
+  .multi-panel .btn { margin-top:10px; }
+  .multi-row { display:flex; gap:8px; align-items:center; margin-bottom:8px; }
+  .multi-row input { flex:1; min-width:0; padding:8px; font-size:13px; }
+  .multi-row .del { flex:0 0 36px; margin:0; padding:8px 0; background:#d32f2f; border-radius:8px; font-size:15px; line-height:1; }
+  .multi-summary { margin-top:10px; font-size:13px; line-height:1.9; }
+  .multi-summary .ok { color:#2e7d32; }
+  .multi-summary .bad { color:#d32f2f; }
+  .multi-summary b { color:#e07b00; }
 </style>
 </head>
 <body>
@@ -175,6 +188,16 @@
       <label>ပိတ်ထားသောစာရင်း (Banned Records)</label>
       <div id="bannedRecords"></div>
     </div>
+    <div class="multi-panel">
+      <h3>🛵 ပို့ဆောင်သူ အများအပြား တည်နေရာ ကြည့်ရှုခြင်း</h3>
+      <div class="sub" style="margin-bottom:10px;">Order Number + ဖုန်းနံပါတ် (+ အမည်) ထည့်၍ ပို့ဆောင်သူ အများအပြား၏ တည်နေရာကို တစ်ပြိုင်နက် ကြည့်ပါ</div>
+      <div id="multiRows"></div>
+      <div class="row2">
+        <button class="btn btn-gray" onclick="addMultiRow()">+ Add Rider</button>
+        <button id="multiBtn" onclick="searchMulti()">Search All</button>
+      </div>
+      <div class="multi-summary" id="multiSummary" style="display:none"></div>
+    </div>
     <div class="err" id="err"></div>
   </div>
 
@@ -239,6 +262,11 @@ var trackLine = null;
 var refreshTimer = null;
 var currentOrderNo = "";
 var currentPhone = "";
+var multiGroup = null;
+var multiMarkers = {};
+var MULTI_COLORS = ["#e53935", "#1e88e5", "#43a047", "#fb8c00", "#8e24aa", "#00acc1", "#6d4c41", "#546e7a", "#d81b60", "#7cb342"];
+
+addMultiRow();
 
 async function search() {
   var orderNo = document.getElementById("orderNo").value.trim();
@@ -259,6 +287,9 @@ async function search() {
   currentPhone = phone;
   if (refreshTimer) clearInterval(refreshTimer);
   refreshTimer = setInterval(search, 5000);
+  if (window._multiRefreshTimer) { clearInterval(window._multiRefreshTimer); window._multiRefreshTimer = null; }
+  if (multiGroup) { try { map.removeLayer(multiGroup); } catch (e) {} multiGroup = null; }
+  multiMarkers = {};
 
   render(j);
 }
@@ -318,10 +349,15 @@ function render(j) {
 
 // 骑手模型图标：红色圆底 + 白色边框 + 白色线条骑手骑踏板车送包子（仿附件第三张图）
 function riderIcon() {
+  return riderIconColor("#e53935");
+}
+
+// 同款骑手图标，但可指定底色（多骑手同时显示时用不同颜色区分）
+function riderIconColor(color) {
   return L.divIcon({
     className: "",
     html: '<svg viewBox="0 0 64 64" width="46" height="46" style="filter:drop-shadow(0 2px 4px rgba(0,0,0,0.35))">' +
-      '<circle cx="32" cy="32" r="30" fill="#e53935" stroke="#fff" stroke-width="3"/>' +
+      '<circle cx="32" cy="32" r="30" fill="' + color + '" stroke="#fff" stroke-width="3"/>' +
       '<g transform="translate(0,0)">' +
       '<!-- 踏板车后轮 -->' +
       '<circle cx="18" cy="47" r="6" fill="none" stroke="#fff" stroke-width="3.5"/>' +
@@ -353,6 +389,155 @@ function animateMarkerTo(from, to, duration) {
     var lat = from[0] + (to[0] - from[0]) * t;
     var lng = from[1] + (to[1] - from[1]) * t;
     marker.setLatLng([lat, lng]);
+    if (t < 1) requestAnimationFrame(step);
+  }
+  requestAnimationFrame(step);
+}
+
+// ---------- 多骑手同时查询（10-20 个骑手） ----------
+function addMultiRow() {
+  var box = document.getElementById("multiRows");
+  var row = document.createElement("div");
+  row.className = "multi-row";
+  row.innerHTML =
+    '<input placeholder="Order Number" style="flex:1">' +
+    '<input placeholder="ဖုန်းနံပါတ်" type="tel" style="flex:1">' +
+    '<input placeholder="အမည်" style="flex:1">' +
+    '<button class="del" onclick="this.parentNode.remove()">×</button>';
+  box.appendChild(row);
+}
+
+async function searchMulti(silent) {
+  var rows = document.querySelectorAll("#multiRows .multi-row");
+  var riders = [];
+  rows.forEach(function (row) {
+    var ins = row.querySelectorAll("input");
+    var orderNo = ins[0].value.trim();
+    var phone = ins[1].value.trim();
+    var name = ins[2].value.trim();
+    if (orderNo || phone || name) {
+      riders.push({ order_no: orderNo, phone: phone, name: name });
+    }
+  });
+  if (riders.length === 0) { if (!silent) showInfo("Add at least one rider."); return; }
+  clearErr();
+  var btn = document.getElementById("multiBtn");
+  if (!silent) {
+    document.getElementById("multiSummary").style.display = "none";
+    btn.disabled = true;
+    btn.textContent = "ရှာဖွေနေသည်...";
+  }
+  try {
+    var r = await fetch("/api/track/multi", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ riders: riders })
+    });
+    var j = await r.json();
+    if (!silent) {
+      btn.disabled = false;
+      btn.textContent = "Search All";
+    }
+    if (!j.ok) { if (!silent) showInfo(j.msg); return; }
+    renderMulti(j.results || [], silent);
+    if (window._multiRefreshTimer) clearInterval(window._multiRefreshTimer);
+    window._multiRefreshTimer = setInterval(function () { searchMulti(true); }, 5000);
+  } catch (e) {
+    if (!silent) {
+      btn.disabled = false;
+      btn.textContent = "Search All";
+      showInfo("ဆာဗာနှင့် ချိတ်ဆက်၍ မရပါ။ ဝန်ဆောင်မှု စတင်ထားခြင်း ရှိမရှိ စစ်ဆေးပါ");
+    }
+  }
+}
+
+function renderMulti(results, silent) {
+  // 停止并清理单骑手查询的图层与定时器
+  if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+  if (trackLine) { try { map.removeLayer(trackLine); } catch (e) {} trackLine = null; }
+  if (marker) { try { map.removeLayer(marker); } catch (e) {} marker = null; }
+
+  var okItems = results.filter(function (x) { return x.ok && x.track && x.track.length > 0; });
+  var html = "";
+  results.forEach(function (x) {
+    if (x.ok) {
+      html += '<div class="ok">🛵 <b>' + (x.rider_name || "-") + '</b> · ' + x.order_no + ' · ' + (x.city || "-") + ' · ' + ((x.status && x.status !== "待取餐") ? x.status : "-") + '</div>';
+    } else {
+      html += '<div class="bad">' + (x.order_no || "-") + '：' + (x.msg || "error") + '</div>';
+    }
+  });
+  var sum = document.getElementById("multiSummary");
+  sum.innerHTML = html;
+  sum.style.display = "block";
+
+  if (!map) {
+    var fallback = [16.8661, 96.1951];
+    if (okItems.length > 0 && okItems[0].track.length > 0) {
+      var p0 = okItems[0].track[0];
+      fallback = [p0.lat, p0.lng];
+    }
+    map = L.map("map").setView(fallback, 15);
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      attribution: "&copy; OpenStreetMap contributors", maxZoom: 19
+    }).addTo(map);
+  }
+
+  if (!multiGroup) multiGroup = L.layerGroup().addTo(map);
+  multiGroup.clearLayers();
+
+  var allPts = [];
+  var seen = {};
+  okItems.forEach(function (x, idx) {
+    var color = MULTI_COLORS[idx % MULTI_COLORS.length];
+    var latLngs = x.track.map(function (p) { return [p.lat, p.lng]; });
+    allPts = allPts.concat(latLngs);
+    L.polyline(latLngs, { color: color, weight: 4 }).addTo(multiGroup);
+    var latest = latLngs[latLngs.length - 1];
+    var addr = x.latest ? (x.latest.address || (x.latest.lat.toFixed(6) + ", " + x.latest.lng.toFixed(6))) : "-";
+    var popupHtml = '<b>' + (x.rider_name || "-") + '</b><br>' +
+      'Order Number：' + x.order_no + '<br>' +
+      '城市：' + (x.city || "-") + '<br>' +
+      'လက်ရှိအခြေအနေ：' + ((x.status && x.status !== "待取餐") ? x.status : "-") + '<br>' +
+      'နောက်ဆုံးတည်နေရာ：' + addr + '<br>' +
+      'အချိန်：' + (x.update_time || "-");
+    var key = x.order_no;
+    seen[key] = true;
+    if (multiMarkers[key]) {
+      var mk = multiMarkers[key];
+      if (mk._riderColor !== color) { mk.setIcon(riderIconColor(color)); mk._riderColor = color; }
+      var cur = mk.getLatLng();
+      animateMarkerToLatLng(mk, [cur.lat, cur.lng], latest, 700);
+      mk.setPopupContent(popupHtml);
+    } else {
+      var m2 = L.marker(latest, { icon: riderIconColor(color) }).addTo(map);
+      m2._riderColor = color;
+      m2.bindPopup(popupHtml);
+      multiMarkers[key] = m2;
+    }
+  });
+  Object.keys(multiMarkers).forEach(function (k) {
+    if (!seen[k]) {
+      try { map.removeLayer(multiMarkers[k]); } catch (e) {}
+      delete multiMarkers[k];
+    }
+  });
+
+  if (okItems.length === 0) {
+    if (!silent) showInfo("ဤအမှာစာများအတွက် တည်နေရာဒေတာ မရှိပါ။ ပို့ဆောင်သူများ ချိတ်ဆက်၍ တည်နေရာ တင်ရန် လိုအပ်ပါသည်");
+    return;
+  }
+  if (!silent && allPts.length > 0) {
+    map.fitBounds(L.latLngBounds(allPts), { padding: [40, 40] });
+  }
+}
+
+// 多骑手 marker 平滑移动（模拟实时行驶）
+function animateMarkerToLatLng(mk, from, to, duration) {
+  var start = null;
+  function step(ts) {
+    if (!start) start = ts;
+    var t = Math.min((ts - start) / duration, 1);
+    mk.setLatLng([from[0] + (to[0] - from[0]) * t, from[1] + (to[1] - from[1]) * t]);
     if (t < 1) requestAnimationFrame(step);
   }
   requestAnimationFrame(step);

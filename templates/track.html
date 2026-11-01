@@ -109,8 +109,14 @@
 <body>
   <div class="top">
     <div class="user-area">
-      <div class="user-avatar" id="userAvatar" title="Upload avatar">
-        <span id="userAvatarIcon">👤</span>
+      <div class="user-top">
+        <div class="bell-wrap" id="bellWrap" style="display:none">
+          <button class="bell-btn" id="bellBtn" onclick="toggleBellPanel()" title="Notifications">🔔<span class="bell-badge" id="bellBadge" style="display:none">0</span></button>
+          <button class="sound-toggle" id="soundBtn" onclick="toggleBellSound()" title="Sound on/off"></button>
+        </div>
+        <div class="user-avatar" id="userAvatar" title="Upload avatar">
+          <span id="userAvatarIcon">👤</span>
+        </div>
       </div>
       <div class="user-name" id="userName">-</div>
       <div class="user-btns">
@@ -226,6 +232,18 @@
     </div>
   </div>
 
+  <div class="modal-overlay" id="bellModal" style="display:none">
+    <div class="modal-box">
+      <button class="modal-close" onclick="closeBellPanel()">×</button>
+      <h3>🔔 Notifications</h3>
+      <div class="bell-actions">
+        <button class="btn btn-gray btn-sm" onclick="markAllRead()">Mark all read</button>
+        <button class="btn btn-gray btn-sm" id="soundBtn2" onclick="toggleBellSound()"></button>
+      </div>
+      <div id="bellList" style="max-height:60vh; overflow-y:auto;"></div>
+    </div>
+  </div>
+
   <div id="map"></div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -271,6 +289,8 @@ function render(j) {
   document.getElementById("rLatest").textContent = j.latest ? (j.latest.address || (j.latest.lat.toFixed(6) + ", " + j.latest.lng.toFixed(6))) : "-";
   document.getElementById("rBaozi").textContent = (j.baozi_remaining !== undefined && j.baozi_remaining !== null) ? (j.baozi_remaining + " / " + (j.baozi_total || 0)) : "-";
   document.getElementById("rShop").textContent = (j.shop_remaining !== undefined && j.shop_remaining !== null) ? (j.shop_remaining + " / " + (j.shop_total || 0)) : "-";
+  document.getElementById("rPayMethod").textContent = j.payment_method || "-";
+  document.getElementById("rAmount").textContent = j.amount || "-";
 
   // 快递员未选择状态前显示 "-"（不显示配送中）
   var tag = document.getElementById("rStatusTag");
@@ -456,6 +476,8 @@ function renderHistory() {
       + 'ပို့ရမည့်ဆိုင်လိပ်စာ：<b>' + (h.delivery_address || "-") + '</b><br>'
       + 'ကျန်ရှိသောပေါက်စီအလုံးအရေတွက်：<b>' + h.baozi_remaining + ' / ' + h.baozi_total + '</b><br>'
       + 'ကျန်ရှိသောဆိုင်အရေတွက်：<b>' + h.shop_remaining + ' / ' + h.shop_total + '</b><br>'
+      + 'ငွေပေးချေမှုနည်းလမ်း：<b>' + (h.payment_method || "-") + '</b><br>'
+      + 'Amount (MMK)：<b>' + (h.amount || "-") + '</b><br>'
       + 'နောက်ဆုံး တင်ပြချိန်：<b>' + lastT + '</b>'
       + '</div>';
   });
@@ -540,6 +562,7 @@ function applyUser(u) {
   document.getElementById("userName").textContent = u.nickname || u.username || "-";
   document.getElementById("btnLogin").style.display = "none";
   document.getElementById("btnLogout").style.display = "block";
+  startBellPoll();
 }
 async function uploadAvatar(e) {
   var f = e.target.files && e.target.files[0];
@@ -584,6 +607,137 @@ async function checkLogin() {
   document.getElementById("btnLogin").style.display = "block";
   document.getElementById("btnLogout").style.display = "block";
   document.getElementById("userName").textContent = "-";
+}
+
+// ===== 🔔 铃铛通知（新订单提醒 + 女声播报 + 声音开关） =====
+var _bellSoundOn = localStorage.getItem("bellSound") !== "off";
+var _bellKnownIds = {};
+var _bellKnownCount = 0;
+var _bellPollTimer = null;
+var _bellListCache = [];
+
+function bellSoundIcon() { return _bellSoundOn ? "🔊" : "🔇"; }
+function updateSoundButtons() {
+  var s1 = document.getElementById("soundBtn");
+  if (s1) s1.textContent = bellSoundIcon();
+  var s2 = document.getElementById("soundBtn2");
+  if (s2) s2.textContent = _bellSoundOn ? "Sound: ON" : "Sound: OFF";
+}
+function toggleBellSound() {
+  _bellSoundOn = !_bellSoundOn;
+  localStorage.setItem("bellSound", _bellSoundOn ? "on" : "off");
+  updateSoundButtons();
+}
+// 女性语音播报：你有新的订单，请及时查看
+function speakNewOrder() {
+  if (!_bellSoundOn) return;
+  try {
+    if (!("speechSynthesis" in window)) return;
+    window.speechSynthesis.cancel();
+    var u = new SpeechSynthesisUtterance("你有新的订单，请及时查看");
+    u.lang = "zh-CN";
+    var voices = window.speechSynthesis.getVoices() || [];
+    var v = voices.find(function (x) { return /female|xiaoxiao|huihui|yating|yaoyao/i.test(x.name || ""); })
+      || voices.find(function (x) { return /zh/i.test(x.lang || ""); })
+      || voices[0];
+    if (v) u.voice = v;
+    u.rate = 1.0;
+    u.pitch = 1.25; // 略高音调，更接近女性声音
+    window.speechSynthesis.speak(u);
+  } catch (e) {}
+}
+function renderBellList(list) {
+  var box = document.getElementById("bellList");
+  if (!box) return;
+  if (!list || list.length === 0) {
+    box.innerHTML = '<div class="bell-empty">No notifications yet.</div>';
+    return;
+  }
+  var html = "";
+  list.forEach(function (n) {
+    html += '<div class="bell-item' + (n.is_read ? "" : " unread") + '">'
+      + 'Order Number：<b>' + n.order_no + '</b><br>'
+      + 'ပို့ဆောင်သူအမည်：<b>' + (n.rider_name || "-") + '</b><br>'
+      + 'ပို့ဆောင်သူ ဖုန်းနံပါတ်：<b>' + (n.rider_phone || "-") + '</b><br>'
+      + '<button class="copy-btn" onclick="copyOrderInfo(' + n.id + ')">Copy</button>'
+      + '</div>';
+  });
+  box.innerHTML = html;
+}
+async function copyOrderInfo(id) {
+  var n = null;
+  (_bellListCache || []).forEach(function (x) { if (x.id === id) n = x; });
+  if (!n) return;
+  var text = "Order Number: " + n.order_no + "\nပို့ဆောင်သူအမည်: " + (n.rider_name || "") + "\nပို့ဆောင်သူ ဖုန်းနံပါတ်: " + (n.rider_phone || "");
+  var done = false;
+  try {
+    await navigator.clipboard.writeText(text);
+    done = true;
+  } catch (e) {}
+  if (!done) {
+    try {
+      var ta = document.createElement("textarea");
+      ta.value = text; document.body.appendChild(ta); ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+      done = true;
+    } catch (e2) {}
+  }
+  showInfo(done ? "Copied:\n" + text : "Copy failed.");
+}
+async function loadNotifications() {
+  try {
+    var r = await fetch("/api/admin/notifications", { headers: authHeaders() });
+    var j = await r.json();
+    if (!j.ok) return;
+    _bellListCache = j.notifications || [];
+    var unread = 0;
+    var fresh = [];
+    _bellListCache.forEach(function (n) {
+      if (!n.is_read) unread++;
+      if (!_bellKnownIds[n.id]) { _bellKnownIds[n.id] = 1; fresh.push(n); }
+    });
+    var badge = document.getElementById("bellBadge");
+    if (unread > 0) { badge.textContent = unread; badge.style.display = "flex"; }
+    else { badge.style.display = "none"; }
+    // 仅当检测到「新」通知且页面早已初始化（非首轮）时语音播报
+    if (fresh.length > 0 && _bellKnownCount > 0) speakNewOrder();
+    _bellKnownCount = Object.keys(_bellKnownIds).length;
+    if (document.getElementById("bellModal").style.display === "flex") renderBellList(_bellListCache);
+  } catch (e) {}
+}
+function toggleBellPanel() {
+  var m = document.getElementById("bellModal");
+  if (m.style.display === "flex") { closeBellPanel(); return; }
+  m.style.display = "flex";
+  renderBellList(_bellListCache);
+  markAllRead();
+}
+function closeBellPanel() {
+  document.getElementById("bellModal").style.display = "none";
+}
+async function markAllRead() {
+  try {
+    await fetch("/api/admin/notifications/read", {
+      method: "POST",
+      headers: Object.assign({ "Content-Type": "application/json" }, authHeaders()),
+      body: JSON.stringify({})
+    });
+  } catch (e) {}
+  var badge = document.getElementById("bellBadge");
+  if (badge) badge.style.display = "none";
+  if (_bellListCache) {
+    _bellListCache.forEach(function (n) { n.is_read = 1; });
+    renderBellList(_bellListCache);
+  }
+}
+function startBellPoll() {
+  var wrap = document.getElementById("bellWrap");
+  if (wrap) wrap.style.display = "flex";
+  updateSoundButtons();
+  _bellKnownCount = 0; // 首轮只记录历史，不播报
+  loadNotifications();
+  if (!_bellPollTimer) _bellPollTimer = setInterval(loadNotifications, 5000);
 }
 
 // ===== 管理员面板（超级管理员/管理员） =====

@@ -394,6 +394,12 @@ def create_order():
         _q("INSERT INTO orders (order_no, customer_name, address, status, created_at) VALUES (?,?,?,?,?)"),
         (order_no, customer_name, address, "待取餐", now_str()),
     )
+    # 铃铛通知：订单创建后立即通知商家（骑手名/手机号待绑定后更新），track 页铃铛红标+语音播报
+    cur.execute(
+        _q("INSERT INTO notifications (order_no, rider_name, rider_phone, created_at, is_read) VALUES (?,?,?,?,0) "
+           "ON CONFLICT(order_no) DO UPDATE SET created_at=excluded.created_at, is_read=0"),
+        (order_no, "", "", now_str()),
+    )
     conn.commit()
     conn.close()
     return jsonify({"ok": True, "order_no": order_no, "msg": "အမှာစာ ဖန်တီးမှု အောင်မြင်ပါသည်"})
@@ -504,6 +510,28 @@ def report_location():
     conn.commit()
     conn.close()
     return jsonify({"ok": True, "msg": "တည်နေရာ တင်ပြီးပါပြီ"})
+
+
+# ==================== 接口: 骑手状态同步（不依赖 GPS 上报） ====================
+@app.route("/api/rider/status", methods=["POST"])
+def rider_status():
+    """骑手确认状态后立即同步订单状态，保证商家页与 Order History 状态一致"""
+    data = request.get_json(silent=True) or {}
+    order_no = (data.get("order_no") or "").strip()
+    phone = (data.get("phone") or "").strip()
+    status = (data.get("status") or "").strip()
+    if not order_no or not phone or not status:
+        return jsonify({"ok": False, "msg": "အချက်အလက် မပြည့်စုံပါ"}), 400
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute(_q("SELECT id FROM riders WHERE phone=? AND order_no=?"), (phone, order_no))
+    if not cur.fetchone():
+        conn.close()
+        return jsonify({"ok": False, "msg": "ဤဖုန်းနံပါတ်သည် ဤအမှာစာနှင့် ချိတ်ဆက်မထားပါ"}), 403
+    cur.execute(_q("UPDATE orders SET status=? WHERE order_no=?"), (status, order_no))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True, "msg": "အခြေအနေ ပြောင်းလဲပြီးပါပြီ"})
 
 
 # ==================== 接口: 骑手确认收货 / 状态刷新 / GPS 开关 ====================

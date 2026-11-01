@@ -20,10 +20,12 @@
 import os
 import sqlite3
 import json
+import uuid
 import urllib.request
 import urllib.parse
 from datetime import datetime
-from flask import Flask, request, jsonify, render_template
+from flask import Flask, request, jsonify, render_template, redirect
+from werkzeug.security import generate_password_hash, check_password_hash
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "data", "tracking.db")
@@ -127,6 +129,19 @@ def init_db():
                 bind_time TEXT
             )
         """))
+        cur.execute(_q("""
+            CREATE TABLE IF NOT EXISTS users (
+                id SERIAL PRIMARY KEY,
+                username TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                nickname TEXT DEFAULT '',
+                role TEXT DEFAULT 'rider',
+                status TEXT DEFAULT 'normal',
+                avatar TEXT DEFAULT '',
+                token TEXT DEFAULT '',
+                created_at TEXT
+            )
+        """))
     else:
         cur.executescript("""
             CREATE TABLE IF NOT EXISTS orders (
@@ -170,6 +185,17 @@ def init_db():
                 rider_name TEXT DEFAULT '',
                 bind_time TEXT
             );
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                nickname TEXT DEFAULT '',
+                role TEXT DEFAULT 'rider',
+                status TEXT DEFAULT 'normal',
+                avatar TEXT DEFAULT '',
+                token TEXT DEFAULT '',
+                created_at TEXT
+            );
         """)
     conn.commit()
     conn.close()
@@ -181,6 +207,25 @@ init_db()
 def now_str():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+
+def ensure_admin():
+    """首次运行时自动创建超级管理员账号（admin / Admin@123456），登录后建议立即修改密码"""
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute(_q("SELECT COUNT(*) AS c FROM users WHERE role IN ('super_admin','admin')"))
+    row = cur.fetchone()
+    count = row[0] if is_pg() else row["c"]
+    if count == 0:
+        cur.execute(
+            _q("INSERT INTO users (username, password_hash, nickname, role, status, created_at) VALUES (?,?,?,?,?,?)"),
+            ("admin", generate_password_hash("Admin@123456"), "Super Admin", "super_admin", "normal", now_str()),
+        )
+        conn.commit()
+        print("已自动创建超级管理员账号: admin / Admin@123456")
+    conn.close()
+
+
+ensure_admin()
 
 # ==================== 反向地理编码（经纬度 -> 地名） ====================
 _geo_cache = {}
@@ -218,19 +263,55 @@ def reverse_geocode(lat, lng):
         return None
 
 
+# ==================== 账号认证辅助 ====================
+def get_current_user():
+    """从请求头(Authorization)或 Cookie 中解析当前登录用户，未登录/被禁返回 None"""
+    token = (request.headers.get("Authorization") or "").replace("Bearer ", "").strip()
+    if not token:
+        token = (request.cookies.get("token") or "").strip()
+    if not token:
+        return None
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute(_q("SELECT * FROM users WHERE token=? AND status='normal'"), (token,))
+    user = cur.fetchone()
+    ud = _row_to_dict(cur, user) if user else None
+    conn.close()
+    return ud
+
+
+def require_admin():
+    """仅超级管理员/管理员可调用；否则返回 None"""
+    u = get_current_user()
+    if not u:
+        return None
+    if u.get("role") not in ("super_admin", "admin"):
+        return None
+    return u
+
+
 # ==================== 页面路由 ====================
 @app.route("/")
 def index():
     return render_template("index.html")
 
 
+@app.route("/login")
+def login_page():
+    return render_template("login.html")
+
+
 @app.route("/rider")
 def rider_page():
+    if not get_current_user():
+        return redirect("/login?next=/rider")
     return render_template("rider.html")
 
 
 @app.route("/track")
 def track_page():
+    if not get_current_user():
+        return redirect("/login?next=/track")
     return render_template("track.html")
 
 
@@ -555,6 +636,191 @@ def track():
             "update_time": latest["report_time"] if latest else None,
         }
     )
+
+
+# ==================== 接口: 登录 / 登出 / 当前用户 ====================
+@app.route("/api/login", methods=["POST"])
+def login_api():
+    """骑手/管理员登录：校验账号密码，返回 token 并种 Cookie"""
+    data = request.get_json(silent=True) or {}
+    username = (data.get("username") or "").strip()
+    password = data.get("password") or ""
+    if not username or not password:
+        return jsonify({"ok": False, "msg": "Please enter User Name and Password."}), 400
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute(_q("SELECT * FROM users WHERE username=?"), (username,))
+    user = cur.fetchone()
+    if not user:
+        conn.close()
+        return jsonify({"ok": False, "msg": "Incorrect User Name or Password."}), 401
+    ud = _row_to_dict(cur, user)
+    if not check_password_hash(ud["password_hash"], password):
+        conn.close()
+        return jsonify({"ok": False, "msg": "Incorrect User Name or Password."}), 401
+    if ud.get("status") != "normal":
+        conn.close()
+        return jsonify({"ok": False, "msg": "Account is disabled. Please contact your administrator."}), 403
+    token = uuid.uuid4().hex
+    cur.execute(_q("UPDATE users SET token=? WHERE id=?"), (token, ud["id"]))
+    conn.commit()
+    conn.close()
+    resp = jsonify({
+        "ok": True, "token": token,
+        "username": ud["username"], "nickname": ud.get("nickname") or "",
+        "avatar": ud.get("avatar") or "", "role": ud["role"],
+    })
+    resp.set_cookie("token", token, max_age=60 * 60 * 24 * 30, samesite="Lax")
+    return resp
+
+
+@app.route("/api/logout", methods=["POST"])
+def logout_api():
+    """登出：清除 token 与 Cookie"""
+    user = get_current_user()
+    if user:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute(_q("UPDATE users SET token='' WHERE id=?"), (user["id"],))
+        conn.commit()
+        conn.close()
+    resp = jsonify({"ok": True})
+    resp.delete_cookie("token")
+    return resp
+
+
+@app.route("/api/user/me", methods=["GET"])
+def user_me():
+    """返回当前登录用户信息（前端用于头像/昵称/按钮显隐）"""
+    user = get_current_user()
+    if not user:
+        return jsonify({"ok": False, "msg": "Not logged in."}), 401
+    return jsonify({
+        "ok": True,
+        "username": user["username"],
+        "nickname": user.get("nickname") or "",
+        "avatar": user.get("avatar") or "",
+        "role": user["role"],
+    })
+
+
+@app.route("/api/user/avatar", methods=["POST"])
+def upload_avatar():
+    """上传头像（手机/电脑选图），保存到 static/uploads/avatars"""
+    user = get_current_user()
+    if not user:
+        return jsonify({"ok": False, "msg": "Not logged in."}), 401
+    f = request.files.get("avatar")
+    if not f:
+        return jsonify({"ok": False, "msg": "No file uploaded."}), 400
+    ext = os.path.splitext(f.filename or "")[1].lower()
+    if ext not in (".png", ".jpg", ".jpeg", ".gif", ".webp"):
+        ext = ".png"
+    upload_dir = os.path.join(BASE_DIR, "static", "uploads", "avatars")
+    os.makedirs(upload_dir, exist_ok=True)
+    fname = user["username"] + "_" + uuid.uuid4().hex[:10] + ext
+    f.save(os.path.join(upload_dir, fname))
+    avatar_url = "/static/uploads/avatars/" + fname
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute(_q("UPDATE users SET avatar=? WHERE id=?"), (avatar_url, user["id"]))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True, "avatar": avatar_url})
+
+
+# ==================== 接口: 管理员（超级管理员/管理员） ====================
+@app.route("/api/admin/users", methods=["GET"])
+def admin_users():
+    """管理员查看骑手账号列表（已删除账号不显示）"""
+    admin = require_admin()
+    if not admin:
+        return jsonify({"ok": False, "msg": "Admin permission required."}), 403
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute(_q("SELECT id, username, nickname, role, status, created_at FROM users WHERE role='rider' AND status!='deleted' ORDER BY id DESC"))
+    rows = cur.fetchall()
+    conn.close()
+    return jsonify({"ok": True, "users": _rows_to_dicts(cur, rows)})
+
+
+@app.route("/api/admin/user/create", methods=["POST"])
+def admin_create_user():
+    """管理员创建骑手账号（User Name 唯一，昵称由管理员指定，骑手不可自改）"""
+    admin = require_admin()
+    if not admin:
+        return jsonify({"ok": False, "msg": "Admin permission required."}), 403
+    data = request.get_json(silent=True) or {}
+    username = (data.get("username") or "").strip()
+    password = data.get("password") or ""
+    nickname = (data.get("nickname") or "").strip()
+    if not username or not password:
+        return jsonify({"ok": False, "msg": "User Name and Password are required."}), 400
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute(_q("SELECT id FROM users WHERE username=?"), (username,))
+    if cur.fetchone():
+        conn.close()
+        return jsonify({"ok": False, "msg": "User Name already exists."}), 400
+    cur.execute(
+        _q("INSERT INTO users (username, password_hash, nickname, role, status, created_at) VALUES (?,?,?,?,?,?)"),
+        (username, generate_password_hash(password), nickname or username, "rider", "normal", now_str()),
+    )
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True, "msg": "Rider account created.", "username": username, "nickname": nickname or username})
+
+
+@app.route("/api/admin/user/password", methods=["POST"])
+def admin_reset_password():
+    """管理员修改骑手登录密码（骑手忘记密码时使用）"""
+    admin = require_admin()
+    if not admin:
+        return jsonify({"ok": False, "msg": "Admin permission required."}), 403
+    data = request.get_json(silent=True) or {}
+    username = (data.get("username") or "").strip()
+    new_password = data.get("new_password") or ""
+    if not username or not new_password:
+        return jsonify({"ok": False, "msg": "User Name and new Password are required."}), 400
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute(_q("SELECT id FROM users WHERE username=? AND role='rider'"), (username,))
+    if not cur.fetchone():
+        conn.close()
+        return jsonify({"ok": False, "msg": "Rider account not found."}), 404
+    cur.execute(
+        _q("UPDATE users SET password_hash=? WHERE username=? AND role='rider'"),
+        (generate_password_hash(new_password), username),
+    )
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True, "msg": "Password updated."})
+
+
+@app.route("/api/admin/user/status", methods=["POST"])
+def admin_set_status():
+    """管理员权限开关：正常登录 / 禁止登录 / 删除账号"""
+    admin = require_admin()
+    if not admin:
+        return jsonify({"ok": False, "msg": "Admin permission required."}), 403
+    data = request.get_json(silent=True) or {}
+    username = (data.get("username") or "").strip()
+    status = (data.get("status") or "").strip()
+    if not username or status not in ("normal", "banned", "deleted"):
+        return jsonify({"ok": False, "msg": "Invalid parameters."}), 400
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute(_q("SELECT id FROM users WHERE username=? AND role='rider'"), (username,))
+    if not cur.fetchone():
+        conn.close()
+        return jsonify({"ok": False, "msg": "Rider account not found."}), 404
+    cur.execute(
+        _q("UPDATE users SET status=?, token='' WHERE username=? AND role='rider'"),
+        (status, username),
+    )
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True, "msg": "Account status updated."})
 
 
 if __name__ == "__main__":

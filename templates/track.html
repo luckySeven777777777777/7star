@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ဖောက်သည်/ဆိုင် - ပို့ဆောင်သူ တည်နေရာ ရှာဖွေခြင်း</title>
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css" />
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 <style>
   * { margin:0; padding:0; box-sizing:border-box; }
   body {
@@ -49,6 +49,8 @@
   .modal-close { position:absolute; top:6px; right:10px; background:none; border:none; font-size:24px; line-height:1; cursor:pointer; color:#888; }
   .modal-box h3 { margin:0 0 6px; color:#333; font-size:17px; }
   .modal-info { text-align:center; padding:28px 22px 22px; }
+  /* 铃铛通知下拉面板：贴右上角铃铛下方展开，不遮挡全屏页面 */
+  .bell-pop { position:fixed; top:64px; right:12px; width:min(92vw,360px); max-height:70vh; overflow-y:auto; background:#fff; border-radius:14px; padding:16px; box-shadow:0 6px 24px rgba(0,0,0,0.28); z-index:120; }
   .info-icon {
     width:58px; height:58px; margin:0 auto 12px; border-radius:50%;
     background:linear-gradient(135deg, #56ab2f, #a8e063); color:#fff;
@@ -126,7 +128,6 @@
       <div class="user-top">
         <div class="bell-wrap" id="bellWrap" style="display:none">
           <button class="bell-btn" id="bellBtn" onclick="toggleBellPanel()" title="Notifications">🔔<span class="bell-badge" id="bellBadge" style="display:none">0</span></button>
-          <button class="sound-toggle" id="soundBtn" onclick="toggleBellSound()" title="Sound on/off"></button>
         </div>
         <div class="user-avatar" id="userAvatar" title="Upload avatar">
           <span id="userAvatarIcon">👤</span>
@@ -260,7 +261,7 @@
 
   <div id="map"></div>
 
-<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" onerror="var s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js';document.head.appendChild(s);"></script>
 <script>
 var map = null;
 var marker = null;
@@ -277,19 +278,24 @@ async function search() {
   clearErr();
   document.getElementById("searchBtn").disabled = true;
   document.getElementById("searchBtn").textContent = "ရှာဖွေနေသည်...";
-  var r = await fetch("/api/track?order_no=" + encodeURIComponent(orderNo) + "&phone=" + encodeURIComponent(phone) + "&name=" + encodeURIComponent(riderName));
-  var j = await r.json();
-  document.getElementById("searchBtn").disabled = false;
-  document.getElementById("searchBtn").textContent = "တည်နေရာ ရှာမည်";
+  try {
+    var r = await fetch("/api/track?order_no=" + encodeURIComponent(orderNo) + "&phone=" + encodeURIComponent(phone) + "&name=" + encodeURIComponent(riderName));
+    var j = await r.json();
 
-  if (!j.ok) { showErr(j.msg || "ရှာဖွေမှု မအောင်မြင်ပါ"); return; }
+    if (!j.ok) { showErr(j.msg || "ရှာဖွေမှု မအောင်မြင်ပါ"); return; }
 
-  currentOrderNo = orderNo;
-  currentPhone = phone;
-  if (refreshTimer) clearInterval(refreshTimer);
-  refreshTimer = setInterval(search, 5000);
+    currentOrderNo = orderNo;
+    currentPhone = phone;
+    if (refreshTimer) clearInterval(refreshTimer);
+    refreshTimer = setInterval(search, 5000);
 
-  render(j);
+    render(j);
+  } catch (e) {
+    showErr("ရှာဖွေမှု ချို့ယွင်းခဲ့သည်: " + (e && e.message ? e.message : e));
+  } finally {
+    document.getElementById("searchBtn").disabled = false;
+    document.getElementById("searchBtn").textContent = "တည်နေရာ ရှာမည်";
+  }
 }
 
 function render(j) {
@@ -734,19 +740,27 @@ async function loadNotifications() {
     // 仅当检测到「新」通知且页面早已初始化（非首轮）时语音播报
     if (fresh.length > 0 && _bellKnownCount > 0) speakNewOrder();
     _bellKnownCount = Object.keys(_bellKnownIds).length;
-    if (document.getElementById("bellModal").style.display === "flex") renderBellList(_bellListCache);
+    if (document.getElementById("bellModal").style.display === "block") renderBellList(_bellListCache);
   } catch (e) {}
 }
 function toggleBellPanel() {
   var m = document.getElementById("bellModal");
-  if (m.style.display === "flex") { closeBellPanel(); return; }
-  m.style.display = "flex";
+  if (m.style.display === "block") { closeBellPanel(); return; }
+  m.style.display = "block";
   renderBellList(_bellListCache);
   markAllRead();
 }
 function closeBellPanel() {
   document.getElementById("bellModal").style.display = "none";
 }
+document.addEventListener("click", function (e) {
+  var m = document.getElementById("bellModal");
+  if (!m || m.style.display !== "block") return;
+  var inPanel = m.contains(e.target);
+  var bell = document.getElementById("bellBtn");
+  var inBell = bell && bell.contains(e.target);
+  if (!inPanel && !inBell) closeBellPanel();
+});
 async function markAllRead() {
   try {
     await fetch("/api/admin/notifications/read", {

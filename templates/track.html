@@ -5,8 +5,6 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ဖောက်သည်/ဆိုင် - ပို့ဆောင်သူ တည်နေရာ ရှာဖွေခြင်း</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css" />
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css" />
 <style>
   * { margin:0; padding:0; box-sizing:border-box; }
   body {
@@ -18,7 +16,7 @@
   .top .sub { font-size: 13px; opacity:.9; margin-top:4px; line-height:1.8; }
   .search {
     background:#fff; border-radius: 12px; margin: -26px 16px 14px;
-    padding: 16px; box-shadow: 0 2px 10px rgba(0,0,0,0.12); position:relative; z-index:15;
+    padding: 16px; box-shadow: 0 2px 10px rgba(0,0,0,0.12); position:relative; z-index:5;
   }
   label { display:block; font-size:12px; color:#888; margin: 8px 0 4px; }
   input {
@@ -74,34 +72,17 @@
   .history-head select { padding:6px 8px; border:1px solid #ddd; border-radius:8px; font-size:13px; background:#fff; color:#333; max-width:180px; }
   .history-more { text-align:center; margin-top:10px; }
   .history-more .btn { margin-top:0; padding:8px; font-size:13px; }
-  .top { position:relative; padding: 20px 16px 64px; }
-  /* 顶部文字预留用户区空间，避免与头像/铃铛/按钮重叠 */
-  .top h2, .top .sub { padding-right: 170px; }
-  /* 用户区：一行排列（铃铛线条 + 头像 + Login/Logout），透明无背景框，位于 Order Number 上方 */
-  .user-area { position:absolute; top:8px; right:10px; display:flex; flex-direction:row; align-items:center; justify-content:flex-end; gap:8px; flex-wrap:nowrap; z-index:8; background:transparent; border-radius:0; padding:0; box-shadow:none; }
-  .user-avatar { width:38px; height:38px; border-radius:50%; background:transparent; color:#fff; font-size:22px; display:flex; align-items:center; justify-content:center; overflow:hidden; border:none; cursor:pointer; box-shadow:none; margin:0; padding:0; }
+  .top { position:relative; }
+  /* 顶部文字预留用户区空间，避免与头像/昵称/按钮重叠 */
+  .top h2, .top .sub { padding-right: 118px; }
+  .user-area { position:absolute; top:12px; right:12px; display:flex; flex-direction:column; align-items:center; gap:4px; z-index:5; }
+  .user-avatar { width:46px; height:46px; border-radius:50%; background:#fff; color:#e07b00; font-size:24px; display:flex; align-items:center; justify-content:center; overflow:hidden; border:2px solid #fff; cursor:pointer; }
   .user-avatar img { width:100%; height:100%; object-fit:cover; }
-  .user-name { display:none; }
+  .user-name { font-size:12px; color:#fff; font-weight:bold; max-width:130px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .user-btns { display:flex; gap:6px; white-space:nowrap; }
-  .user-btns button { padding:4px 10px; border:none; border-radius:8px; font-size:12px; cursor:pointer; width:auto; margin:0; }
+  .user-btns button { padding:4px 12px; border:none; border-radius:8px; font-size:12px; cursor:pointer; }
   .btn-login { background:#fff; color:#e07b00; font-weight:bold; }
-  .btn-logout { background:#fff; color:#c62828; font-weight:bold; }
-  /* 铃铛：线条图标（SVG），无背景框、无边框、无阴影 */
-  .bell-wrap { display:flex; align-items:center; gap:4px; flex-shrink:0; }
-  .bell-btn { position:relative; width:40px; height:40px; border-radius:50%; background:transparent; border:none; font-size:0; cursor:pointer; display:flex; align-items:center; justify-content:center; box-shadow:none; margin:0; padding:0; color:#fff; }
-  .bell-btn svg { width:24px; height:24px; }
-  .bell-badge { position:absolute; top:-2px; right:-2px; min-width:18px; height:18px; border-radius:10px; background:#d32f2f; color:#fff; font-size:11px; font-weight:bold; display:flex; align-items:center; justify-content:center; padding:0 4px; }
-  .sound-toggle { width:30px; height:30px; border-radius:50%; border:none; background:rgba(255,255,255,.92); font-size:15px; cursor:pointer; display:flex; align-items:center; justify-content:center; box-shadow:0 2px 6px rgba(0,0,0,0.15); }
-  /* 铃铛通知弹层：正中央显示 */
-  .bell-pop { position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); width:min(92vw,360px); max-height:70vh; overflow-y:auto; background:#fff; border-radius:14px; padding:16px; box-shadow:0 6px 24px rgba(0,0,0,0.28); z-index:120; }
-  .bell-item { background:#f9f9f9; border:1px solid #eee; border-radius:10px; padding:12px; margin:10px 0; text-align:left; font-size:13px; line-height:2; color:#333; }
-  .bell-item.unread { background:#fff8e1; border-color:#ffd54f; }
-  .bell-item b { color:#e07b00; }
-  .bell-item .copy-btn { margin-top:6px; padding:4px 14px; border:none; border-radius:8px; background:linear-gradient(135deg,#f6d365,#fda085); color:#fff; font-size:12px; cursor:pointer; }
-  .bell-empty { text-align:center; color:#999; padding:24px 0; font-size:14px; }
-  .bell-actions { display:flex; gap:8px; margin:10px 0 4px; }
-  .bell-actions .btn { margin-top:0; padding:8px; font-size:13px; }
-  .btn-sm { width:auto; }
+  .btn-logout { background:rgba(255,255,255,.92); color:#c62828; font-weight:bold; }
   /* 密码可见性切换（眼睛按钮） */
   .input-wrap { position:relative; }
   .input-wrap input { padding-right:44px; }
@@ -128,15 +109,6 @@
 <body>
   <div class="top">
     <div class="user-area">
-      <div class="bell-wrap" id="bellWrap" style="display:none">
-        <button class="bell-btn" id="bellBtn" onclick="toggleBellPanel()" title="Notifications">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
-            <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
-          </svg>
-          <span class="bell-badge" id="bellBadge" style="display:none">0</span>
-        </button>
-      </div>
       <div class="user-avatar" id="userAvatar" title="Upload avatar">
         <span id="userAvatarIcon">👤</span>
       </div>
@@ -254,71 +226,10 @@
     </div>
   </div>
 
-  <div class="modal-overlay" id="bellModal" style="display:none">
-    <div class="modal-box">
-      <button class="modal-close" onclick="closeBellPanel()">×</button>
-      <h3>🔔 Notifications</h3>
-      <div class="bell-actions">
-        <button class="btn btn-gray btn-sm" onclick="markAllRead()">Mark all read</button>
-        <button class="btn btn-gray btn-sm" id="soundBtn2" onclick="toggleBellSound()"></button>
-      </div>
-      <div id="bellList" style="max-height:60vh; overflow-y:auto;"></div>
-    </div>
-  </div>
-
   <div id="map"></div>
 
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
-// Leaflet 三源动态加载：unpkg 主源失败自动切换 jsdelivr / cdnjs，杜绝地图白屏
-var _leafletLoading = false;
-function ensureLeaflet(cb) {
-  if (typeof L !== "undefined") { cb(); return; }
-  if (_leafletLoading) { setTimeout(function () { ensureLeaflet(cb); }, 250); return; }
-  _leafletLoading = true;
-  var urls = [
-    "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js",
-    "https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js",
-    "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"
-  ];
-  var i = 0;
-  function next() {
-    if (typeof L !== "undefined") { cb(); return; }
-    if (i >= urls.length) {
-      showErr("Map library failed to load. Please check your network and refresh.");
-      return;
-    }
-    var s = document.createElement("script");
-    s.src = urls[i++];
-    s.onload = function () { cb(); };
-    s.onerror = function () { next(); };
-    document.head.appendChild(s);
-  }
-  next();
-}
-// 地图瓦片多源回退：OSM 主源加载失败自动切换 CARTO / OSM.de，杜绝地图空白
-function addTileLayerWithFallback(mapObj) {
-  var sources = [
-    { url: "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", opt: { attribution: "&copy; OpenStreetMap contributors", maxZoom: 19 } },
-    { url: "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png", opt: { attribution: "&copy; CARTO", maxZoom: 19 } },
-    { url: "https://tile.openstreetmap.de/{z}/{x}/{y}.png", opt: { attribution: "&copy; OpenStreetMap", maxZoom: 19 } }
-  ];
-  var idx = 0, fails = 0, layer = null;
-  function add() {
-    if (idx >= sources.length) return;
-    var src = sources[idx];
-    layer = L.tileLayer(src.url, Object.assign({}, src.opt));
-    layer.on("tileerror", function () {
-      fails++;
-      if (fails >= 5) {
-        fails = 0; idx++;
-        if (layer) mapObj.removeLayer(layer);
-        add();
-      }
-    });
-    layer.addTo(mapObj);
-  }
-  add();
-}
 var map = null;
 var marker = null;
 var trackLine = null;
@@ -334,24 +245,19 @@ async function search() {
   clearErr();
   document.getElementById("searchBtn").disabled = true;
   document.getElementById("searchBtn").textContent = "ရှာဖွေနေသည်...";
-  try {
-    var r = await fetch("/api/track?order_no=" + encodeURIComponent(orderNo) + "&phone=" + encodeURIComponent(phone) + "&name=" + encodeURIComponent(riderName));
-    var j = await r.json();
+  var r = await fetch("/api/track?order_no=" + encodeURIComponent(orderNo) + "&phone=" + encodeURIComponent(phone) + "&name=" + encodeURIComponent(riderName));
+  var j = await r.json();
+  document.getElementById("searchBtn").disabled = false;
+  document.getElementById("searchBtn").textContent = "တည်နေရာ ရှာမည်";
 
-    if (!j.ok) { showErr(j.msg || "ရှာဖွေမှု မအောင်မြင်ပါ"); return; }
+  if (!j.ok) { showErr(j.msg || "ရှာဖွေမှု မအောင်မြင်ပါ"); return; }
 
-    currentOrderNo = orderNo;
-    currentPhone = phone;
-    if (refreshTimer) clearInterval(refreshTimer);
-    refreshTimer = setInterval(search, 5000);
+  currentOrderNo = orderNo;
+  currentPhone = phone;
+  if (refreshTimer) clearInterval(refreshTimer);
+  refreshTimer = setInterval(search, 5000);
 
-    render(j);
-  } catch (e) {
-    showErr("ရှာဖွေမှု ချို့ယွင်းခဲ့သည်: " + (e && e.message ? e.message : e));
-  } finally {
-    document.getElementById("searchBtn").disabled = false;
-    document.getElementById("searchBtn").textContent = "တည်နေရာ ရှာမည်";
-  }
+  render(j);
 }
 
 function render(j) {
@@ -365,8 +271,6 @@ function render(j) {
   document.getElementById("rLatest").textContent = j.latest ? (j.latest.address || (j.latest.lat.toFixed(6) + ", " + j.latest.lng.toFixed(6))) : "-";
   document.getElementById("rBaozi").textContent = (j.baozi_remaining !== undefined && j.baozi_remaining !== null) ? (j.baozi_remaining + " / " + (j.baozi_total || 0)) : "-";
   document.getElementById("rShop").textContent = (j.shop_remaining !== undefined && j.shop_remaining !== null) ? (j.shop_remaining + " / " + (j.shop_total || 0)) : "-";
-  document.getElementById("rPayMethod").textContent = j.payment_method || "-";
-  document.getElementById("rAmount").textContent = j.amount || "-";
 
   // 快递员未选择状态前显示 "-"（不显示配送中）
   var tag = document.getElementById("rStatusTag");
@@ -380,38 +284,16 @@ function render(j) {
   }
 
   var latLngs = (j.track || []).map(function(p) { return [p.lat, p.lng]; });
-  var DEFAULT_CENTER = [16.8661, 96.1951]; // 仰光默认视野
-
-  // Leaflet 库加载失败防护：动态加载三源 CDN 后自动重试，避免地图白屏
-  if (typeof L === "undefined") {
-    showErr("Map library loading, please wait...");
-    ensureLeaflet(function () {
-      if (typeof L !== "undefined" && currentOrderNo) {
-        render(j);
-      } else {
-        showErr("Map library failed to load. Please check your network and refresh.");
-      }
-    });
-    return;
-  }
-
-  // 地图始终初始化：即使暂无轨迹，也显示地图默认视野
-  if (!map) {
-    try {
-      map = L.map("map").setView(latLngs.length > 0 ? latLngs[0] : DEFAULT_CENTER, 15);
-      addTileLayerWithFallback(map);
-    } catch (e) {
-      showErr("Map init failed: " + (e && e.message ? e.message : e));
-      return;
-    }
-  }
-
   if (latLngs.length === 0) {
     showErr("ဤအမှာစာအတွက် တည်နေရာဒေတာ မရှိသေးပါ။ ပို့ဆောင်သူသည် 「ပို့ဆောင်သူ」စာမျက်နှာတွင် ချိတ်ဆက်၍ တည်နေရာ တင်ရန် လိုအပ်ပါသည်");
-    if (trackLine) { map.removeLayer(trackLine); trackLine = null; }
-    if (marker) { map.removeLayer(marker); marker = null; }
-    map.setView(DEFAULT_CENTER, 13);
     return;
+  }
+
+  if (!map) {
+    map = L.map("map").setView(latLngs[0], 15);
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      attribution: "&copy; OpenStreetMap contributors", maxZoom: 19
+    }).addTo(map);
   }
 
   if (trackLine) map.removeLayer(trackLine);
@@ -574,8 +456,6 @@ function renderHistory() {
       + 'ပို့ရမည့်ဆိုင်လိပ်စာ：<b>' + (h.delivery_address || "-") + '</b><br>'
       + 'ကျန်ရှိသောပေါက်စီအလုံးအရေတွက်：<b>' + h.baozi_remaining + ' / ' + h.baozi_total + '</b><br>'
       + 'ကျန်ရှိသောဆိုင်အရေတွက်：<b>' + h.shop_remaining + ' / ' + h.shop_total + '</b><br>'
-      + 'ငွေပေးချေမှုနည်းလမ်း：<b>' + (h.payment_method || "-") + '</b><br>'
-      + 'Amount (MMK)：<b>' + (h.amount || "-") + '</b><br>'
       + 'နောက်ဆုံး တင်ပြချိန်：<b>' + lastT + '</b>'
       + '</div>';
   });
@@ -660,7 +540,6 @@ function applyUser(u) {
   document.getElementById("userName").textContent = u.nickname || u.username || "-";
   document.getElementById("btnLogin").style.display = "none";
   document.getElementById("btnLogout").style.display = "block";
-  startBellPoll();
 }
 async function uploadAvatar(e) {
   var f = e.target.files && e.target.files[0];
@@ -705,146 +584,6 @@ async function checkLogin() {
   document.getElementById("btnLogin").style.display = "block";
   document.getElementById("btnLogout").style.display = "block";
   document.getElementById("userName").textContent = "-";
-}
-
-// ===== 🔔 铃铛通知（新订单提醒 + 女声播报 + 声音开关） =====
-var _bellSoundOn = localStorage.getItem("bellSound") !== "off";
-var _bellKnownIds = {};
-var _bellKnownCount = 0;
-var _bellPollTimer = null;
-var _bellListCache = [];
-
-function bellSoundIcon() { return _bellSoundOn ? "🔊" : "🔇"; }
-function updateSoundButtons() {
-  var s1 = document.getElementById("soundBtn");
-  if (s1) s1.textContent = bellSoundIcon();
-  var s2 = document.getElementById("soundBtn2");
-  if (s2) s2.textContent = _bellSoundOn ? "Sound: ON" : "Sound: OFF";
-}
-function toggleBellSound() {
-  _bellSoundOn = !_bellSoundOn;
-  localStorage.setItem("bellSound", _bellSoundOn ? "on" : "off");
-  updateSoundButtons();
-}
-// 女性语音播报：你有新的订单，请及时查看
-function speakNewOrder() {
-  if (!_bellSoundOn) return;
-  try {
-    if (!("speechSynthesis" in window)) return;
-    window.speechSynthesis.cancel();
-    var u = new SpeechSynthesisUtterance("你有新的订单，请及时查看");
-    u.lang = "zh-CN";
-    var voices = window.speechSynthesis.getVoices() || [];
-    var v = voices.find(function (x) { return /female|xiaoxiao|huihui|yating|yaoyao/i.test(x.name || ""); })
-      || voices.find(function (x) { return /zh/i.test(x.lang || ""); })
-      || voices[0];
-    if (v) u.voice = v;
-    u.rate = 1.0;
-    u.pitch = 1.25; // 略高音调，更接近女性声音
-    window.speechSynthesis.speak(u);
-  } catch (e) {}
-}
-function renderBellList(list) {
-  var box = document.getElementById("bellList");
-  if (!box) return;
-  if (!list || list.length === 0) {
-    box.innerHTML = '<div class="bell-empty">No notifications yet.</div>';
-    return;
-  }
-  var html = "";
-  list.forEach(function (n) {
-    html += '<div class="bell-item' + (n.is_read ? "" : " unread") + '">'
-      + 'Order Number：<b>' + n.order_no + '</b><br>'
-      + 'ပို့ဆောင်သူအမည်：<b>' + (n.rider_name || "-") + '</b><br>'
-      + 'ပို့ဆောင်သူ ဖုန်းနံပါတ်：<b>' + (n.rider_phone || "-") + '</b><br>'
-      + '<button class="copy-btn" onclick="copyOrderInfo(' + n.id + ')">Copy</button>'
-      + '</div>';
-  });
-  box.innerHTML = html;
-}
-async function copyOrderInfo(id) {
-  var n = null;
-  (_bellListCache || []).forEach(function (x) { if (x.id === id) n = x; });
-  if (!n) return;
-  var text = "Order Number: " + n.order_no + "\nပို့ဆောင်သူအမည်: " + (n.rider_name || "") + "\nပို့ဆောင်သူ ဖုန်းနံပါတ်: " + (n.rider_phone || "");
-  var done = false;
-  try {
-    await navigator.clipboard.writeText(text);
-    done = true;
-  } catch (e) {}
-  if (!done) {
-    try {
-      var ta = document.createElement("textarea");
-      ta.value = text; document.body.appendChild(ta); ta.select();
-      document.execCommand("copy");
-      document.body.removeChild(ta);
-      done = true;
-    } catch (e2) {}
-  }
-  showInfo(done ? "Copied:\n" + text : "Copy failed.");
-}
-async function loadNotifications() {
-  try {
-    var r = await fetch("/api/admin/notifications", { headers: authHeaders() });
-    var j = await r.json();
-    if (!j.ok) return;
-    _bellListCache = j.notifications || [];
-    var unread = 0;
-    var fresh = [];
-    _bellListCache.forEach(function (n) {
-      if (!n.is_read) unread++;
-      if (!_bellKnownIds[n.id]) { _bellKnownIds[n.id] = 1; fresh.push(n); }
-    });
-    var badge = document.getElementById("bellBadge");
-    if (unread > 0) { badge.textContent = unread; badge.style.display = "flex"; }
-    else { badge.style.display = "none"; }
-    // 新通知播报：首轮若存在未读通知也播报一次（商家进入页面能听到提醒），之后仅播报新到的通知
-    if (fresh.length > 0 && (_bellKnownCount > 0 || unread > 0)) speakNewOrder();
-    _bellKnownCount = Object.keys(_bellKnownIds).length;
-    if (document.getElementById("bellModal").style.display === "flex") renderBellList(_bellListCache);
-  } catch (e) {}
-}
-function toggleBellPanel() {
-  var m = document.getElementById("bellModal");
-  if (m.style.display === "flex") { closeBellPanel(); return; }
-  m.style.display = "flex"; // flex 配合 .modal-overlay 居中显示在页面正中央
-  renderBellList(_bellListCache);
-  loadNotifications(); // 打开时刷新最新通知列表（拉取成功后自动重渲染）
-  markAllRead();
-}
-function closeBellPanel() {
-  document.getElementById("bellModal").style.display = "none";
-}
-document.addEventListener("click", function (e) {
-  var m = document.getElementById("bellModal");
-  if (!m || m.style.display !== "flex") return;
-  var inPanel = m.contains(e.target);
-  var bell = document.getElementById("bellBtn");
-  var inBell = bell && bell.contains(e.target);
-  if (!inPanel && !inBell) closeBellPanel();
-});
-async function markAllRead() {
-  try {
-    await fetch("/api/admin/notifications/read", {
-      method: "POST",
-      headers: Object.assign({ "Content-Type": "application/json" }, authHeaders()),
-      body: JSON.stringify({})
-    });
-  } catch (e) {}
-  var badge = document.getElementById("bellBadge");
-  if (badge) badge.style.display = "none";
-  if (_bellListCache) {
-    _bellListCache.forEach(function (n) { n.is_read = 1; });
-    renderBellList(_bellListCache);
-  }
-}
-function startBellPoll() {
-  var wrap = document.getElementById("bellWrap");
-  if (wrap) wrap.style.display = "flex";
-  updateSoundButtons();
-  _bellKnownCount = 0; // 首轮有未读时也会播报提醒，之后仅播报新到通知
-  loadNotifications();
-  if (!_bellPollTimer) _bellPollTimer = setInterval(loadNotifications, 5000);
 }
 
 // ===== 管理员面板（超级管理员/管理员） =====

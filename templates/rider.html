@@ -355,14 +355,6 @@ async function doConfirmState() {
   document.getElementById("curStatus").textContent = state.status;
   disableStatusButton(state.pendingStatus);
   saveLockLocal();
-  // 立即同步订单状态到后端（不依赖 GPS 上报），保证商家页与 Order History 状态一致
-  try {
-    await fetch("/api/rider/status", {
-      method: "POST",
-      headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({ order_no: state.orderNo, phone: state.phone, status: state.status })
-    });
-  } catch (e) {}
   if (state.curLat !== null && state.curLat !== undefined) {
     reportLocation(state.curLat, state.curLng, state.status);
   }
@@ -832,9 +824,11 @@ async function checkLogin() {
     if (j.ok && j.role === "rider") { applyUser(j); return; }
     if (r.status === 403) { forceLogout("သင့်အကောင့်ကို ပိတ်ထားပါသည်။ စီမံခန့်ခွဲသူကို ဆက်သွယ်ပါ။"); return; }
   } catch (e) {}
-  // 未登录或 token 不属于骑手：强制先进入登录页（打开 /rider 必须先显示登录页面）
+  // 未登录或 token 不属于骑手（如管理员登录态）：不显示用户信息，仅显示 Login/Logout
   localStorage.removeItem("riderToken");
-  location.href = "/login?next=" + encodeURIComponent(location.pathname);
+  document.getElementById("btnLogin").style.display = "block";
+  document.getElementById("btnLogout").style.display = "block";
+  document.getElementById("userName").textContent = "-";
 }
 checkLogin();
 </script>

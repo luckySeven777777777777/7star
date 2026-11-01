@@ -36,6 +36,39 @@ DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
 
 app = Flask(__name__)
 
+# ==================== Telegram 通知配置 ====================
+# 机器人 Token 从环境变量 TELEGRAM_BOT_TOKEN 读取（Railway 部署时在 Dashboard 配置）
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "-1004317938803").strip()
+TELEGRAM_BOT_ID = "9285749125"
+
+
+def send_telegram_photo(photo_path, caption):
+    """发送照片到 Telegram 群（multipart 上传，不依赖第三方库）"""
+    if not TELEGRAM_BOT_TOKEN:
+        return False, "TELEGRAM_BOT_TOKEN not configured"
+    try:
+        boundary = "----MarvisBoundary" + uuid.uuid4().hex
+        with open(photo_path, "rb") as f:
+            file_data = f.read()
+        body = b""
+        for k, v in (("chat_id", TELEGRAM_CHAT_ID), ("caption", caption)):
+            body += ("--%s\r\nContent-Disposition: form-data; name=\"%s\"\r\n\r\n%s\r\n" % (boundary, k, v)).encode("utf-8")
+        body += ("--%s\r\nContent-Disposition: form-data; name=\"photo\"; filename=\"proof.jpg\"\r\nContent-Type: image/jpeg\r\n\r\n" % boundary).encode("utf-8")
+        body += file_data
+        body += ("\r\n--%s--\r\n" % boundary).encode("utf-8")
+        req = urllib.request.Request(
+            "https://api.telegram.org/bot%s/sendPhoto" % TELEGRAM_BOT_TOKEN,
+            data=body,
+            headers={"Content-Type": "multipart/form-data; boundary=" + boundary},
+            method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            resp.read()
+        return True, "sent"
+    except Exception as e:
+        return False, str(e)
+
 
 # ==================== 数据库连接 ====================
 def get_db():
@@ -548,6 +581,35 @@ def report_location():
 
 
 # ==================== 接口: 骑手确认收货 / 状态刷新 / GPS 开关 ====================
+@app.route("/api/upload/proof", methods=["POST"])
+def upload_proof():
+    """骑手拍照上传收货凭证：保存到 static/uploads/proofs 并推送 Telegram 群"""
+    order_no = (request.form.get("order_no") or "").strip()
+    phone = (request.form.get("phone") or "").strip()
+    f = request.files.get("photo")
+    if not f or not f.filename:
+        return jsonify({"ok": False, "msg": "No photo uploaded"}), 400
+    try:
+        proofs_dir = os.path.join(app.static_folder or os.path.join(BASE_DIR, "static"), "uploads", "proofs")
+        os.makedirs(proofs_dir, exist_ok=True)
+        ext = os.path.splitext(f.filename or "")[1].lower()
+        if ext not in (".jpg", ".jpeg", ".png", ".webp", ".gif", ".heic"):
+            ext = ".jpg"
+        fname = "proof_%s_%s%s" % (datetime.now().strftime("%Y%m%d%H%M%S"), uuid.uuid4().hex[:8], ext)
+        path = os.path.join(proofs_dir, fname)
+        f.save(path)
+        caption = "🚚 Delivery Proof\nOrder: %s\nRider Phone: %s" % (order_no or "-", phone or "-")
+        tg_ok, tg_msg = send_telegram_photo(path, caption)
+        return jsonify({
+            "ok": True,
+            "url": "/static/uploads/proofs/" + fname,
+            "telegram": tg_ok,
+            "telegram_msg": "sent" if tg_ok else tg_msg
+        })
+    except Exception as e:
+        return jsonify({"ok": False, "msg": "Save failed: %s" % str(e)}), 500
+
+
 @app.route("/api/rider/confirm", methods=["POST"])
 def rider_confirm():
     """商家确认收货：接收确认包子数量与商家地址，扣减剩余数量并更新最新配送地址"""

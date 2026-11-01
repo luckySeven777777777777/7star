@@ -93,6 +93,7 @@ def init_db():
                 shop_received INTEGER DEFAULT 0,
                 gps_enabled INTEGER DEFAULT 1,
                 status TEXT DEFAULT '待取餐',
+                city TEXT DEFAULT '',
                 created_at TEXT
             )
         """))
@@ -159,6 +160,7 @@ def init_db():
                 shop_received INTEGER DEFAULT 0,
                 gps_enabled INTEGER DEFAULT 1,
                 status TEXT DEFAULT '待取餐',
+                city TEXT DEFAULT '',
                 created_at TEXT
             );
             CREATE TABLE IF NOT EXISTS riders (
@@ -238,6 +240,7 @@ def ensure_order_columns():
     cols = {
         "payment_method": "TEXT DEFAULT ''",
         "amount": "TEXT DEFAULT ''",
+        "city": "TEXT DEFAULT ''",
     }
     for col, ddl in cols.items():
         try:
@@ -413,6 +416,7 @@ def rider_bind():
         baozi_total = 0
         shop_total = 0
     delivery_address = (data.get("delivery_address") or "").strip()
+    city = (data.get("city") or "").strip()
     if not phone or not order_no:
         return jsonify({"ok": False, "msg": "ဖုန်းနံပါတ်နှင့် အမှာစာနံပါတ် နှစ်ခုလုံး ထည့်သွင်းပါ"}), 400
     conn = get_db()
@@ -428,8 +432,8 @@ def rider_bind():
         (name, phone, order_no, rider_name),
     )
     cur.execute(
-        _q("UPDATE orders SET delivery_address=?, baozi_total=?, shop_total=?, gps_enabled=1 WHERE order_no=?"),
-        (delivery_address, baozi_total, shop_total, order_no),
+        _q("UPDATE orders SET delivery_address=?, baozi_total=?, shop_total=?, city=?, gps_enabled=1 WHERE order_no=?"),
+        (delivery_address, baozi_total, shop_total, city, order_no),
     )
     # 永久订单历史：每次绑定订单都记入 order_history（不因刷新/重绑丢失）
     cur.execute(_q("SELECT id FROM order_history WHERE order_no=? AND rider_phone=?"), (order_no, phone))
@@ -551,6 +555,7 @@ def rider_info():
             "order_no": order_no,
             "status": order_dict.get("status", ""),
             "delivery_address": order_dict.get("delivery_address", ""),
+            "city": order_dict.get("city", ""),
             "payment_method": order_dict.get("payment_method", ""),
             "amount": order_dict.get("amount", ""),
             "baozi_total": order_dict.get("baozi_total", 0),
@@ -599,6 +604,7 @@ def order_history_api():
                 "bind_time": h.get("bind_time", "") or "",
                 "status": od.get("status", "") or "",
                 "delivery_address": od.get("delivery_address", "") or "",
+                "city": od.get("city", "") or "",
                 "payment_method": od.get("payment_method", "") or "",
                 "amount": od.get("amount", "") or "",
                 "baozi_total": od.get("baozi_total", 0) or 0,
@@ -674,6 +680,9 @@ def track():
             "status": order_dict["status"],
             "address": order_dict["address"],
             "delivery_address": order_dict.get("delivery_address") or order_dict["address"],
+            "city": order_dict.get("city", "") or "",
+            "payment_method": order_dict.get("payment_method", "") or "",
+            "amount": order_dict.get("amount", "") or "",
             "customer_name": order_dict["customer_name"],
             "rider_name": (rider_dict.get("rider_name") or rider_dict.get("name") or "") if rider_dict else "",
             "gps_enabled": order_dict.get("gps_enabled", 1),

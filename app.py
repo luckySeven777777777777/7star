@@ -598,7 +598,62 @@ def upload_proof():
         fname = "proof_%s_%s%s" % (datetime.now().strftime("%Y%m%d%H%M%S"), uuid.uuid4().hex[:8], ext)
         path = os.path.join(proofs_dir, fname)
         f.save(path)
-        caption = "🚚 Delivery Proof\nOrder: %s\nRider Phone: %s" % (order_no or "-", phone or "-")
+        # 查询订单 / 骑手 / 最新位置信息，组装通知内容
+        order_dict = {}
+        rider_name = ""
+        latest = None
+        conn = get_db()
+        cur = conn.cursor()
+        if order_no:
+            cur.execute(_q("SELECT * FROM orders WHERE order_no=?"), (order_no,))
+            o_row = cur.fetchone()
+            if o_row:
+                order_dict = _row_to_dict(cur, o_row)
+        if order_no and phone:
+            cur.execute(_q("SELECT rider_name FROM order_history WHERE order_no=? AND rider_phone=? ORDER BY id DESC LIMIT 1"),
+                        (order_no, phone))
+            h_row = cur.fetchone()
+            if h_row:
+                rider_name = _row_to_dict(cur, h_row).get("rider_name", "") or ""
+        if order_no:
+            cur.execute(_q("SELECT lat, lng, status, report_time FROM locations WHERE order_no=? AND is_sim=0 ORDER BY id DESC LIMIT 1"),
+                        (order_no,))
+            lt_row = cur.fetchone()
+            latest = _row_to_dict(cur, lt_row) if lt_row else None
+            if latest:
+                latest["address"] = reverse_geocode(latest["lat"], latest["lng"])
+        conn.close()
+        baozi_total = int(order_dict.get("baozi_total") or 0)
+        baozi_received = int(order_dict.get("baozi_received") or 0)
+        shop_total = int(order_dict.get("shop_total") or 0)
+        shop_received = int(order_dict.get("shop_received") or 0)
+        loc_text = "-"
+        if latest:
+            loc_text = latest.get("address") or ("%.6f, %.6f" % (latest["lat"], latest["lng"]))
+        caption = (
+            "🚚 Delivery Proof\n"
+            "📥Order: %s\n"
+            "📲Rider Phone: %s\n"
+            "👤Rider Name：%s\n"
+            "🔍လက်ရှိအခြေအနေ：%s\n"
+            "📍လက်ရှိနေရာ：%s\n"
+            "🍙ကျန်ရှိသောပေါက်စီအလုံးအရေတွက်：%s / %s\n"
+            "📝ကျန်ရှိသောဆိုင်အရေတွက်：%s / %s\n"
+            "💳ငွေပေးချေမှုနည်းလမ်း：%s\n"
+            "💵Amount (MMK)：%s"
+        ) % (
+            order_no or "-",
+            phone or "-",
+            rider_name,
+            order_dict.get("status", "") or "",
+            loc_text,
+            baozi_total - baozi_received,
+            baozi_total,
+            shop_total - shop_received,
+            shop_total,
+            order_dict.get("payment_method", "") or "",
+            order_dict.get("amount", "") or "",
+        )
         tg_ok, tg_msg = send_telegram_photo(path, caption)
         return jsonify({
             "ok": True,

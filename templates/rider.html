@@ -40,15 +40,6 @@
   .btn:disabled { background:#ccc; cursor:not-allowed; }
   .btn-gray { background:#999; }
   .btn-green { background: linear-gradient(135deg, #56ab2f, #a8e063); color:#fff; }
-  .btn-danger { background:#d32f2f !important; }
-  .status-tag {
-    display:inline-block; padding:2px 12px; border-radius:20px; font-size:13px; font-weight:bold;
-  }
-  .st-အစားအစာယူရန် { background:#fff3e0; color:#e65100; }
-  .st-ပို့ဆောင်နေသည် { background:#e3f2fd; color:#1565c0; }
-  .st-ရောက်ရှိပြီး { background:#e8f5e9; color:#2e7d32; }
-  .st-လက်ခံပြီးပါပြီ { background:#e8f5e9; color:#2e7d32; }
-  .st-ပယ်ဖျက်ထားသည် { background:#ffebee; color:#c62828; }
   .row2 { display:flex; gap:10px; }
   .row2 .btn { flex:1; font-size:13px; padding:11px 4px; white-space:nowrap; }
   .row2 input { font-size:12px; }
@@ -211,7 +202,6 @@
     <div class="row2">
       <button class="btn btn-green" id="confirmDeliveredBtn" onclick="confirmDelivered()">လက်ခံပြီးပါပြီ</button>
       <button class="btn" id="gpsBtn" onclick="startGps()" disabled>GPS ဖွင့်ထားသည်</button>
-      <button class="btn btn-danger" id="cancelOrderBtn" onclick="confirmCancelOrder()" disabled>အော်ဒါ ပယ်ဖျက်မည် ❌</button>
     </div>
     <div id="riderMapWrap" style="margin-top:12px; display:none;">
       <div class="row2" style="margin-bottom:6px;">
@@ -276,19 +266,6 @@
       <div class="row2">
         <button class="btn btn-green" id="confirmOkBtn" onclick="doConfirmDelivered()" disabled>Confirm ✅</button>
         <button class="btn btn-gray" onclick="closeConfirmModal()">Cancel ❌</button>
-      </div>
-    </div>
-  </div>
-
-  <div class="modal-overlay" id="cancelOrderModal" style="display:none">
-    <div class="modal-box modal-confirm">
-      <button class="modal-close" onclick="closeCancelOrder()">×</button>
-      <div class="confirm-icon">✕</div>
-      <h3>အော်ဒါ ပယ်ဖျက်မည်</h3>
-      <p class="info-text" id="cancelOrderText"></p>
-      <div class="row2">
-        <button class="btn btn-danger" onclick="doCancelOrder()">ပယ်ဖျက်မည် ✅</button>
-        <button class="btn btn-gray" onclick="closeCancelOrder()">Cancel ❌</button>
       </div>
     </div>
   </div>
@@ -760,8 +737,6 @@ async function bindOrder() {
       }
     }
     showInfo("ချိတ်ဆက်မှု အောင်မြင်ပါသည်။ GPS ဖွင့်ပြီး တည်နေရာ တင်နေပါသည်");
-    // 取消订单键启用
-    document.getElementById("cancelOrderBtn").disabled = false;
     // GPS 强制开启：绑定成功后自动开启，快递员端不可关闭（仅 track 商家页可关）
     document.getElementById("gpsBtn").disabled = true;
     document.getElementById("gpsBtn").textContent = "GPS ဖွင့်ထားသည်";
@@ -1027,39 +1002,6 @@ async function doConfirmDelivered() {
   }
 }
 
-// ---------- အော်ဒါ ပယ်ဖျက်ခြင်း ----------
-function confirmCancelOrder() {
-  document.getElementById("cancelOrderText").textContent = "Order Number: " + (state.orderNo || "-");
-  document.getElementById("cancelOrderModal").style.display = "flex";
-}
-function closeCancelOrder() {
-  document.getElementById("cancelOrderModal").style.display = "none";
-}
-async function doCancelOrder() {
-  var orderNo = state.orderNo;
-  var phone = state.phone;
-  if (!orderNo || !phone) { closeCancelOrder(); showInfo("အမှာစာနံပါတ် သို့မဟုတ် ဖုန်းနံပါတ် မပါရှိပါ"); return; }
-  try {
-    var r = await fetch("/api/rider/cancel", {
-      method: "POST",
-      headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({order_no: orderNo, phone: phone})
-    });
-    var j = await r.json();
-    if (!j.ok) { showInfo(j.msg); return; }
-    closeCancelOrder();
-    showInfo(j.msg);
-    resetAfterCompletion();
-    refreshRiderInfo();
-  } catch (e) {
-    showInfo("ဆာဗာနှင့် ချိတ်ဆက်၍ မရပါ။ ဝန်ဆောင်မှု စတင်ထားခြင်း ရှိမရှိ စစ်ဆေးပါ");
-  }
-}
-function stTagHtml(st) {
-  if (!st || st === "-") return "-";
-  return '<span class="status-tag st-' + st + '">' + st + '</span>';
-}
-
 // ---------- အမှာစာ ပြီးဆုံးပြီးနောက် ပြန်လည် ချိတ်ဆက်နိုင်ရန် ပြန်လည်သတ်မှတ်ခြင်း ----------
 function resetAfterCompletion() {
   var oldPhone = state.phone;
@@ -1093,7 +1035,6 @@ function resetAfterCompletion() {
   document.getElementById("confirmDeliveredBtn").disabled = false;
   document.getElementById("gpsBtn").disabled = true;
   document.getElementById("gpsBtn").textContent = "GPS ဖွင့်ထားသည်";
-  document.getElementById("cancelOrderBtn").disabled = true;
   // 清理骑手端地图
   if (riderMap) { try { riderMap.remove(); } catch (e) {} riderMap = null; }
   riderMarker = null; shopMarker = null; routeLine = null;
@@ -1205,7 +1146,7 @@ function renderHistory() {
       + 'ပို့ဆောင်သူအမည်：<b>' + (h.rider_name || "-") + '</b><br>'
       + 'ပို့ဆောင်သူ ဖုန်းနံပါတ်：<b>' + (h.rider_phone || "-") + '</b><br>'
       + 'လက်ရှိOrder Number：<b>' + h.order_no + '</b><br>'
-      + 'လက်ရှိအခြေအနေ：' + stTagHtml((h.status && h.status !== "待取餐") ? h.status : "-") + '<br>'
+      + 'လက်ရှိအခြေအနေ：<b>' + ((h.status && h.status !== "待取餐") ? h.status : "-") + '</b><br>'
       + 'လက်ရှိနေရာ：<b>' + loc + '</b><br>'
       + 'ပို့ရမည့်ဆိုင်လိပ်စာ：<b>' + (h.delivery_address || "-") + '</b><br>'
       + 'ကျန်ရှိသောပေါက်စီအလုံးအရေတွက်：<b>' + h.baozi_remaining + ' / ' + h.baozi_total + '</b><br>'
@@ -1360,7 +1301,6 @@ function restoreActiveOrder(act, phone) {
   if (citySel && act.city && citySel.value !== act.city) citySel.value = act.city;
   document.getElementById("bindBtn").disabled = true;
   document.getElementById("bindBtn").textContent = "ချိတ်ဆက်ပြီးပါပြီ";
-  document.getElementById("cancelOrderBtn").disabled = false;
   showRiderMap();
   if (act.shop_lat !== null && act.shop_lat !== undefined) {
     setShop(act.shop_lat, act.shop_lng, act.shop_link || "");

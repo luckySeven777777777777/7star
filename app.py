@@ -1225,11 +1225,19 @@ def admin_create_user():
     if cur.fetchone():
         conn.close()
         return jsonify({"ok": False, "msg": "User Name already exists."}), 400
-    cur.execute(
-        _q("INSERT INTO users (username, password_hash, nickname, role, status, created_at, phone) VALUES (?,?,?,?,?,?,?)"),
-        (username, generate_password_hash(password), nickname or username, "rider", "normal", now_str(), phone),
-    )
-    conn.commit()
+    try:
+        cur.execute(
+            _q("INSERT INTO users (username, password_hash, nickname, role, status, created_at, phone) VALUES (?,?,?,?,?,?,?)"),
+            (username, generate_password_hash(password), nickname or username, "rider", "normal", now_str(), phone),
+        )
+        conn.commit()
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        conn.close()
+        return jsonify({"ok": False, "msg": "Server error: " + str(e)}), 500
     conn.close()
     return jsonify({"ok": True, "msg": "Rider account created.", "username": username, "nickname": nickname or username, "phone": phone})
 

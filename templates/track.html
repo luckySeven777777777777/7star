@@ -97,9 +97,13 @@
   .banned-table th, .banned-table td { border:1px solid #ffe0b2; padding:6px 5px; text-align:left; word-break:break-word; }
   .banned-table th { background:#fff3e0; color:#e65100; font-weight:bold; }
   .banned-empty { font-size:12px; color:#999; padding:8px 0; }
+  .admin-row {
+    display:flex; flex-wrap:wrap; gap:12px; margin-top:14px; align-items:stretch;
+  }
+  .admin-row .admin-panel { flex:1 1 320px; min-width:0; margin-top:0; }
   .admin-panel {
     background:#fff8f0; border:1px solid #ffe0b2; border-radius:12px;
-    padding:14px 16px; margin-top:14px; width:100%; box-sizing:border-box;
+    padding:14px 16px; width:100%; box-sizing:border-box;
   }
   .admin-panel h3 { margin:0 0 8px; font-size:15px; color:#e07b00; }
   .admin-panel hr { border:none; border-top:1px solid #ffe0b2; margin:14px 0; }
@@ -158,45 +162,47 @@
       </div>
       <div class="multi-summary" id="multiSummary" style="display:none"></div>
     </div>
-    <div class="admin-panel" id="adminPanel" style="display:none">
-      <h3>👑 Admin Panel</h3>
-
-      <label>Create Rider Account</label>
-      <input id="admUsername" placeholder="User Name" autocomplete="off">
-      <input id="admNickname" placeholder="Nickname (shown on rider page)" autocomplete="off">
-      <input id="admPhone" placeholder="ပို့ဆောင်သူ ဖုန်းနံပါတ် (Phone)" autocomplete="off">
-      <div class="input-wrap">
-        <input id="admPassword" type="password" placeholder="Password" autocomplete="new-password">
-        <button class="eye-btn" type="button" id="toggleAdmPass" aria-label="Show password">
-          <svg viewBox="0 0 32 32"><path d="M3 16s4.5-9 13-9c3.1 0 5.7 1.1 7.8 2.7M29 16s-4.5 9-13 9c-3.1 0-5.7-1.1-7.8-2.7"/><path d="M12.3 12.3a5.2 5.2 0 0 0 7.4 7.4M4 4l24 24"/></svg>
-        </button>
+    <div class="admin-row" id="adminRow" style="display:none">
+      <div class="admin-panel" id="adminPermPanel">
+        <h3>🔑 Account Permission</h3>
+        <select id="admStatusSelect"></select>
+        <div class="row2">
+          <button class="btn btn-on" onclick="admSetStatus('normal')">Enable Login</button>
+          <button class="btn btn-off" onclick="admSetStatus('banned')">Ban Login</button>
+          <button class="btn btn-gray" onclick="admSetStatus('deleted')">Delete Account</button>
+        </div>
+        <div class="gps-state" id="admMsg" style="display:none"></div>
       </div>
-      <button class="btn btn-green" onclick="admCreate()">Create Account</button>
+      <div class="admin-panel" id="adminPanel">
+        <h3>👑 Admin Panel</h3>
 
-      <hr>
-      <label>Change Password (forgot password)</label>
-      <select id="admUserSelect"></select>
-      <div class="input-wrap">
-        <input id="admNewPass" type="password" placeholder="New Password" autocomplete="new-password">
-        <button class="eye-btn" type="button" id="toggleAdmNewPass" aria-label="Show password">
-          <svg viewBox="0 0 32 32"><path d="M3 16s4.5-9 13-9c3.1 0 5.7 1.1 7.8 2.7M29 16s-4.5 9-13 9c-3.1 0-5.7-1.1-7.8-2.7"/><path d="M12.3 12.3a5.2 5.2 0 0 0 7.4 7.4M4 4l24 24"/></svg>
-        </button>
+        <label>Create Rider Account</label>
+        <input id="admUsername" placeholder="User Name" autocomplete="off">
+        <input id="admNickname" placeholder="Nickname (shown on rider page)" autocomplete="off">
+        <input id="admPhone" placeholder="ပို့ဆောင်သူ ဖုန်းနံပါတ် (Phone)" autocomplete="off">
+        <div class="input-wrap">
+          <input id="admPassword" type="password" placeholder="Password" autocomplete="new-password">
+          <button class="eye-btn" type="button" id="toggleAdmPass" aria-label="Show password">
+            <svg viewBox="0 0 32 32"><path d="M3 16s4.5-9 13-9c3.1 0 5.7 1.1 7.8 2.7M29 16s-4.5 9-13 9c-3.1 0-5.7-1.1-7.8-2.7"/><path d="M12.3 12.3a5.2 5.2 0 0 0 7.4 7.4M4 4l24 24"/></svg>
+          </button>
+        </div>
+        <button class="btn btn-green" onclick="admCreate()">Create Account</button>
+
+        <hr>
+        <label>Change Password (forgot password)</label>
+        <select id="admUserSelect"></select>
+        <div class="input-wrap">
+          <input id="admNewPass" type="password" placeholder="New Password" autocomplete="new-password">
+          <button class="eye-btn" type="button" id="toggleAdmNewPass" aria-label="Show password">
+            <svg viewBox="0 0 32 32"><path d="M3 16s4.5-9 13-9c3.1 0 5.7 1.1 7.8 2.7M29 16s-4.5 9-13 9c-3.1 0-5.7-1.1-7.8-2.7"/><path d="M12.3 12.3a5.2 5.2 0 0 0 7.4 7.4M4 4l24 24"/></svg>
+          </button>
+        </div>
+        <button class="btn" onclick="admResetPass()">Change Password</button>
+
+        <hr>
+        <label>ပိတ်ထားသောစာရင်း (Banned Records)</label>
+        <div id="bannedRecords"></div>
       </div>
-      <button class="btn" onclick="admResetPass()">Change Password</button>
-
-      <hr>
-      <label>Account Permission</label>
-      <select id="admStatusSelect"></select>
-      <div class="row2">
-        <button class="btn btn-on" onclick="admSetStatus('normal')">Enable Login</button>
-        <button class="btn btn-off" onclick="admSetStatus('banned')">Ban Login</button>
-        <button class="btn btn-gray" onclick="admSetStatus('deleted')">Delete Account</button>
-      </div>
-      <div class="gps-state" id="admMsg" style="display:none"></div>
-
-      <hr>
-      <label>ပိတ်ထားသောစာရင်း (Banned Records)</label>
-      <div id="bannedRecords"></div>
     </div>
     <div class="err" id="err"></div>
   </div>
@@ -253,8 +259,13 @@
     </div>
   </div>
 
-  <div id="map"></div>
-  <div id="routeInfo" style="margin-top:8px; padding:8px 12px; background:#f1f8e9; border:1px solid #c8e6c9; border-radius:8px; font-size:14px; color:#2e7d32;">Arrival: - · Time left: -</div>
+  <div id="mapWrap" style="margin:14px 16px;">
+    <div class="row2" style="margin-bottom:6px;">
+      <button class="btn btn-gray" id="mapFullscreenBtn" onclick="toggleMapFullscreen()">⛶ Fullscreen Map</button>
+    </div>
+    <div id="map"></div>
+    <div id="routeInfo" style="margin-top:8px; padding:8px 12px; background:#f1f8e9; border:1px solid #c8e6c9; border-radius:8px; font-size:14px; color:#2e7d32;">Arrival: - · Time left: -</div>
+  </div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
@@ -263,8 +274,30 @@ var marker = null;
 var trackLine = null;
 var shopMarker = null;
 var guideRoute = null;
+var guideSlowLine = null;
 var guideAbort = null;
 var guidePrevPos = null;
+function toggleMapFullscreen() {
+  var wrap = document.getElementById("mapWrap");
+  if (!wrap) return;
+  if (document.fullscreenElement || document.webkitFullscreenElement) {
+    if (document.exitFullscreen) document.exitFullscreen();
+    else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
+  } else {
+    if (wrap.requestFullscreen) wrap.requestFullscreen();
+    else if (wrap.webkitRequestFullscreen) wrap.webkitRequestFullscreen();
+  }
+}
+document.addEventListener("fullscreenchange", function () {
+  var mapEl = document.getElementById("map");
+  if (!mapEl) return;
+  if (document.fullscreenElement || document.webkitFullscreenElement) {
+    mapEl.style.height = "calc(100vh - 70px)";
+  } else {
+    mapEl.style.height = "420px";
+  }
+  if (map) setTimeout(function () { map.invalidateSize(); }, 200);
+});
 var refreshTimer = null;
 var currentOrderNo = "";
 var currentPhone = "";
@@ -366,6 +399,8 @@ function render(j) {
   } else {
     if (shopMarker) { try { map.removeLayer(shopMarker); } catch (e) {} shopMarker = null; }
     if (guideRoute) { try { map.removeLayer(guideRoute); } catch (e) {} guideRoute = null; }
+    if (guideSlowLine) { try { map.removeLayer(guideSlowLine); } catch (e) {} guideSlowLine = null; }
+    if (_guideEtaMarker) { try { map.removeLayer(_guideEtaMarker); } catch (e) {} _guideEtaMarker = null; }
     updateRouteInfo(null);
     map.setView(latest, 15);
   }
@@ -420,12 +455,55 @@ function updateRouteInfo(routeSec) {
   el.textContent = "Arrival: " + p2(yangon.getUTCHours()) + ":" + p2(yangon.getUTCMinutes()) +
     " · Time left: " + min + " min " + sec + " sec";
 }
+function routeSegDist(coords) {
+  var d = 0;
+  for (var i = 1; i < coords.length; i++) {
+    d += haversineM(coords[i - 1][0], coords[i - 1][1], coords[i][0], coords[i][1]);
+  }
+  return d;
+}
+// Google 风格拥堵着色：整条默认绿；只有"当前正在通过的前方路段"慢才标黄/红
+function buildGuideLayers(coords, actualMps, expectedMps) {
+  var layers = [{ coords: coords, color: "#43a047" }];
+  if (actualMps === null || actualMps === undefined || expectedMps <= 0 || actualMps < 0.5) return layers;
+  var ratio = actualMps / expectedMps;
+  if (ratio >= 0.8) return layers;
+  var pct = ratio >= 0.5 ? 0.15 : 0.25;
+  var color = ratio >= 0.5 ? "#fdd835" : "#e53935";
+  var total = routeSegDist(coords);
+  var cut = total * pct;
+  var seg = [coords[0]], acc = 0;
+  for (var i = 1; i < coords.length; i++) {
+    acc += haversineM(coords[i - 1][0], coords[i - 1][1], coords[i][0], coords[i][1]);
+    seg.push(coords[i]);
+    if (acc >= cut) break;
+  }
+  layers.push({ coords: seg, color: color });
+  return layers;
+}
+function guideEtaIcon(text) {
+  return L.divIcon({
+    className: "",
+    html: '<div style="background:#fff; border:1px solid #d0d0d0; border-radius:14px; padding:4px 10px; font-size:13px; color:#333; font-weight:bold; box-shadow:0 2px 6px rgba(0,0,0,0.18); white-space:nowrap;">' + text + '</div>',
+    iconSize: [0, 0], iconAnchor: [0, 0]
+  });
+}
+var _guideEtaMarker = null;
+function showGuideEta(coords, distM, durS) {
+  if (_guideEtaMarker) { try { map.removeLayer(_guideEtaMarker); } catch (e) {} _guideEtaMarker = null; }
+  if (!coords || coords.length < 2 || !durS) return;
+  var mid = coords[Math.floor(coords.length / 2)];
+  var min = Math.max(1, Math.round(durS / 60));
+  var km = (distM / 1000).toFixed(1);
+  _guideEtaMarker = L.marker(mid, { icon: guideEtaIcon("🛵 ≈" + min + " min · " + km + " km"), interactive: false }).addTo(map);
+}
 function drawGuideRoute(fromLL, toLL) {
   if (!map) return;
   if (guideAbort) guideAbort.abort();
   var ac = new AbortController();
   guideAbort = ac;
-  var url = "https://router.project-osrm.org/route/v1/driving/" +
+  // 骑手用单车 profile：ETA 按单车（骑行）速度计算
+  var url = "https://router.project-osrm.org/route/v1/bicycle/" +
     fromLL[1] + "," + fromLL[0] + ";" + toLL[1] + "," + toLL[0] +
     "?overview=full&geometries=geojson&steps=false";
   var timer = setTimeout(function () {
@@ -455,7 +533,14 @@ function drawGuideRoute(fromLL, toLL) {
         }
         guidePrevPos = { lat: fromLL[0], lng: fromLL[1], t: nowT };
         if (guideRoute) map.removeLayer(guideRoute);
-        guideRoute = L.polyline(coords, { color: routeColorFor(actualMps, expectedMps), weight: 5, opacity: 0.9 }).addTo(map);
+        if (guideSlowLine) map.removeLayer(guideSlowLine);
+        var layers = buildGuideLayers(coords, actualMps, expectedMps);
+        guideRoute = L.polyline(layers[0].coords, { color: layers[0].color, weight: 5, opacity: 0.9 }).addTo(map);
+        guideSlowLine = null;
+        if (layers.length > 1) {
+          guideSlowLine = L.polyline(layers[1].coords, { color: layers[1].color, weight: 6, opacity: 0.95 }).addTo(map);
+        }
+        showGuideEta(coords, distM, durS);
         updateRouteInfo(durS);
       } else {
         updateRouteInfo(-1);
@@ -581,6 +666,8 @@ function renderMulti(results, silent) {
   if (marker) { try { map.removeLayer(marker); } catch (e) {} marker = null; }
   if (shopMarker) { try { map.removeLayer(shopMarker); } catch (e) {} shopMarker = null; }
   if (guideRoute) { try { map.removeLayer(guideRoute); } catch (e) {} guideRoute = null; }
+  if (guideSlowLine) { try { map.removeLayer(guideSlowLine); } catch (e) {} guideSlowLine = null; }
+  if (_guideEtaMarker) { try { map.removeLayer(_guideEtaMarker); } catch (e) {} _guideEtaMarker = null; }
   updateRouteInfo(null);
 
   var okItems = results.filter(function (x) { return x.ok && x.track && x.track.length > 0; });
@@ -911,7 +998,7 @@ async function checkLogin() {
     var j = await r.json();
     if (j.ok && (j.role === "super_admin" || j.role === "admin")) {
       applyUser(j);
-      document.getElementById("adminPanel").style.display = "block";
+      document.getElementById("adminRow").style.display = "flex";
       loadAdminUsers();
       return;
     }

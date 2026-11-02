@@ -176,8 +176,8 @@
     <input id="orderNo" placeholder="ဥပမာ - BZ1001102030">
     <div class="row2">
       <button class="btn" id="bindBtn" onclick="bindOrder()">အမှာစာ ချိတ်ဆက်၍ ပို့ဆောင်စမည်</button>
-      <button class="btn btn-gray" id="updateShopBtn" onclick="updateShopLocation()">Update Shop Location</button>
-      <button class="btn btn-gray" id="historyBtn" onclick="openHistory()">Order History</button>
+      <button class="btn" id="updateShopBtn" onclick="updateShopLocation()">Update Shop Location</button>
+      <button class="btn" id="historyBtn" onclick="openHistory()">Order History</button>
     </div>
   </div>
 
@@ -310,6 +310,8 @@ var riderMap = null;
 var riderMarker = null;
 var shopMarker = null;
 var routeLine = null;
+var routeSlowLine = null;
+var routeEtaMarker = null;
 var shopLat = null;
 var shopLng = null;
 
@@ -321,40 +323,67 @@ function parseCoordsText(text) {
 function parseLinkCoords(text) {
   if (!text) return null;
   var s = String(text);
-  var m = s.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/);
+  // Google 分享链接优先级：!3d!4d 是店铺精确坐标；?q= 次之；@ 只是视图中心，最后兜底
+  var m = s.match(/!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/);
   if (m) return [parseFloat(m[1]), parseFloat(m[2])];
   m = s.match(/[?&]q=(-?\d+\.\d+),(-?\d+\.\d+)/);
   if (m) return [parseFloat(m[1]), parseFloat(m[2])];
-  m = s.match(/!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/);
+  m = s.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/);
   if (m) return [parseFloat(m[1]), parseFloat(m[2])];
   return null;
 }
 var PLUS_ALPHABET = "23456789CFGHJMPQRVWX";
 function plusCodeValue(ch) { return PLUS_ALPHABET.indexOf(ch); }
+// 官方 Open Location Code 位值加权解码（与 Google 地图/官方库一致）
+// 仰光参考前缀（openlocationcode 验证：encode(16.8661,96.1951,4) = "7M8R0000+"）
+var YANGON_REF_PREFIX = "7M8R";
 function decodePlusCode(text) {
   if (!text) return null;
   var s = String(text).toUpperCase();
-  var m = s.match(/([A-Z2-9]{2,8})\+([A-Z2-9]{2,3})/);
+  var m = s.match(/([23456789CFGHJMPQRVWX]{2,8})\+([23456789CFGHJMPQRVWX]{2,3})/);
   if (!m) return null;
-  var grid = m[1], extra = m[2];
-  var full = grid + extra;
-  while (grid.length < 8) {
-    var pad = 8 - grid.length;
-    grid = "7M6R".substring(0, pad) + grid;
-    full = "7M6R".substring(0, pad) + full;
+  var code = m[1] + m[2];
+  // 短码补齐：'+' 前不足 8 位时，用仰光参考前缀补足（官方 recoverNearest 规则）
+  if (code.length < 8) {
+    var pad = 8 - m[1].length;
+    code = YANGON_REF_PREFIX.substring(0, pad) + code;
   }
-  var latLo = -90, latHi = 90, lngLo = -180, lngHi = 180;
+  // pair 段：位值从 160000 起逐对 /20 累加
+  var normalLat = -90 * 8000;
+  var normalLng = -180 * 8000;
+  var gridLat = 0, gridLng = 0;
+  var digits = Math.min(code.length, 10);
+  var pv = 160000;
   var i;
-  for (i = 0; i + 1 < full.length; i += 2) {
-    var a = plusCodeValue(full.charAt(i));
-    var b = plusCodeValue(full.charAt(i + 1));
-    if (a < 0 || b < 0) return null;
-    latLo += a * (latHi - latLo) / 20;
-    lngLo += b * (lngHi - lngLo) / 20;
-    latHi = latLo + (latHi - latLo) / 20;
-    lngHi = lngLo + (lngHi - lngLo) / 20;
+  for (i = 0; i < digits; i += 2) {
+    normalLat += plusCodeValue(code.charAt(i)) * pv;
+    normalLng += plusCodeValue(code.charAt(i + 1)) * pv;
+    if (i < digits - 2) pv = Math.floor(pv / 20);
   }
-  return [(latLo + latHi) / 2, (lngLo + lngHi) / 2];
+  var latPrecision = pv / 8000;
+  var lngPrecision = pv / 8000;
+  // grid 段：每字符 4x5 网格（row 5 进制 / col 4 进制）
+  if (code.length > 10) {
+    var rowpv = 625, colpv = 256;
+    digits = Math.min(code.length, 15);
+    for (i = 10; i < digits; i++) {
+      var dv = plusCodeValue(code.charAt(i));
+      if (dv < 0) return null;
+      var row = Math.floor(dv / 4), col = dv % 4;
+      gridLat += row * rowpv;
+      gridLng += col * colpv;
+      if (i < digits - 1) {
+        rowpv = Math.floor(rowpv / 5);
+        colpv = Math.floor(colpv / 4);
+      }
+    }
+    latPrecision = rowpv / 25000000;
+    lngPrecision = colpv / 8192000;
+  }
+  var lat = normalLat / 8000 + gridLat / 25000000;
+  var lng = normalLng / 8000 + gridLng / 8192000;
+  // 取格中心供定位/路线使用
+  return [lat + latPrecision / 2, lng + lngPrecision / 2];
 }
 function resolveShopLocation() {
   var c = parseCoordsText(document.getElementById("shopLocationCoords").value);
@@ -472,7 +501,7 @@ var routeAbort = null;
 function drawRouteLine(coords, color) {
   if (!riderMap) return;
   if (routeLine) riderMap.removeLayer(routeLine);
-  routeLine = L.polyline(coords, { color: color || "#2e9e44", weight: 5, opacity: 0.9 }).addTo(riderMap);
+  routeLine = L.polyline(coords, { color: color || "#43a047", weight: 5, opacity: 0.9 }).addTo(riderMap);
 }
 // 拥堵着色辅助：实际移动速度 / OSRM 预期速度
 var _routePrevPos = null;
@@ -489,6 +518,58 @@ function routeColorFor(actualMps, expectedMps) {
   if (ratio >= 0.8) return "#43a047";
   if (ratio >= 0.5) return "#fdd835";
   return "#e53935";
+}
+function routeSegDist(coords) {
+  var d = 0;
+  for (var i = 1; i < coords.length; i++) {
+    d += haversineM(coords[i - 1][0], coords[i - 1][1], coords[i][0], coords[i][1]);
+  }
+  return d;
+}
+// Google 风格拥堵着色：整条默认绿；只有"当前正在通过的前方路段"慢才标黄/红
+function buildRouteLayers(coords, actualMps, expectedMps) {
+  var layers = [{ coords: coords, color: "#43a047" }];
+  if (actualMps === null || actualMps === undefined || expectedMps <= 0 || actualMps < 0.5) return layers;
+  var ratio = actualMps / expectedMps;
+  if (ratio >= 0.8) return layers;
+  var pct = ratio >= 0.5 ? 0.15 : 0.25;
+  var color = ratio >= 0.5 ? "#fdd835" : "#e53935";
+  var total = routeSegDist(coords);
+  var cut = total * pct;
+  var seg = [coords[0]], acc = 0;
+  for (var i = 1; i < coords.length; i++) {
+    acc += haversineM(coords[i - 1][0], coords[i - 1][1], coords[i][0], coords[i][1]);
+    seg.push(coords[i]);
+    if (acc >= cut) break;
+  }
+  layers.push({ coords: seg, color: color });
+  return layers;
+}
+function drawRouteLayers(coords, actualMps, expectedMps) {
+  if (!riderMap) return;
+  var layers = buildRouteLayers(coords, actualMps, expectedMps);
+  if (routeLine) riderMap.removeLayer(routeLine);
+  if (routeSlowLine) riderMap.removeLayer(routeSlowLine);
+  routeLine = L.polyline(layers[0].coords, { color: layers[0].color, weight: 5, opacity: 0.9 }).addTo(riderMap);
+  routeSlowLine = null;
+  if (layers.length > 1) {
+    routeSlowLine = L.polyline(layers[1].coords, { color: layers[1].color, weight: 6, opacity: 0.95 }).addTo(riderMap);
+  }
+}
+function routeEtaIcon(text) {
+  return L.divIcon({
+    className: "",
+    html: '<div style="background:#fff; border:1px solid #d0d0d0; border-radius:14px; padding:4px 10px; font-size:13px; color:#333; font-weight:bold; box-shadow:0 2px 6px rgba(0,0,0,0.18); white-space:nowrap;">' + text + '</div>',
+    iconSize: [0, 0], iconAnchor: [0, 0]
+  });
+}
+function showRouteEta(coords, distM, durS) {
+  if (routeEtaMarker) { riderMap.removeLayer(routeEtaMarker); routeEtaMarker = null; }
+  if (!coords || coords.length < 2 || !durS) return;
+  var mid = coords[Math.floor(coords.length / 2)];
+  var min = Math.max(1, Math.round(durS / 60));
+  var km = (distM / 1000).toFixed(1);
+  routeEtaMarker = L.marker(mid, { icon: routeEtaIcon("🛵 ≈" + min + " min · " + km + " km"), interactive: false }).addTo(riderMap);
 }
 function updateRouteInfo(routeSec) {
   var el = document.getElementById("routeInfo");
@@ -512,7 +593,8 @@ function updateRoute() {
   if (routeAbort) routeAbort.abort();
   var ac = new AbortController();
   routeAbort = ac;
-  var url = "https://router.project-osrm.org/route/v1/driving/" +
+  // 骑手用单车 profile：ETA 按单车（骑行）速度计算，与商家页一致
+  var url = "https://router.project-osrm.org/route/v1/bicycle/" +
     state.curLng + "," + state.curLat + ";" + shopLng + "," + shopLat +
     "?overview=full&geometries=geojson&steps=false";
   var timer = setTimeout(function () {
@@ -541,7 +623,8 @@ function updateRoute() {
           if (dT > 0) actualMps = dM / dT;
         }
         _routePrevPos = { lat: state.curLat, lng: state.curLng, t: nowT };
-        drawRouteLine(coords, routeColorFor(actualMps, expectedMps));
+        drawRouteLayers(coords, actualMps, expectedMps);
+        showRouteEta(coords, distM, durS);
         updateRouteInfo(durS);
       } else {
         updateRouteInfo(-1);

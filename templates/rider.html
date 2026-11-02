@@ -41,7 +41,8 @@
   .btn-gray { background:#999; }
   .btn-green { background: linear-gradient(135deg, #56ab2f, #a8e063); color:#fff; }
   .row2 { display:flex; gap:10px; }
-  .row2 .btn { flex:1; }
+  .row2 .btn { flex:1; font-size:13px; padding:11px 4px; white-space:nowrap; }
+  .row2 input { font-size:12px; }
   .info { font-size:13px; color:#333; line-height:2; margin-top:10px; }
   .info b { color:#e07b00; }
   .status-box { display:flex; gap:8px; margin-top:12px; flex-wrap:wrap; }
@@ -168,13 +169,14 @@
     <div class="row2">
       <input id="shopLocationLink" placeholder="Google Maps Link (e.g. https://maps.app.goo.gl/...)" style="flex:1; min-width:0">
       <input id="shopLocationCoords" placeholder="Coordinates (e.g. 16.856040, 96.238359)" style="flex:1; min-width:0">
+      <input id="shopLocationPlusCode" placeholder="Plus Code (e.g. V66W+FC3 လှော်ကားလမ်း)" style="flex:1; min-width:0">
     </div>
-    <button class="btn btn-gray" id="updateShopBtn" onclick="updateShopLocation()">Update Shop Location</button>
-    <div class="sub" id="shopHint" style="display:none; color:#e07b00; margin-top:6px;">Shop location missing — enter Google Maps Link / Coordinates above and tap "Update Shop Location" to show marker & route</div>
+    <div class="sub" id="shopHint" style="display:none; color:#e07b00; margin-top:6px;">Shop location missing — enter Google Maps Link / Coordinates / Plus Code above and tap "Update Shop Location" to show marker & route</div>
     <label>Order Number</label>
     <input id="orderNo" placeholder="ဥပမာ - BZ1001102030">
     <div class="row2">
       <button class="btn" id="bindBtn" onclick="bindOrder()">အမှာစာ ချိတ်ဆက်၍ ပို့ဆောင်စမည်</button>
+      <button class="btn btn-gray" id="updateShopBtn" onclick="updateShopLocation()">Update Shop Location</button>
       <button class="btn btn-gray" id="historyBtn" onclick="openHistory()">Order History</button>
     </div>
   </div>
@@ -197,11 +199,14 @@
       <button data-status="ပို့ဆောင်နေသည်" onclick="requestStatus('ပို့ဆောင်နေသည်')">ပို့ဆောင်နေသည်</button>
       <button data-status="ရောက်ရှိပြီး" onclick="requestStatus('ရောက်ရှိပြီး')">ရောက်ရှိပြီး</button>
     </div>
-    <button class="btn btn-green" id="confirmDeliveredBtn" onclick="confirmDelivered()">လက်ခံပြီးပါပြီ</button>
     <div class="row2">
+      <button class="btn btn-green" id="confirmDeliveredBtn" onclick="confirmDelivered()">လက်ခံပြီးပါပြီ</button>
       <button class="btn" id="gpsBtn" onclick="startGps()" disabled>GPS ဖွင့်ထားသည်</button>
     </div>
     <div id="riderMapWrap" style="margin-top:12px; display:none;">
+      <div class="row2" style="margin-bottom:6px;">
+        <button class="btn btn-gray" id="mapFullscreenBtn" onclick="toggleMapFullscreen()">⛶ Fullscreen Map</button>
+      </div>
       <div id="riderMap" style="width:100%; height:320px; border-radius:12px; z-index:1;"></div>
     </div>
   </div>
@@ -323,16 +328,50 @@ function parseLinkCoords(text) {
   if (m) return [parseFloat(m[1]), parseFloat(m[2])];
   return null;
 }
+var PLUS_ALPHABET = "23456789CFGHJMPQRVWX";
+function plusCodeValue(ch) { return PLUS_ALPHABET.indexOf(ch); }
+function decodePlusCode(text) {
+  if (!text) return null;
+  var s = String(text).toUpperCase();
+  var m = s.match(/([23456789CFGHJMPQRVWX]{2,})\\s*\\+\\s*([23456789CFGHJMPQRVWX]{2,})/);
+  if (!m) return null;
+  var grid = m[1], extra = m[2];
+  var full = grid + extra;
+  while (grid.length < 8) {
+    var pad = 8 - grid.length;
+    grid = "7M6R".substring(0, pad) + grid;
+    full = "7M6R".substring(0, pad) + full;
+  }
+  var latLo = -90, latHi = 90, lngLo = -180, lngHi = 180;
+  var i;
+  for (i = 0; i + 1 < full.length; i += 2) {
+    var a = plusCodeValue(full.charAt(i));
+    var b = plusCodeValue(full.charAt(i + 1));
+    if (a < 0 || b < 0) return null;
+    latLo += a * (latHi - latLo) / 20;
+    lngLo += b * (lngHi - lngLo) / 20;
+    latHi = latLo + (latHi - latLo) / 20;
+    lngHi = lngLo + (lngHi - lngLo) / 20;
+  }
+  return [(latLo + latHi) / 2, (lngLo + lngHi) / 2];
+}
 function resolveShopLocation() {
   var c = parseCoordsText(document.getElementById("shopLocationCoords").value);
   if (c) return c;
-  return parseLinkCoords(document.getElementById("shopLocationLink").value);
+  c = parseLinkCoords(document.getElementById("shopLocationLink").value);
+  if (c) return c;
+  return decodePlusCode(document.getElementById("shopLocationPlusCode").value);
 }
 async function updateShopLocation() {
   if (!state.orderNo) { showInfo("Bind an order first"); return; }
   var link = document.getElementById("shopLocationLink").value.trim();
   var coords = document.getElementById("shopLocationCoords").value.trim();
-  if (!link && !coords) { showInfo("Enter Google Maps Link or Coordinates"); return; }
+  var plus = document.getElementById("shopLocationPlusCode").value.trim();
+  if (!link && !coords && !plus) { showInfo("Enter Google Maps Link, Coordinates or Plus Code"); return; }
+  if (!coords) {
+    var pc = decodePlusCode(plus);
+    if (pc) { coords = pc[0].toFixed(6) + ", " + pc[1].toFixed(6); }
+  }
   try {
     var r = await fetch("/api/rider/update-shop", {
       method: "POST",
@@ -381,13 +420,34 @@ function showRiderMap() {
   var wrap = document.getElementById("riderMapWrap");
   wrap.style.display = "block";
   if (!riderMap) {
-    riderMap = L.map("riderMap").setView([16.8661, 96.1951], 13);
+    riderMap = L.map("riderMap", { dragging: true, scrollWheelZoom: true, zoomControl: true }).setView([16.8661, 96.1951], 13);
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
       attribution: "&copy; OpenStreetMap contributors", maxZoom: 19
     }).addTo(riderMap);
   }
   setTimeout(function () { if (riderMap) riderMap.invalidateSize(); }, 120);
 }
+function toggleMapFullscreen() {
+  var wrap = document.getElementById("riderMapWrap");
+  if (!wrap) return;
+  if (document.fullscreenElement || document.webkitFullscreenElement) {
+    if (document.exitFullscreen) document.exitFullscreen();
+    else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
+  } else {
+    if (wrap.requestFullscreen) wrap.requestFullscreen();
+    else if (wrap.webkitRequestFullscreen) wrap.webkitRequestFullscreen();
+  }
+}
+document.addEventListener("fullscreenchange", function () {
+  var mapEl = document.getElementById("riderMap");
+  if (!mapEl) return;
+  if (document.fullscreenElement || document.webkitFullscreenElement) {
+    mapEl.style.height = "calc(100vh - 70px)";
+  } else {
+    mapEl.style.height = "320px";
+  }
+  if (riderMap) setTimeout(function () { riderMap.invalidateSize(); }, 200);
+});
 function setShop(lat, lng, linkText) {
   shopLat = lat; shopLng = lng;
   if (!riderMap) showRiderMap();
@@ -415,6 +475,8 @@ function drawRouteLine(coords) {
 }
 function updateRoute() {
   if (state.curLat === null || shopLat === null || !riderMap) return;
+  // 先以当前位置→商家立即重画直线，覆盖旧线避免残留已走过部分
+  drawRouteLine([[state.curLat, state.curLng], [shopLat, shopLng]]);
   // 每次定位更新都重新按道路规划路线（骑手走错路时路线会即时更新）
   if (routeAbort) routeAbort.abort();
   var ac = new AbortController();
@@ -498,6 +560,11 @@ async function bindOrder() {
     var city = document.getElementById("citySelect").value;
     var shopLocationLink = document.getElementById("shopLocationLink").value.trim();
     var shopLocationCoords = document.getElementById("shopLocationCoords").value.trim();
+    var shopLocationPlusCode = document.getElementById("shopLocationPlusCode").value.trim();
+    if (!shopLocationCoords) {
+      var pc = decodePlusCode(shopLocationPlusCode);
+      if (pc) { shopLocationCoords = pc[0].toFixed(6) + ", " + pc[1].toFixed(6); }
+    }
     var r = await fetch("/api/rider/bind", {
       method: "POST",
       headers: {"Content-Type": "application/json"},

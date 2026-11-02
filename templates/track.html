@@ -462,7 +462,24 @@ function renderMulti(results, silent) {
   var html = "";
   results.forEach(function (x) {
     if (x.ok) {
-      html += '<div class="ok">🛵 <b>' + (x.rider_name || "-") + '</b> · ' + x.order_no + ' · ' + (x.city || "-") + ' · ' + ((x.status && x.status !== "待取餐") ? x.status : "-") + '</div>';
+      var bt = (x.baozi_total || 0);
+      var br = (x.baozi_received || 0);
+      var st = (x.shop_total || 0);
+      var sr = (x.shop_received || 0);
+      var dateTxt = x.update_time ? String(x.update_time).slice(0, 10) : "-";
+      var stTxt = (x.status && x.status !== "待取餐") ? x.status : "-";
+      var addrTxt = x.delivery_address || "-";
+      html += '<div class="ok">' +
+        'Date：' + dateTxt + '<br>' +
+        'Name：' + (x.rider_name || "-") + '<br>' +
+        '🛵 <b>' + (x.rider_name || "-") + '</b> · Order：' + x.order_no + ' · City:' + (x.city || "-") + '<br>' +
+        'ပို့ရမည့်လိပ်စာ：' + addrTxt + '<br>' +
+        stTxt + '<br>' +
+        'ကျန်ရှိသောပေါက်စီအလုံးအရေတွက်：' + (bt - br) + ' / ' + bt + '<br>' +
+        'ကျန်ရှိသောဆိုင်အရေတွက်：' + (st - sr) + ' / ' + st + '<br>' +
+        'ငွေပေးချေမှုနည်းလမ်း：' + (x.payment_method || "-") + '<br>' +
+        'Amount (MMK)：' + (x.amount || "-") +
+        '</div>';
     } else {
       html += '<div class="bad">' + (x.order_no || "-") + '：' + (x.msg || "error") + '</div>';
     }

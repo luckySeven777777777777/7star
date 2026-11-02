@@ -24,7 +24,27 @@ import uuid
 import urllib.request
 import urllib.parse
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
+try:
+    from zoneinfo import ZoneInfo
+    _YANGON = ZoneInfo("Asia/Yangon")
+except Exception:
+    _YANGON = None
+
+def to_yangon_text(ts):
+    if not ts: return ts or ""
+    if "06:30" in str(ts): return str(ts)
+    try:
+        s = str(ts)
+        fmt = "%Y-%m-%d %H:%M:%S" if "T" not in s else "%Y-%m-%dT%H:%M:%S"
+        dt = datetime.strptime(s[:19], fmt)
+        dt = dt.replace(tzinfo=ZoneInfo("UTC"))
+        if _YANGON:
+            return dt.astimezone(_YANGON).strftime("%Y-%m-%d %H:%M:%S")
+        return (dt + timedelta(hours=6, minutes=30)).strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return str(ts)
+
 from flask import Flask, request, jsonify, render_template, redirect
 from werkzeug.security import generate_password_hash, check_password_hash
 
@@ -345,13 +365,13 @@ def parse_coords_text(text):
 def parse_link_coords(text):
     """从 Google Maps 链接提取坐标：@lat,lng / ?q=lat,lng / !3d..!4d"""
     s = str(text or "")
-    m = re.search(r"@(-?\d+\.\d+),(-?\d+\.\d+)", s)
+    m = re.search(r"!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)", s)
     if m:
         return (float(m.group(1)), float(m.group(2)))
     m = re.search(r"[?&]q=(-?\d+\.\d+),(-?\d+\.\d+)", s)
     if m:
         return (float(m.group(1)), float(m.group(2)))
-    m = re.search(r"!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)", s)
+    m = re.search(r"@(-?\d+\.\d+),(-?\d+\.\d+)", s)
     if m:
         return (float(m.group(1)), float(m.group(2)))
     return None
@@ -666,6 +686,33 @@ def rider_update_shop():
     return jsonify({"ok": True, "shop_lat": shop_lat, "shop_lng": shop_lng, "shop_link": shop_link})
 
 
+@app.route("/api/rider/active", methods=["GET"])
+def rider_active():
+    """骑手未完成任务恢复：查询该骑手最近一条未完成的订单"""
+    phone = (request.args.get("phone") or "").strip()
+    if not phone:
+        return jsonify({"ok": False, "msg": "phone required"}), 400
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute(_q("SELECT h.order_no, h.rider_name, o.* FROM order_history h JOIN orders o ON h.order_no=o.order_no WHERE h.rider_phone=? AND (o.status IS NULL OR o.status='' OR o.status != 'လက်ခံပြီးပါပြီ') ORDER BY h.id DESC LIMIT 1"), (phone,))
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        return jsonify({"ok": True, "active": None})
+    od = _row_to_dict(cur, row)
+    conn.close()
+    return jsonify({"ok": True, "active": {
+        "order_no": od.get("order_no"), "rider_name": od.get("rider_name", "") or "",
+        "status": od.get("status", "") or "", "city": od.get("city", "") or "",
+        "shop_lat": od.get("shop_lat"), "shop_lng": od.get("shop_lng"),
+        "shop_link": od.get("shop_link", "") or "", "gps_enabled": od.get("gps_enabled", 1),
+        "baozi_total": od.get("baozi_total", 0) or 0, "baozi_received": od.get("baozi_received", 0) or 0,
+        "shop_total": od.get("shop_total", 0) or 0, "shop_received": od.get("shop_received", 0) or 0,
+        "amount": od.get("amount", "") or "", "payment_method": od.get("payment_method", "") or "",
+        "delivery_address": od.get("delivery_address", "") or od.get("address", "") or ""
+    }})
+
+
 @app.route("/api/rider/confirm", methods=["POST"])
 def rider_confirm():
     """商家确认收货：接收确认包子数量与商家地址，扣减剩余数量并更新最新配送地址；确认后推送 Telegram 照片通知"""
@@ -822,6 +869,9 @@ def order_history_api():
                 "shop_received": od.get("shop_received", 0) or 0,
                 "baozi_remaining": (od.get("baozi_total", 0) or 0) - (od.get("baozi_received", 0) or 0),
                 "shop_remaining": (od.get("shop_total", 0) or 0) - (od.get("shop_received", 0) or 0),
+                "shop_link": od.get("shop_link", "") or "",
+                "shop_lat": od.get("shop_lat"),
+                "shop_lng": od.get("shop_lng"),
                 "latest": latest,
             }
         )
@@ -1114,7 +1164,10 @@ def admin_banned_users():
     cur.execute(_q("SELECT username, nickname, phone, status, status_updated_at, operator FROM users WHERE role='rider' AND status IN ('banned','deleted') ORDER BY status_updated_at DESC"))
     rows = cur.fetchall()
     conn.close()
-    return jsonify({"ok": True, "records": _rows_to_dicts(cur, rows)})
+    records = _rows_to_dicts(cur, rows)
+    for rec in records:
+        rec["status_updated_at"] = to_yangon_text(rec.get("status_updated_at"))
+    return jsonify({"ok": True, "records": records})
 
 
 @app.route("/api/admin/user/create", methods=["POST"])

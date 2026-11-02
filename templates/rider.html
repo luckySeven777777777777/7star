@@ -51,6 +51,11 @@
     background:#fafafa; font-size:14px; cursor:pointer;
   }
   .status-box button.active { border-color:#fda085; background:#fff3e9; color:#e07b00; font-weight:bold; }
+  .status-tag { display:inline-block; padding:2px 12px; border-radius:20px; font-size:13px; font-weight:bold; }
+  .st-အစားအစာယူရန် { background:#fff3e0; color:#e65100; }
+  .st-ပို့ဆောင်နေသည် { background:#e3f2fd; color:#1565c0; }
+  .st-ရောက်ရှိပြီး { background:#e8f5e9; color:#2e7d32; }
+  .st-လက်ခံပြီးပါပြီ { background:#e8f5e9; color:#2e7d32; }
   .dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:#fda085; margin-right:6px; }
   .modal-overlay { position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.45); display:flex; align-items:center; justify-content:center; z-index:99; }
   .modal-box { background:#fff; border-radius:12px; padding:20px; width:90%; max-width:360px; position:relative; box-shadow:0 4px 20px rgba(0,0,0,0.25); }
@@ -435,13 +440,13 @@ function riderSelfIcon() {
     className: "",
     html: '<svg viewBox="0 0 64 64" width="46" height="46" style="filter:drop-shadow(0 2px 4px rgba(0,0,0,0.35))">' +
       '<circle cx="32" cy="32" r="30" fill="#e53935" stroke="#fff" stroke-width="3"/>' +
-      '<circle cx="18" cy="47" r="6" fill="none" stroke="#fff" stroke-width="3.5"/>' +
-      '<circle cx="46" cy="47" r="6" fill="none" stroke="#fff" stroke-width="3.5"/>' +
-      '<path d="M18 47 L29 35 L35 35 L46 47" fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>' +
-      '<path d="M24 41 L30 35 L35 35 L40 41 Z" fill="#fff"/>' +
-      '<path d="M35 35 L43 41 L46 47" fill="none" stroke="#fff" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>' +
-      '<circle cx="30.5" cy="17" r="5.5" fill="#fff"/>' +
-      '<path d="M25 32 Q24.5 23 30.5 23 Q36.5 23 36 32 Z" fill="#fff"/>' +
+      '<circle cx="20" cy="44" r="6" fill="none" stroke="#fff" stroke-width="3.5"/>' +
+      '<circle cx="44" cy="44" r="6" fill="none" stroke="#fff" stroke-width="3.5"/>' +
+      '<path d="M20 44 L29 33 L35 33 L44 44" fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>' +
+      '<path d="M25 39 L31 33 L35 33 L39 39 Z" fill="#fff"/>' +
+      '<path d="M35 33 L42 39 L44 44" fill="none" stroke="#fff" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>' +
+      '<circle cx="31" cy="20" r="5.5" fill="#fff"/>' +
+      '<path d="M26 30 Q25.5 25 31 25 Q36.5 25 36 30 Z" fill="#fff"/>' +
       '</svg>',
     iconSize: [46, 46], iconAnchor: [23, 23]
   });
@@ -559,7 +564,7 @@ function drawRouteLayers(coords, actualMps, expectedMps) {
 function routeEtaIcon(text) {
   return L.divIcon({
     className: "",
-    html: '<div style="background:#fff; border:1px solid #d0d0d0; border-radius:14px; padding:4px 10px; font-size:13px; color:#333; font-weight:bold; box-shadow:0 2px 6px rgba(0,0,0,0.18); white-space:nowrap;">' + text + '</div>',
+    html: '<div style="background:#fff; border:2px solid #c62828; border-radius:14px; padding:4px 10px; font-size:14px; color:#c62828; font-weight:bold; box-shadow:0 2px 6px rgba(0,0,0,0.18); white-space:nowrap;">' + text + '</div>',
     iconSize: [0, 0], iconAnchor: [0, 0]
   });
 }
@@ -1146,7 +1151,7 @@ function renderHistory() {
       + 'ပို့ဆောင်သူအမည်：<b>' + (h.rider_name || "-") + '</b><br>'
       + 'ပို့ဆောင်သူ ဖုန်းနံပါတ်：<b>' + (h.rider_phone || "-") + '</b><br>'
       + 'လက်ရှိOrder Number：<b>' + h.order_no + '</b><br>'
-      + 'လက်ရှိအခြေအနေ：<b>' + ((h.status && h.status !== "待取餐") ? h.status : "-") + '</b><br>'
+      + 'လက်ရှိအခြေအနေ：' + ((h.status && h.status !== "待取餐") ? '<span class="status-tag st-' + h.status + '">' + h.status + '</span><br>' : '-<br>')
       + 'လက်ရှိနေရာ：<b>' + loc + '</b><br>'
       + 'ပို့ရမည့်ဆိုင်လိပ်စာ：<b>' + (h.delivery_address || "-") + '</b><br>'
       + 'ကျန်ရှိသောပေါက်စီအလုံးအရေတွက်：<b>' + h.baozi_remaining + ' / ' + h.baozi_total + '</b><br>'

@@ -43,6 +43,7 @@
   .st-ပို့ဆောင်နေသည် { background:#e3f2fd; color:#1565c0; }
   .st-ရောက်ရှိပြီး { background:#e8f5e9; color:#2e7d32; }
   .st-လက်ခံပြီးပါပြီ { background:#e8f5e9; color:#2e7d32; }
+  .st-ပယ်ဖျက်ထားသည် { background:#ffebee; color:#c62828; }
   .err { color:#d32f2f; font-size:13px; margin-top:8px; display:none; }
   .modal-overlay { position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.45); display:flex; align-items:center; justify-content:center; z-index:99; }
   .modal-box { background:#fff; border-radius:12px; padding:20px; width:90%; max-width:360px; position:relative; box-shadow:0 4px 20px rgba(0,0,0,0.25); }
@@ -188,6 +189,7 @@
           </button>
         </div>
         <button class="btn" onclick="admResetPass()">Change Password</button>
+
       </div>
       <div class="admin-panel" id="adminPermPanel">
         <h3>🔑 Account Permission</h3>
@@ -197,12 +199,13 @@
           <button class="btn btn-off" onclick="admSetStatus('banned')">Ban Login</button>
           <button class="btn btn-gray" onclick="admSetStatus('deleted')">Delete Account</button>
         </div>
-        <div class="gps-state" id="admMsg" style="display:none"></div>
         <hr>
         <label>ပိတ်ထားသောစာရင်း (Banned Records)</label>
         <div id="bannedRecords"></div>
+        <div class="gps-state" id="admMsg" style="display:none"></div>
       </div>
-    </div><div class="err" id="err"></div>
+    </div>
+    <div class="err" id="err"></div>
   </div>
 
   <div class="result" id="result">
@@ -482,7 +485,7 @@ function buildGuideLayers(coords, actualMps, expectedMps) {
 function guideEtaIcon(text) {
   return L.divIcon({
     className: "",
-    html: '<div style="background:#fff; border:2px solid #c62828; border-radius:14px; padding:4px 10px; font-size:14px; color:#c62828; font-weight:bold; box-shadow:0 2px 6px rgba(0,0,0,0.18); white-space:nowrap;">' + text + '</div>',
+    html: '<div style="background:#fff; border:1px solid #d0d0d0; border-radius:14px; padding:4px 10px; font-size:13px; color:#333; font-weight:bold; box-shadow:0 2px 6px rgba(0,0,0,0.18); white-space:nowrap;">' + text + '</div>',
     iconSize: [0, 0], iconAnchor: [0, 0]
   });
 }
@@ -566,20 +569,20 @@ function riderIconColor(color) {
       '<circle cx="32" cy="32" r="30" fill="' + color + '" stroke="#fff" stroke-width="3"/>' +
       '<g transform="translate(0,0)">' +
       '<!-- 踏板车后轮 -->' +
-      '<circle cx="20" cy="44" r="6" fill="none" stroke="#fff" stroke-width="3.5"/>' +
+      '<circle cx="18" cy="47" r="6" fill="none" stroke="#fff" stroke-width="3.5"/>' +
       '<!-- 踏板车前轮 -->' +
-      '<circle cx="44" cy="44" r="6" fill="none" stroke="#fff" stroke-width="3.5"/>' +
+      '<circle cx="46" cy="47" r="6" fill="none" stroke="#fff" stroke-width="3.5"/>' +
       '<!-- 踏板车身 -->' +
-      '<path d="M20 44 L29 33 L35 33 L44 44" fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>' +
-      '<path d="M25 39 L31 33 L35 33 L39 39 Z" fill="#fff"/>' +
+      '<path d="M18 47 L29 35 L35 35 L46 47" fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>' +
+      '<path d="M24 41 L30 35 L35 35 L40 41 Z" fill="#fff"/>' +
       '<!-- 车把 -->' +
-      '<path d="M35 33 L42 39 L44 44" fill="none" stroke="#fff" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>' +
+      '<path d="M35 35 L43 41 L46 47" fill="none" stroke="#fff" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>' +
       '<!-- 骑手头 -->' +
-      '<circle cx="31" cy="20" r="5.5" fill="#fff"/>' +
+      '<circle cx="30.5" cy="17" r="5.5" fill="#fff"/>' +
       '<!-- 骑手身体 -->' +
-      '<path d="M26 30 Q25.5 25 31 25 Q36.5 25 36 30 Z" fill="#fff"/>' +
+      '<path d="M25 32 Q24.5 23 30.5 23 Q36.5 23 36 32 Z" fill="#fff"/>' +
       '<!-- 后座送餐箱 -->' +
-      '<path d="M20 37 L24 31 L30 33 L27 40 Z" fill="none" stroke="#fff" stroke-width="2.5" stroke-linejoin="round"/>' +
+      '<path d="M19 40 L23 33 L30 36 L26 43 Z" fill="none" stroke="#fff" stroke-width="2.5" stroke-linejoin="round"/>' +
       '</g></svg>',
     iconSize: [46, 46],
     iconAnchor: [23, 23]
@@ -681,10 +684,10 @@ function renderMulti(results, silent) {
       var addrTxt = x.delivery_address || "-";
       html += '<div class="ok">' +
         'Date：' + dateTxt + '<br>' +
-        'Name：🛵 ' + (x.rider_name || "-") + '<br>' +
-        'Order：' + x.order_no + ' · City:' + (x.city || "-") + '<br>' +
+        'Name：🛵 <b>' + (x.rider_name || "-") + '</b><br>' +
+        'Order：' + x.order_no + ' · City：' + (x.city || "-") + '<br>' +
         'ပို့ရမည့်လိပ်စာ：' + addrTxt + '<br>' +
-        ((x.status && x.status !== "待取餐") ? '<span class="status-tag st-' + x.status + '">' + stTxt + '</span><br>' : stTxt + '<br>') +
+        statusTagHtml(stTxt) + '<br>' +
         'ကျန်ရှိသောပေါက်စီအလုံးအရေတွက်：' + (bt - br) + ' / ' + bt + '<br>' +
         'ကျန်ရှိသောဆိုင်အရေတွက်：' + (st - sr) + ' / ' + st + '<br>' +
         'ငွေပေးချေမှုနည်းလမ်း：' + (x.payment_method || "-") + '<br>' +
@@ -726,7 +729,7 @@ function renderMulti(results, silent) {
     var popupHtml = '<b>' + (x.rider_name || "-") + '</b><br>' +
       'Order Number：' + x.order_no + '<br>' +
       '城市：' + (x.city || "-") + '<br>' +
-      'လက်ရှိအခြေအနေ：' + ((x.status && x.status !== "待取餐") ? '<span class="status-tag st-' + x.status + '">' + x.status + '</span><br>' : '-<br>') +
+      'လက်ရှိအခြေအနေ：' + ((x.status && x.status !== "待取餐") ? x.status : "-") + '<br>' +
       'နောက်ဆုံးတည်နေရာ：' + addr + '<br>' +
       'အချိန်：' + (x.update_time || "-");
     var key = x.order_no;
@@ -854,6 +857,15 @@ async function openHistory() {
   }
 }
 
+function statusTagClass(st) {
+  var map = {"အစားအစာယူရန် စောင့်ဆိုင်း":"st-အစားအစာယူရန်", "ပို့ဆောင်နေသည်":"st-ပို့ဆောင်နေသည်", "ရောက်ရှိပြီး":"st-ရောက်ရှိပြီး", "လက်ခံပြီးပါပြီ":"st-လက်ခံပြီးပါပြီ", "ပယ်ဖျက်ထားသည်":"st-ပယ်ဖျက်ထားသည်"};
+  return map[st] || ("st-" + st.replace(/\s+/g, ""));
+}
+function statusTagHtml(st) {
+  if (!st || st === "待取餐") return '-';
+  return '<span class="status-tag ' + statusTagClass(st) + '">' + st + '</span>';
+}
+
 function renderHistory() {
   var sel = document.getElementById("historyDateFilter");
   if (sel.value) _historyDate = sel.value;
@@ -871,7 +883,7 @@ function renderHistory() {
       + 'ပို့ဆောင်သူအမည်：<b>' + (h.rider_name || "-") + '</b><br>'
       + 'ပို့ဆောင်သူ ဖုန်းနံပါတ်：<b>' + (h.rider_phone || "-") + '</b><br>'
       + 'လက်ရှိOrder Number：<b>' + h.order_no + '</b><br>'
-      + 'လက်ရှိအခြေအနေ：' + ((h.status && h.status !== "待取餐") ? '<span class="status-tag st-' + h.status + '">' + h.status + '</span><br>' : '-<br>')
+      + 'လက်ရှိအခြေအနေ：' + statusTagHtml(h.status) + '<br>'
       + '城市：<b>' + (h.city || "-") + '</b><br>'
       + 'ပို့ဆောင်သူ နောက်ဆုံးတည်နေရာ：<b>' + loc + '</b><br>'
       + 'ပို့ရမည့်ဆိုင်လိပ်စာ：<b>' + (h.delivery_address || "-") + '</b><br>'

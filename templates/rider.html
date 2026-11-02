@@ -40,6 +40,7 @@
   .btn:disabled { background:#ccc; cursor:not-allowed; }
   .btn-gray { background:#999; }
   .btn-green { background: linear-gradient(135deg, #56ab2f, #a8e063); color:#fff; }
+  .btn-red { background: linear-gradient(135deg, #e53935, #ef5350); color:#fff; }
   .row2 { display:flex; gap:10px; }
   .row2 .btn { flex:1; font-size:13px; padding:11px 4px; white-space:nowrap; }
   .row2 input { font-size:12px; }
@@ -51,11 +52,6 @@
     background:#fafafa; font-size:14px; cursor:pointer;
   }
   .status-box button.active { border-color:#fda085; background:#fff3e9; color:#e07b00; font-weight:bold; }
-  .status-tag { display:inline-block; padding:2px 12px; border-radius:20px; font-size:13px; font-weight:bold; }
-  .st-အစားအစာယူရန် { background:#fff3e0; color:#e65100; }
-  .st-ပို့ဆောင်နေသည် { background:#e3f2fd; color:#1565c0; }
-  .st-ရောက်ရှိပြီး { background:#e8f5e9; color:#2e7d32; }
-  .st-လက်ခံပြီးပါပြီ { background:#e8f5e9; color:#2e7d32; }
   .dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:#fda085; margin-right:6px; }
   .modal-overlay { position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.45); display:flex; align-items:center; justify-content:center; z-index:99; }
   .modal-box { background:#fff; border-radius:12px; padding:20px; width:90%; max-width:360px; position:relative; box-shadow:0 4px 20px rgba(0,0,0,0.25); }
@@ -77,6 +73,14 @@
     font-size:30px; line-height:58px; font-weight:bold;
     box-shadow:0 4px 12px rgba(86,171,47,0.4);
   }
+  .status-tag {
+    display:inline-block; padding:2px 12px; border-radius:20px; font-size:13px; font-weight:bold;
+  }
+  .st-အစားအစာယူရန် { background:#fff3e0; color:#e65100; }
+  .st-ပို့ဆောင်နေသည် { background:#e3f2fd; color:#1565c0; }
+  .st-ရောက်ရှိပြီး { background:#e8f5e9; color:#2e7d32; }
+  .st-လက်ခံပြီးပါပြီ { background:#e8f5e9; color:#2e7d32; }
+  .st-ပယ်ဖျက်ထားသည် { background:#ffebee; color:#c62828; }
   .history-item {
     background:#f9f9f9; border:1px solid #eee; border-radius:10px;
     padding:12px; margin:10px 0; text-align:left; font-size:13px; line-height:2; color:#333;
@@ -206,7 +210,10 @@
     </div>
     <div class="row2">
       <button class="btn btn-green" id="confirmDeliveredBtn" onclick="confirmDelivered()">လက်ခံပြီးပါပြီ</button>
+    </div>
+    <div class="row2">
       <button class="btn" id="gpsBtn" onclick="startGps()" disabled>GPS ဖွင့်ထားသည်</button>
+      <button class="btn btn-red" id="cancelOrderBtn" onclick="openCancelModal()" disabled>အော်ဒါ ပယ်ဖျက်မည် ❌</button>
     </div>
     <div id="riderMapWrap" style="margin-top:12px; display:none;">
       <div class="row2" style="margin-bottom:6px;">
@@ -226,6 +233,19 @@
       <div class="row2">
         <button class="btn btn-green" onclick="doConfirmState()">Confirm ✅</button>
         <button class="btn btn-gray" onclick="closeStateConfirm()">Cancel ❌</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="cancelModal" style="display:none">
+    <div class="modal-box modal-confirm">
+      <button class="modal-close" onclick="closeCancelModal()">×</button>
+      <div class="confirm-icon" style="background:linear-gradient(135deg, #e53935, #ef5350);">!</div>
+      <h3>အော်ဒါ ပယ်ဖျက်ခြင်း</h3>
+      <p class="info-text" id="cancelConfirmText"></p>
+      <div class="row2">
+        <button class="btn btn-green" onclick="doCancelOrder()">Confirm ✅</button>
+        <button class="btn btn-gray" onclick="closeCancelModal()">Cancel ❌</button>
       </div>
     </div>
   </div>
@@ -440,13 +460,13 @@ function riderSelfIcon() {
     className: "",
     html: '<svg viewBox="0 0 64 64" width="46" height="46" style="filter:drop-shadow(0 2px 4px rgba(0,0,0,0.35))">' +
       '<circle cx="32" cy="32" r="30" fill="#e53935" stroke="#fff" stroke-width="3"/>' +
-      '<circle cx="20" cy="44" r="6" fill="none" stroke="#fff" stroke-width="3.5"/>' +
-      '<circle cx="44" cy="44" r="6" fill="none" stroke="#fff" stroke-width="3.5"/>' +
-      '<path d="M20 44 L29 33 L35 33 L44 44" fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>' +
-      '<path d="M25 39 L31 33 L35 33 L39 39 Z" fill="#fff"/>' +
-      '<path d="M35 33 L42 39 L44 44" fill="none" stroke="#fff" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>' +
-      '<circle cx="31" cy="20" r="5.5" fill="#fff"/>' +
-      '<path d="M26 30 Q25.5 25 31 25 Q36.5 25 36 30 Z" fill="#fff"/>' +
+      '<circle cx="18" cy="47" r="6" fill="none" stroke="#fff" stroke-width="3.5"/>' +
+      '<circle cx="46" cy="47" r="6" fill="none" stroke="#fff" stroke-width="3.5"/>' +
+      '<path d="M18 47 L29 35 L35 35 L46 47" fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>' +
+      '<path d="M24 41 L30 35 L35 35 L40 41 Z" fill="#fff"/>' +
+      '<path d="M35 35 L43 41 L46 47" fill="none" stroke="#fff" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>' +
+      '<circle cx="30.5" cy="17" r="5.5" fill="#fff"/>' +
+      '<path d="M25 32 Q24.5 23 30.5 23 Q36.5 23 36 32 Z" fill="#fff"/>' +
       '</svg>',
     iconSize: [46, 46], iconAnchor: [23, 23]
   });
@@ -564,7 +584,7 @@ function drawRouteLayers(coords, actualMps, expectedMps) {
 function routeEtaIcon(text) {
   return L.divIcon({
     className: "",
-    html: '<div style="background:#fff; border:2px solid #c62828; border-radius:14px; padding:4px 10px; font-size:14px; color:#c62828; font-weight:bold; box-shadow:0 2px 6px rgba(0,0,0,0.18); white-space:nowrap;">' + text + '</div>',
+    html: '<div style="background:#fff; border:1px solid #d0d0d0; border-radius:14px; padding:4px 10px; font-size:13px; color:#333; font-weight:bold; box-shadow:0 2px 6px rgba(0,0,0,0.18); white-space:nowrap;">' + text + '</div>',
     iconSize: [0, 0], iconAnchor: [0, 0]
   });
 }
@@ -745,6 +765,7 @@ async function bindOrder() {
     // GPS 强制开启：绑定成功后自动开启，快递员端不可关闭（仅 track 商家页可关）
     document.getElementById("gpsBtn").disabled = true;
     document.getElementById("gpsBtn").textContent = "GPS ဖွင့်ထားသည်";
+    document.getElementById("cancelOrderBtn").disabled = false;
     startGps();
     refreshRiderInfo();
     // 定期检查商家是否关闭 GPS（商家关闭后本端立即停止上报）
@@ -774,7 +795,7 @@ async function doConfirmState() {
   state.statusLocked = true;
   if (!state.confirmedStatuses) state.confirmedStatuses = [];
   if (state.confirmedStatuses.indexOf(state.pendingStatus) < 0) state.confirmedStatuses.push(state.pendingStatus);
-  document.getElementById("curStatus").textContent = state.status;
+  setCurStatus(state.status);
   disableStatusButton(state.pendingStatus);
   saveLockLocal();
   if (state.curLat !== null && state.curLat !== undefined) {
@@ -837,6 +858,33 @@ async function reportLocation(lat, lng, status, isSim) {
     }
   } catch (e) {
     showInfo("ဆာဗာနှင့် ချိတ်ဆက်၍ မရပါ။ ဝန်ဆောင်မှု စတင်ထားခြင်း ရှိမရှိ စစ်ဆေးပါ（请检查后端服务是否已启动）");
+  }
+}
+
+// ---------- အော်ဒါ ပယ်ဖျက်ခြင်း（取消订单：不扣包子/店家数量，记录进订单历史） ----------
+function openCancelModal() {
+  if (!state.orderNo || !state.phone) { showInfo("အမှာစာ မရှိပါ"); return; }
+  document.getElementById("cancelConfirmText").textContent = "အော်ဒါနံပါတ် " + state.orderNo + " ကို ပယ်ဖျက်မည်လား？";
+  document.getElementById("cancelModal").style.display = "flex";
+}
+function closeCancelModal() {
+  document.getElementById("cancelModal").style.display = "none";
+}
+async function doCancelOrder() {
+  document.getElementById("cancelModal").style.display = "none";
+  try {
+    var r = await fetch("/api/rider/cancel", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ order_no: state.orderNo, phone: state.phone })
+    });
+    var j = await r.json();
+    if (!j.ok) { showInfo(j.msg); return; }
+    showInfo(j.msg || "အော်ဒါ ပယ်ဖျက်ပြီးပါပြီ");
+    // 重置本端状态，允许重新下单（不扣任何数量）
+    resetAfterCompletion();
+  } catch (e) {
+    showInfo("ဆာဗာနှင့် ချိတ်ဆက်၍ မရပါ။ ဝန်ဆောင်မှု စတင်ထားခြင်း ရှိမရှိ စစ်ဆေးပါ");
   }
 }
 
@@ -994,8 +1042,7 @@ async function doConfirmDelivered() {
     state.statusLocked = true;
     if (!state.confirmedStatuses) state.confirmedStatuses = [];
     if (state.confirmedStatuses.indexOf("လက်ခံပြီးပါပြီ") < 0) state.confirmedStatuses.push("လက်ခံပြီးပါပြီ");
-    document.getElementById("curStatus").textContent = "လက်ခံပြီးပါပြီ";
-    document.getElementById("curStatus").style.color = "#2e7d32";
+    setCurStatus("လက်ခံပြီးပါပြီ");
     lockStatusButtons();
     saveLockLocal();
     showInfo("လက်ခံပြီးပါပြီ။ ဤအမှာစာ ပြီးဆုံးပါပြီ။ အမှာစာအသစ် ချိတ်ဆက်/ဖန်တီးနိုင်ပါပြီ");
@@ -1026,8 +1073,7 @@ function resetAfterCompletion() {
   document.getElementById("bindBtn").disabled = false;
   document.getElementById("bindBtn").textContent = "အမှာစာ ချိတ်ဆက်၍ ပို့ဆောင်စမည်";
   document.getElementById("curOrder").textContent = "";
-  document.getElementById("curStatus").textContent = "-";
-  document.getElementById("curStatus").style.color = "";
+  setCurStatus("-");
   document.getElementById("curCity").textContent = "-";
   document.getElementById("curLocation").textContent = "-";
   document.getElementById("curBaozi").textContent = "-";
@@ -1040,6 +1086,7 @@ function resetAfterCompletion() {
   document.getElementById("confirmDeliveredBtn").disabled = false;
   document.getElementById("gpsBtn").disabled = true;
   document.getElementById("gpsBtn").textContent = "GPS ဖွင့်ထားသည်";
+  document.getElementById("cancelOrderBtn").disabled = true;
   // 清理骑手端地图
   if (riderMap) { try { riderMap.remove(); } catch (e) {} riderMap = null; }
   riderMarker = null; shopMarker = null; routeLine = null;
@@ -1134,6 +1181,23 @@ function locDisplay(x) {
   }
   return "-";
 }
+function statusTagClass(st) {
+  var map = {"အစားအစာယူရန် စောင့်ဆိုင်း":"st-အစားအစာယူရန်", "ပို့ဆောင်နေသည်":"st-ပို့ဆောင်နေသည်", "ရောက်ရှိပြီး":"st-ရောက်ရှိပြီး", "လက်ခံပြီးပါပြီ":"st-လက်ခံပြီးပါပြီ", "ပယ်ဖျက်ထားသည်":"st-ပယ်ဖျက်ထားသည်"};
+  return map[st] || ("st-" + st.replace(/\s+/g, ""));
+}
+function statusTagHtml(st) {
+  if (!st || st === "待取餐") return '-';
+  return '<span class="status-tag ' + statusTagClass(st) + '">' + st + '</span>';
+}
+function setCurStatus(st) {
+  var el = document.getElementById("curStatus");
+  el.textContent = st || "-";
+  el.className = "";
+  if (st && st !== "待取餐") {
+    el.className = "status-tag " + statusTagClass(st);
+  }
+}
+
 function renderHistory() {
   var sel = document.getElementById("historyDateFilter");
   if (sel.value) _historyDate = sel.value;
@@ -1151,7 +1215,7 @@ function renderHistory() {
       + 'ပို့ဆောင်သူအမည်：<b>' + (h.rider_name || "-") + '</b><br>'
       + 'ပို့ဆောင်သူ ဖုန်းနံပါတ်：<b>' + (h.rider_phone || "-") + '</b><br>'
       + 'လက်ရှိOrder Number：<b>' + h.order_no + '</b><br>'
-      + 'လက်ရှိအခြေအနေ：' + ((h.status && h.status !== "待取餐") ? '<span class="status-tag st-' + h.status + '">' + h.status + '</span><br>' : '-<br>')
+      + 'လက်ရှိအခြေအနေ：' + statusTagHtml(h.status) + '<br>'
       + 'လက်ရှိနေရာ：<b>' + loc + '</b><br>'
       + 'ပို့ရမည့်ဆိုင်လိပ်စာ：<b>' + (h.delivery_address || "-") + '</b><br>'
       + 'ကျန်ရှိသောပေါက်စီအလုံးအရေတွက်：<b>' + h.baozi_remaining + ' / ' + h.baozi_total + '</b><br>'
@@ -1196,15 +1260,10 @@ async function refreshRiderInfo() {
     // 未选择前保持 "-"，不显示配送中
     if (j.status && state.statusLocked) {
       state.status = j.status;
-      document.getElementById("curStatus").textContent = j.status;
+      setCurStatus(j.status);
       document.querySelectorAll("#statusBox button").forEach(function(btn) {
         btn.classList.remove("active");
       });
-      if (j.status === "လက်ခံပြီးပါပြီ") {
-        document.getElementById("curStatus").style.color = "#2e7d32";
-      } else {
-        document.getElementById("curStatus").style.color = "";
-      }
     }
     // 商家位置同步到骑手端地图（刷新/恢复后重新绘制商家 marker）
     if (j.shop_lat !== null && j.shop_lat !== undefined && (shopLat !== j.shop_lat || shopLng !== j.shop_lng)) {
@@ -1257,7 +1316,7 @@ async function refreshRiderInfo() {
     document.getElementById("reportPanel").style.display = "block";
     document.getElementById("curOrder").textContent = saved.order_no;
     document.getElementById("curDate").textContent = formatEnglishDate(saved.date || new Date().toISOString());
-    document.getElementById("curStatus").textContent = saved.status || "-";
+    setCurStatus(saved.status || "-");
     if (saved.city) {
       document.getElementById("curCity").textContent = saved.city;
       var citySel = document.getElementById("citySelect");
@@ -1267,6 +1326,7 @@ async function refreshRiderInfo() {
     document.getElementById("bindBtn").disabled = true;
     document.getElementById("bindBtn").textContent = "ချိတ်ဆက်ပြီးပါပြီ";
     lockStatusButtons();
+    document.getElementById("cancelOrderBtn").disabled = false;
     showRiderMap();
     startGps();
     refreshRiderInfo();
@@ -1300,12 +1360,13 @@ function restoreActiveOrder(act, phone) {
   document.getElementById("orderNo").value = act.order_no;
   document.getElementById("curOrder").textContent = act.order_no;
   document.getElementById("curDate").textContent = formatEnglishDate(new Date());
-  document.getElementById("curStatus").textContent = act.status || "-";
+  setCurStatus(act.status || "-");
   document.getElementById("curCity").textContent = act.city || "-";
   var citySel = document.getElementById("citySelect");
   if (citySel && act.city && citySel.value !== act.city) citySel.value = act.city;
   document.getElementById("bindBtn").disabled = true;
   document.getElementById("bindBtn").textContent = "ချိတ်ဆက်ပြီးပါပြီ";
+  document.getElementById("cancelOrderBtn").disabled = false;
   showRiderMap();
   if (act.shop_lat !== null && act.shop_lat !== undefined) {
     setShop(act.shop_lat, act.shop_lng, act.shop_link || "");

@@ -694,7 +694,7 @@ def rider_active():
         return jsonify({"ok": False, "msg": "phone required"}), 400
     conn = get_db()
     cur = conn.cursor()
-    cur.execute(_q("SELECT h.order_no, h.rider_name, o.* FROM order_history h JOIN orders o ON h.order_no=o.order_no WHERE h.rider_phone=? AND (o.status IS NULL OR o.status='' OR o.status != 'လက်ခံပြီးပါပြီ') ORDER BY h.id DESC LIMIT 1"), (phone,))
+    cur.execute(_q("SELECT h.order_no, h.rider_name, o.* FROM order_history h JOIN orders o ON h.order_no=o.order_no WHERE h.rider_phone=? AND (o.status IS NULL OR o.status='' OR (o.status != 'လက်ခံပြီးပါပြီ' AND o.status != 'ပယ်ဖျက်ထားသည်')) ORDER BY h.id DESC LIMIT 1"), (phone,))
     row = cur.fetchone()
     if not row:
         conn.close()
@@ -774,6 +774,35 @@ def rider_confirm():
             tg_ok, tg_msg = False, "photo file missing"
     conn.close()
     return jsonify({"ok": True, "msg": "လက်ခံပြီးပါပြီ", "status": "လက်ခံပြီးပါပြီ", "baozi_received": new_baozi, "shop_received": new_shop, "payment_method": payment_method, "amount": amount, "telegram": tg_ok, "telegram_msg": tg_msg})
+
+
+@app.route("/api/rider/cancel", methods=["POST"])
+def rider_cancel():
+    """骑手取消订单：解除绑定、订单状态置为已取消、记录进订单历史；不扣任何包子/店家数量"""
+    data = request.get_json(silent=True) or {}
+    order_no = (data.get("order_no") or "").strip()
+    phone = (data.get("phone") or "").strip()
+    if not order_no or not phone:
+        return jsonify({"ok": False, "msg": "အမှာစာနံပါတ် သို့မဟုတ် ဖုန်းနံပါတ် မပါရှိပါ"}), 400
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute(_q("SELECT * FROM riders WHERE phone=? AND order_no=?"), (phone, order_no))
+    rider = cur.fetchone()
+    if not rider:
+        conn.close()
+        return jsonify({"ok": False, "msg": "ဤဖုန်းနံပါတ်သည် ဤအမှာစာနှင့် ချိတ်ဆက်မထားပါ"}), 403
+    rider_dict = _row_to_dict(cur, rider)
+    rider_name = rider_dict.get("rider_name", "") or rider_dict.get("name", "") or ""
+    # 订单状态置为已取消（不扣减 baozi_received/shop_received，即不扣任何数量）
+    cur.execute(_q("UPDATE orders SET status='ပယ်ဖျက်ထားသည်' WHERE order_no=?"), (order_no,))
+    # 解除骑手绑定，允许骑手重新下单/绑定新订单
+    cur.execute(_q("UPDATE riders SET order_no='' WHERE phone=? AND order_no=?"), (phone, order_no))
+    # 永久记录进订单历史（保留取消记录，不因刷新/重绑丢失）
+    cur.execute(_q("INSERT INTO order_history (order_no, rider_phone, rider_name, bind_time) VALUES (?,?,?,?)"),
+                (order_no, phone, rider_name, now_str()))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True, "msg": "အော်ဒါ ပယ်ဖျက်ပြီးပါပြီ", "status": "ပယ်ဖျက်ထားသည်"})
 
 
 @app.route("/api/rider/info", methods=["GET"])

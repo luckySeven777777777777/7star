@@ -220,7 +220,7 @@
   </div>
 
   <div class="modal-overlay" id="confirmModal" style="display:none">
-    <div class="modal-box modal-confirm">
+    <div class="modal-box modal-confirm" style="max-height:92vh; overflow-y:auto;">
       <button class="modal-close" onclick="closeConfirmModal()">×</button>
       <div class="confirm-icon">✓</div>
       <h3>လက်ခံပြီးပါပြီ</h3>
@@ -760,7 +760,7 @@ function uploadProof(ev) {
       proofUrl = j.url || "";
       var p = document.getElementById("proofPreview");
       if (p) { p.src = proofUrl; p.style.display = "block"; }
-      s.textContent = "Photo uploaded ✓ (notified to Telegram)";
+      s.textContent = "Photo uploaded ✓";
       var b = document.getElementById("confirmOkBtn");
       if (b) b.disabled = false;
     })
@@ -785,7 +785,7 @@ async function doConfirmDelivered() {
     var r = await fetch("/api/rider/confirm", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({ order_no: state.orderNo, phone: state.phone, confirm_baozi: baozi, address: address, payment_method: paymentMethod, amount: amount })
+      body: JSON.stringify({ order_no: state.orderNo, phone: state.phone, confirm_baozi: baozi, address: address, payment_method: paymentMethod, amount: amount, proof_url: proofUrl })
     });
     var j = await r.json();
     if (!j.ok) { showInfo(j.msg); return; }

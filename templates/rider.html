@@ -208,6 +208,7 @@
         <button class="btn btn-gray" id="mapFullscreenBtn" onclick="toggleMapFullscreen()">⛶ Fullscreen Map</button>
       </div>
       <div id="riderMap" style="width:100%; height:320px; border-radius:12px; z-index:1;"></div>
+      <div id="routeInfo" style="margin-top:8px; padding:8px 12px; background:#f1f8e9; border:1px solid #c8e6c9; border-radius:8px; font-size:14px; color:#2e7d32;">Arrival: - · Time left: -</div>
     </div>
   </div>
 
@@ -333,7 +334,7 @@ function plusCodeValue(ch) { return PLUS_ALPHABET.indexOf(ch); }
 function decodePlusCode(text) {
   if (!text) return null;
   var s = String(text).toUpperCase();
-  var m = s.match(/([23456789CFGHJMPQRVWX]{2,})\\s*\\+\\s*([23456789CFGHJMPQRVWX]{2,})/);
+  var m = s.match(/([A-Z2-9]{2,8})\+([A-Z2-9]{2,3})/);
   if (!m) return null;
   var grid = m[1], extra = m[2];
   var full = grid + extra;
@@ -468,28 +469,57 @@ function setShop(lat, lng, linkText) {
   }
 }
 var routeAbort = null;
-function drawRouteLine(coords) {
+function drawRouteLine(coords, color) {
   if (!riderMap) return;
   if (routeLine) riderMap.removeLayer(routeLine);
-  routeLine = L.polyline(coords, { color: "#2e9e44", weight: 5, opacity: 0.9 }).addTo(riderMap);
+  routeLine = L.polyline(coords, { color: color || "#2e9e44", weight: 5, opacity: 0.9 }).addTo(riderMap);
+}
+// 拥堵着色辅助：实际移动速度 / OSRM 预期速度
+var _routePrevPos = null;
+function haversineM(lat1, lng1, lat2, lng2) {
+  var R = 6371000, dLat = (lat2 - lat1) * Math.PI / 180, dLng = (lng2 - lng1) * Math.PI / 180;
+  var a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLng / 2) * Math.sin(dLng / 2);
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+function routeColorFor(actualMps, expectedMps) {
+  if (!expectedMps || expectedMps <= 0) return "#43a047";
+  if (actualMps === null || actualMps === undefined) return "#43a047";
+  var ratio = actualMps / expectedMps;
+  if (ratio >= 0.8) return "#43a047";
+  if (ratio >= 0.5) return "#fdd835";
+  return "#e53935";
+}
+function updateRouteInfo(routeSec) {
+  var el = document.getElementById("routeInfo");
+  if (!el) return;
+  if (routeSec === null || routeSec === undefined) { el.textContent = "-"; return; }
+  if (routeSec < 0) { el.textContent = "Route unavailable"; return; }
+  var now = new Date();
+  var arr = new Date(now.getTime() + routeSec * 1000);
+  // Asia/Yangon (UTC+6:30)
+  var utc = arr.getTime() + arr.getTimezoneOffset() * 60000;
+  var yangon = new Date(utc + (6 * 60 + 30) * 60000);
+  function p2(n) { return (n < 10 ? "0" : "") + n; }
+  var leftSec = Math.max(0, Math.round(routeSec));
+  var min = Math.floor(leftSec / 60), sec = leftSec % 60;
+  el.textContent = "Arrival: " + p2(yangon.getUTCHours()) + ":" + p2(yangon.getUTCMinutes()) +
+    " · Time left: " + min + " min " + sec + " sec";
 }
 function updateRoute() {
   if (state.curLat === null || shopLat === null || !riderMap) return;
-  // 先以当前位置→商家立即重画直线，覆盖旧线避免残留已走过部分
-  drawRouteLine([[state.curLat, state.curLng], [shopLat, shopLng]]);
-  // 每次定位更新都重新按道路规划路线（骑手走错路时路线会即时更新）
+  // 只绘制 OSRM 道路路线，禁止直线；失败/超时保留上一条成功路线不清除
   if (routeAbort) routeAbort.abort();
   var ac = new AbortController();
   routeAbort = ac;
   var url = "https://router.project-osrm.org/route/v1/driving/" +
     state.curLng + "," + state.curLat + ";" + shopLng + "," + shopLat +
-    "?overview=full&geometries=geojson";
-  // 8 秒超时或请求失败时，立即回退为直线，保证路线始终可见
+    "?overview=full&geometries=geojson&steps=false";
   var timer = setTimeout(function () {
     if (routeAbort !== ac) return;
     ac.abort();
-    drawRouteLine([[state.curLat, state.curLng], [shopLat, shopLng]]);
     routeAbort = null;
+    updateRouteInfo(-1);
   }, 8000);
   fetch(url, { signal: ac.signal })
     .then(function (resp) { return resp.json(); })
@@ -497,18 +527,32 @@ function updateRoute() {
       if (routeAbort !== ac) return;
       clearTimeout(timer);
       if (d && d.routes && d.routes.length) {
-        var coords = d.routes[0].geometry.coordinates.map(function (p) { return [p[1], p[0]]; });
-        drawRouteLine(coords);
+        var rt = d.routes[0];
+        var coords = rt.geometry.coordinates.map(function (p) { return [p[1], p[0]]; });
+        var distM = rt.distance || 0;
+        var durS = rt.duration || 0;
+        var expectedMps = durS > 0 ? distM / durS : 0;
+        // 拥堵着色：比较上一次定位以来的实际移动速度
+        var actualMps = null;
+        var nowT = Date.now();
+        if (_routePrevPos && _routePrevPos.t) {
+          var dM = haversineM(_routePrevPos.lat, _routePrevPos.lng, state.curLat, state.curLng);
+          var dT = (nowT - _routePrevPos.t) / 1000;
+          if (dT > 0) actualMps = dM / dT;
+        }
+        _routePrevPos = { lat: state.curLat, lng: state.curLng, t: nowT };
+        drawRouteLine(coords, routeColorFor(actualMps, expectedMps));
+        updateRouteInfo(durS);
       } else {
-        drawRouteLine([[state.curLat, state.curLng], [shopLat, shopLng]]);
+        updateRouteInfo(-1);
       }
       routeAbort = null;
     })
     .catch(function () {
       if (routeAbort !== ac) return;
       clearTimeout(timer);
-      drawRouteLine([[state.curLat, state.curLng], [shopLat, shopLng]]);
       routeAbort = null;
+      updateRouteInfo(-1);
     });
 }
 function updateRiderMarker() {
@@ -578,6 +622,7 @@ async function bindOrder() {
     var j = await r.json();
     if (!j.ok) { showInfo(j.msg); return; }
 
+    localStorage.setItem("riderPhoneSaved", phone);
     state.orderNo = orderNo;
     state.phone = phone;
     state.name = name;
@@ -992,6 +1037,15 @@ async function openHistory() {
   }
 }
 
+function locDisplay(x) {
+  if (!x) return "-";
+  var v = x.shop_link || "";
+  if (v) return v;
+  if (x.shop_lat !== null && x.shop_lat !== undefined && x.shop_lng !== null && x.shop_lng !== undefined) {
+    return Number(x.shop_lat).toFixed(6) + ", " + Number(x.shop_lng).toFixed(6);
+  }
+  return "-";
+}
 function renderHistory() {
   var sel = document.getElementById("historyDateFilter");
   if (sel.value) _historyDate = sel.value;
@@ -1016,6 +1070,7 @@ function renderHistory() {
       + 'ကျန်ရှိသောဆိုင်အရေတွက်：<b>' + h.shop_remaining + ' / ' + h.shop_total + '</b><br>'
       + 'ငွေပေးချေမှုနည်းလမ်း：<b>' + (h.payment_method || "-") + '</b><br>'
       + 'Amount (MMK)：<b>' + (h.amount || "-") + '</b><br>'
+      + '📍 Location / Geographic Location：<b>' + locDisplay(h) + '</b><br>'
       + 'နောက်ဆုံး တင်ပြချိန်：<b>' + lastT + '</b>'
       + '</div>';
   });
@@ -1097,6 +1152,10 @@ async function refreshRiderInfo() {
 // ---------- 页面加载：恢复已锁定状态（刷新后仍不可修改） ----------
 (function() {
   var phone = document.getElementById("riderPhone").value.trim();
+  if (!phone) {
+    phone = localStorage.getItem("riderPhoneSaved") || "";
+    if (phone) document.getElementById("riderPhone").value = phone;
+  }
   var saved = null;
   try { saved = JSON.parse(localStorage.getItem("riderLock_" + phone)); } catch (e) {}
   if (saved && saved.locked && saved.order_no) {
@@ -1125,8 +1184,59 @@ async function refreshRiderInfo() {
     refreshRiderInfo();
     if (state.refreshTimer) clearInterval(state.refreshTimer);
     state.refreshTimer = setInterval(refreshRiderInfo, 5000);
+  } else if (phone) {
+    // 无本地锁定时，从服务端恢复最近一条未完成任务（永久恢复，不依赖本地存储）
+    fetch("/api/rider/active?phone=" + encodeURIComponent(phone))
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        if (j && j.ok && j.active && !state.orderNo) {
+          restoreActiveOrder(j.active, phone);
+        }
+      })
+      .catch(function () {});
   }
 })();
+
+// 恢复未完成任务（刷新/重开/误删本地数据后，永久恢复未完成的订单）
+function restoreActiveOrder(act, phone) {
+  state.orderNo = act.order_no;
+  state.phone = phone;
+  state.name = act.rider_name || "";
+  state.city = act.city || "";
+  if (act.status && act.status !== "待取餐") {
+    state.statusLocked = true;
+    state.confirmedStatuses = [act.status];
+    lockStatusButtons();
+  }
+  document.getElementById("reportPanel").style.display = "block";
+  document.getElementById("orderNo").value = act.order_no;
+  document.getElementById("curOrder").textContent = act.order_no;
+  document.getElementById("curDate").textContent = formatEnglishDate(new Date());
+  document.getElementById("curStatus").textContent = act.status || "-";
+  document.getElementById("curCity").textContent = act.city || "-";
+  var citySel = document.getElementById("citySelect");
+  if (citySel && act.city && citySel.value !== act.city) citySel.value = act.city;
+  document.getElementById("bindBtn").disabled = true;
+  document.getElementById("bindBtn").textContent = "ချိတ်ဆက်ပြီးပါပြီ";
+  showRiderMap();
+  if (act.shop_lat !== null && act.shop_lat !== undefined) {
+    setShop(act.shop_lat, act.shop_lng, act.shop_link || "");
+    document.getElementById("shopHint").style.display = "none";
+  } else {
+    var shopC = resolveShopLocation();
+    if (shopC) {
+      setShop(shopC[0], shopC[1], "");
+      document.getElementById("shopHint").style.display = "none";
+    } else {
+      document.getElementById("shopHint").style.display = "block";
+    }
+  }
+  startGps();
+  refreshRiderInfo();
+  if (state.refreshTimer) clearInterval(state.refreshTimer);
+  state.refreshTimer = setInterval(refreshRiderInfo, 5000);
+  showInfo("Active order restored: " + act.order_no);
+}
 
 // ===== 登录/用户区（头像+昵称+Login/Logout） =====
 // 骑手页与商家/管理页登录态隔离：骑手页只读取 riderToken，管理员 token 不会串进来

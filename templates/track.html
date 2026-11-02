@@ -213,6 +213,7 @@
     ပို့ဆောင်သူ ကျန်ရှိသော ဆိုင်အရေတွက်：<b id="rShop"></b><br>
     ငွေပေးချေမှုနည်းလမ်း：<b id="rPayment"></b><br>
     Amount (MMK)：<b id="rAmount"></b><br>
+    📍 Location / Geographic Location：<b id="rShopLocation"></b><br>
     အချက်အလက်：စာမျက်နှာသည် ၅ စက္ကန့်တိုင်း အလိုအလျောက် ပြန်လည်တင်ပေးသည်
   </div>
 
@@ -253,12 +254,17 @@
   </div>
 
   <div id="map"></div>
+  <div id="routeInfo" style="margin-top:8px; padding:8px 12px; background:#f1f8e9; border:1px solid #c8e6c9; border-radius:8px; font-size:14px; color:#2e7d32;">Arrival: - · Time left: -</div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
 var map = null;
 var marker = null;
 var trackLine = null;
+var shopMarker = null;
+var guideRoute = null;
+var guideAbort = null;
+var guidePrevPos = null;
 var refreshTimer = null;
 var currentOrderNo = "";
 var currentPhone = "";
@@ -309,6 +315,7 @@ function render(j) {
   document.getElementById("rShop").textContent = (j.shop_remaining !== undefined && j.shop_remaining !== null) ? (j.shop_remaining + " / " + (j.shop_total || 0)) : "-";
   document.getElementById("rPayment").textContent = j.payment_method || "-";
   document.getElementById("rAmount").textContent = j.amount || "-";
+  document.getElementById("rShopLocation").textContent = locDisplay(j);
 
   // 快递员未选择状态前显示 "-"（不显示配送中）
   var tag = document.getElementById("rStatusTag");
@@ -345,7 +352,122 @@ function render(j) {
     var cur = marker.getLatLng();
     animateMarkerTo([cur.lat, cur.lng], latest, 900);
   }
-  map.setView(latest, 15);
+  // 商家位置 marker（绿色圆底 🏪）+ 引导路线 + 视野合并（轨迹+商家）
+  var hasShop = (j.shop_lat !== null && j.shop_lat !== undefined && j.shop_lng !== null && j.shop_lng !== undefined);
+  if (hasShop) {
+    var shopLL = [j.shop_lat, j.shop_lng];
+    if (!shopMarker) {
+      shopMarker = L.marker(shopLL, { icon: trackShopIcon() }).addTo(map);
+    } else {
+      shopMarker.setLatLng(shopLL);
+    }
+    drawGuideRoute(latest, shopLL);
+    map.fitBounds(L.latLngBounds(latLngs.concat([shopLL])), { padding: [30, 30] });
+  } else {
+    if (shopMarker) { try { map.removeLayer(shopMarker); } catch (e) {} shopMarker = null; }
+    if (guideRoute) { try { map.removeLayer(guideRoute); } catch (e) {} guideRoute = null; }
+    updateRouteInfo(null);
+    map.setView(latest, 15);
+  }
+}
+
+// 商家模型图标：绿色圆底 + 白边 + 🏪
+function trackShopIcon() {
+  return L.divIcon({
+    className: "",
+    html: '<div style="background:#43a047; width:34px; height:34px; border-radius:50%; border:3px solid #fff; box-shadow:0 2px 6px rgba(0,0,0,0.35); display:flex; align-items:center; justify-content:center; font-size:18px;">🏪</div>',
+    iconSize: [34, 34],
+    iconAnchor: [17, 17]
+  });
+}
+function locDisplay(x) {
+  if (!x) return "-";
+  var v = x.shop_link || "";
+  if (v) return v;
+  if (x.shop_lat !== null && x.shop_lat !== undefined && x.shop_lng !== null && x.shop_lng !== undefined) {
+    return Number(x.shop_lat).toFixed(6) + ", " + Number(x.shop_lng).toFixed(6);
+  }
+  return "-";
+}
+// 拥堵着色 + ETA 辅助（与骑手端同一套逻辑）
+function haversineM(lat1, lng1, lat2, lng2) {
+  var R = 6371000, dLat = (lat2 - lat1) * Math.PI / 180, dLng = (lng2 - lng1) * Math.PI / 180;
+  var a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLng / 2) * Math.sin(dLng / 2);
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+function routeColorFor(actualMps, expectedMps) {
+  if (!expectedMps || expectedMps <= 0) return "#43a047";
+  if (actualMps === null || actualMps === undefined) return "#43a047";
+  var ratio = actualMps / expectedMps;
+  if (ratio >= 0.8) return "#43a047";
+  if (ratio >= 0.5) return "#fdd835";
+  return "#e53935";
+}
+function updateRouteInfo(routeSec) {
+  var el = document.getElementById("routeInfo");
+  if (!el) return;
+  if (routeSec === null || routeSec === undefined) { el.textContent = "-"; return; }
+  if (routeSec < 0) { el.textContent = "Route unavailable"; return; }
+  var now = new Date();
+  var arr = new Date(now.getTime() + routeSec * 1000);
+  // Asia/Yangon (UTC+6:30)
+  var utc = arr.getTime() + arr.getTimezoneOffset() * 60000;
+  var yangon = new Date(utc + (6 * 60 + 30) * 60000);
+  function p2(n) { return (n < 10 ? "0" : "") + n; }
+  var leftSec = Math.max(0, Math.round(routeSec));
+  var min = Math.floor(leftSec / 60), sec = leftSec % 60;
+  el.textContent = "Arrival: " + p2(yangon.getUTCHours()) + ":" + p2(yangon.getUTCMinutes()) +
+    " · Time left: " + min + " min " + sec + " sec";
+}
+function drawGuideRoute(fromLL, toLL) {
+  if (!map) return;
+  if (guideAbort) guideAbort.abort();
+  var ac = new AbortController();
+  guideAbort = ac;
+  var url = "https://router.project-osrm.org/route/v1/driving/" +
+    fromLL[1] + "," + fromLL[0] + ";" + toLL[1] + "," + toLL[0] +
+    "?overview=full&geometries=geojson&steps=false";
+  var timer = setTimeout(function () {
+    if (guideAbort !== ac) return;
+    ac.abort();
+    guideAbort = null;
+    updateRouteInfo(-1);
+  }, 8000);
+  fetch(url, { signal: ac.signal })
+    .then(function (resp) { return resp.json(); })
+    .then(function (d) {
+      if (guideAbort !== ac) return;
+      clearTimeout(timer);
+      if (d && d.routes && d.routes.length) {
+        var rt = d.routes[0];
+        var coords = rt.geometry.coordinates.map(function (p) { return [p[1], p[0]]; });
+        var distM = rt.distance || 0;
+        var durS = rt.duration || 0;
+        var expectedMps = durS > 0 ? distM / durS : 0;
+        // 拥堵着色：比较两次刷新间骑手的实际移动速度
+        var actualMps = null;
+        var nowT = Date.now();
+        if (guidePrevPos && guidePrevPos.t) {
+          var dM = haversineM(guidePrevPos.lat, guidePrevPos.lng, fromLL[0], fromLL[1]);
+          var dT = (nowT - guidePrevPos.t) / 1000;
+          if (dT > 0) actualMps = dM / dT;
+        }
+        guidePrevPos = { lat: fromLL[0], lng: fromLL[1], t: nowT };
+        if (guideRoute) map.removeLayer(guideRoute);
+        guideRoute = L.polyline(coords, { color: routeColorFor(actualMps, expectedMps), weight: 5, opacity: 0.9 }).addTo(map);
+        updateRouteInfo(durS);
+      } else {
+        updateRouteInfo(-1);
+      }
+      guideAbort = null;
+    })
+    .catch(function () {
+      if (guideAbort !== ac) return;
+      clearTimeout(timer);
+      guideAbort = null;
+      updateRouteInfo(-1);
+    });
 }
 
 // 骑手模型图标：红色圆底 + 白色边框 + 白色线条骑手骑踏板车送包子（仿附件第三张图）
@@ -457,6 +579,9 @@ function renderMulti(results, silent) {
   if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
   if (trackLine) { try { map.removeLayer(trackLine); } catch (e) {} trackLine = null; }
   if (marker) { try { map.removeLayer(marker); } catch (e) {} marker = null; }
+  if (shopMarker) { try { map.removeLayer(shopMarker); } catch (e) {} shopMarker = null; }
+  if (guideRoute) { try { map.removeLayer(guideRoute); } catch (e) {} guideRoute = null; }
+  updateRouteInfo(null);
 
   var okItems = results.filter(function (x) { return x.ok && x.track && x.track.length > 0; });
   var html = "";
@@ -478,7 +603,8 @@ function renderMulti(results, silent) {
         'ကျန်ရှိသောပေါက်စီအလုံးအရေတွက်：' + (bt - br) + ' / ' + bt + '<br>' +
         'ကျန်ရှိသောဆိုင်အရေတွက်：' + (st - sr) + ' / ' + st + '<br>' +
         'ငွေပေးချေမှုနည်းလမ်း：' + (x.payment_method || "-") + '<br>' +
-        'Amount (MMK)：' + (x.amount || "-") +
+        'Amount (MMK)：' + (x.amount || "-") + '<br>' +
+        '📍 Location / Geographic Location：' + locDisplay(x) +
         '</div>';
     } else {
       html += '<div class="bad">' + (x.order_no || "-") + '：' + (x.msg || "error") + '</div>';
@@ -668,6 +794,7 @@ function renderHistory() {
       + 'ကျန်ရှိသောဆိုင်အရေတွက်：<b>' + h.shop_remaining + ' / ' + h.shop_total + '</b><br>'
       + 'ငွေပေးချေမှုနည်းလမ်း：<b>' + (h.payment_method || "-") + '</b><br>'
       + 'Amount (MMK)：<b>' + (h.amount || "-") + '</b><br>'
+      + '📍 Location / Geographic Location：<b>' + locDisplay(h) + '</b><br>'
       + 'နောက်ဆုံး တင်ပြချိန်：<b>' + lastT + '</b>'
       + '</div>';
   });

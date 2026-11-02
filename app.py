@@ -694,7 +694,7 @@ def rider_active():
         return jsonify({"ok": False, "msg": "phone required"}), 400
     conn = get_db()
     cur = conn.cursor()
-    cur.execute(_q("SELECT h.order_no, h.rider_name, o.* FROM order_history h JOIN orders o ON h.order_no=o.order_no WHERE h.rider_phone=? AND (o.status IS NULL OR o.status='' OR (o.status != 'လက်ခံပြီးပါပြီ' AND o.status != 'ပယ်ဖျက်ထားသည်')) ORDER BY h.id DESC LIMIT 1"), (phone,))
+    cur.execute(_q("SELECT h.order_no, h.rider_name, o.* FROM order_history h JOIN orders o ON h.order_no=o.order_no WHERE h.rider_phone=? AND (o.status IS NULL OR o.status='' OR o.status != 'လက်ခံပြီးပါပြီ') ORDER BY h.id DESC LIMIT 1"), (phone,))
     row = cur.fetchone()
     if not row:
         conn.close()
@@ -774,42 +774,6 @@ def rider_confirm():
             tg_ok, tg_msg = False, "photo file missing"
     conn.close()
     return jsonify({"ok": True, "msg": "လက်ခံပြီးပါပြီ", "status": "လက်ခံပြီးပါပြီ", "baozi_received": new_baozi, "shop_received": new_shop, "payment_method": payment_method, "amount": amount, "telegram": tg_ok, "telegram_msg": tg_msg})
-
-
-@app.route("/api/rider/cancel", methods=["POST"])
-def rider_cancel():
-    """骑手取消订单：标记订单已取消并解除骑手绑定，保留订单历史记录（不扣减任何数量字段）"""
-    data = request.get_json(silent=True) or {}
-    order_no = (data.get("order_no") or "").strip()
-    phone = (data.get("phone") or "").strip()
-    if not order_no or not phone:
-        return jsonify({"ok": False, "msg": "အမှာစာနံပါတ် သို့မဟုတ် ဖုန်းနံပါတ် မပါရှိပါ"}), 400
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute(_q("SELECT * FROM riders WHERE phone=? AND order_no=?"), (phone, order_no))
-    rider = cur.fetchone()
-    if not rider:
-        conn.close()
-        return jsonify({"ok": False, "msg": "ဤဖုန်းနံပါတ်သည် ဤအမှာစာနှင့် ချိတ်ဆက်မထားပါ"}), 403
-    rd = _row_to_dict(cur, rider)
-    rider_name = rd.get("rider_name", "") or ""
-    cur.execute(_q("UPDATE orders SET status='ပယ်ဖျက်ထားသည်' WHERE order_no=?"), (order_no,))
-    cur.execute(_q("UPDATE riders SET order_no='', rider_name='' WHERE phone=? AND order_no=?"), (phone, order_no))
-    # 保留订单历史：存在则更新骑手名与绑定时间，不存在则补记一条
-    cur.execute(_q("SELECT id FROM order_history WHERE order_no=? AND rider_phone=?"), (order_no, phone))
-    if cur.fetchone():
-        cur.execute(
-            _q("UPDATE order_history SET rider_name=?, bind_time=? WHERE order_no=? AND rider_phone=?"),
-            (rider_name, now_str(), order_no, phone),
-        )
-    else:
-        cur.execute(
-            _q("INSERT INTO order_history (order_no, rider_phone, rider_name, bind_time) VALUES (?,?,?,?)"),
-            (order_no, phone, rider_name, now_str()),
-        )
-    conn.commit()
-    conn.close()
-    return jsonify({"ok": True, "msg": "အော်ဒါ ပယ်ဖျက်ပြီးပါပြီ", "status": "ပယ်ဖျက်ထားသည်"})
 
 
 @app.route("/api/rider/info", methods=["GET"])

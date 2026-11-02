@@ -70,6 +70,41 @@ def send_telegram_photo(photo_path, caption):
         return False, str(e)
 
 
+def build_proof_caption(order_no, phone, order_dict, rider_name, latest):
+    """组装 Telegram 通知内容：订单信息 + 扣减后的剩余数量 + 最新位置（与订单记录一致）"""
+    baozi_total = int(order_dict.get("baozi_total") or 0)
+    baozi_received = int(order_dict.get("baozi_received") or 0)
+    shop_total = int(order_dict.get("shop_total") or 0)
+    shop_received = int(order_dict.get("shop_received") or 0)
+    loc_text = "-"
+    if latest:
+        loc_text = latest.get("address") or ("%.6f, %.6f" % (latest["lat"], latest["lng"]))
+    return (
+        "🚚 Delivery Proof\n"
+        "📥Order: %s\n"
+        "📲Rider Phone: %s\n"
+        "👤Rider Name：%s\n"
+        "🔍လက်ရှိအခြေအနေ：%s\n"
+        "📍လက်ရှိနေရာ：%s\n"
+        "🍙ကျန်ရှိသောပေါက်စီအလုံးအရေတွက်：%s / %s\n"
+        "📝ကျန်ရှိသောဆိုင်အရေတွက်：%s / %s\n"
+        "💳ငွေပေးချေမှုနည်းလမ်း：%s\n"
+        "💵Amount (MMK)：%s"
+    ) % (
+        order_no or "-",
+        phone or "-",
+        rider_name,
+        order_dict.get("status", "") or "",
+        loc_text,
+        baozi_total - baozi_received,
+        baozi_total,
+        shop_total - shop_received,
+        shop_total,
+        order_dict.get("payment_method", "") or "",
+        order_dict.get("amount", "") or "",
+    )
+
+
 # ==================== 数据库连接 ====================
 def get_db():
     if DATABASE_URL:
@@ -598,68 +633,12 @@ def upload_proof():
         fname = "proof_%s_%s%s" % (datetime.now().strftime("%Y%m%d%H%M%S"), uuid.uuid4().hex[:8], ext)
         path = os.path.join(proofs_dir, fname)
         f.save(path)
-        # 查询订单 / 骑手 / 最新位置信息，组装通知内容
-        order_dict = {}
-        rider_name = ""
-        latest = None
-        conn = get_db()
-        cur = conn.cursor()
-        if order_no:
-            cur.execute(_q("SELECT * FROM orders WHERE order_no=?"), (order_no,))
-            o_row = cur.fetchone()
-            if o_row:
-                order_dict = _row_to_dict(cur, o_row)
-        if order_no and phone:
-            cur.execute(_q("SELECT rider_name FROM order_history WHERE order_no=? AND rider_phone=? ORDER BY id DESC LIMIT 1"),
-                        (order_no, phone))
-            h_row = cur.fetchone()
-            if h_row:
-                rider_name = _row_to_dict(cur, h_row).get("rider_name", "") or ""
-        if order_no:
-            cur.execute(_q("SELECT lat, lng, status, report_time FROM locations WHERE order_no=? AND is_sim=0 ORDER BY id DESC LIMIT 1"),
-                        (order_no,))
-            lt_row = cur.fetchone()
-            latest = _row_to_dict(cur, lt_row) if lt_row else None
-            if latest:
-                latest["address"] = reverse_geocode(latest["lat"], latest["lng"])
-        conn.close()
-        baozi_total = int(order_dict.get("baozi_total") or 0)
-        baozi_received = int(order_dict.get("baozi_received") or 0)
-        shop_total = int(order_dict.get("shop_total") or 0)
-        shop_received = int(order_dict.get("shop_received") or 0)
-        loc_text = "-"
-        if latest:
-            loc_text = latest.get("address") or ("%.6f, %.6f" % (latest["lat"], latest["lng"]))
-        caption = (
-            "🚚 Delivery Proof\n"
-            "📥Order: %s\n"
-            "📲Rider Phone: %s\n"
-            "👤Rider Name：%s\n"
-            "🔍လက်ရှိအခြေအနေ：%s\n"
-            "📍လက်ရှိနေရာ：%s\n"
-            "🍙ကျန်ရှိသောပေါက်စီအလုံးအရေတွက်：%s / %s\n"
-            "📝ကျန်ရှိသောဆိုင်အရေတွက်：%s / %s\n"
-            "💳ငွေပေးချေမှုနည်းလမ်း：%s\n"
-            "💵Amount (MMK)：%s"
-        ) % (
-            order_no or "-",
-            phone or "-",
-            rider_name,
-            order_dict.get("status", "") or "",
-            loc_text,
-            baozi_total - baozi_received,
-            baozi_total,
-            shop_total - shop_received,
-            shop_total,
-            order_dict.get("payment_method", "") or "",
-            order_dict.get("amount", "") or "",
-        )
-        tg_ok, tg_msg = send_telegram_photo(path, caption)
+        # 仅保存照片，不发送 Telegram；通知在骑手点击 Confirm ✅ 后由 /api/rider/confirm 发送
         return jsonify({
             "ok": True,
             "url": "/static/uploads/proofs/" + fname,
-            "telegram": tg_ok,
-            "telegram_msg": "sent" if tg_ok else tg_msg
+            "telegram": False,
+            "telegram_msg": "pending confirm"
         })
     except Exception as e:
         return jsonify({"ok": False, "msg": "Save failed: %s" % str(e)}), 500
@@ -689,7 +668,7 @@ def rider_update_shop():
 
 @app.route("/api/rider/confirm", methods=["POST"])
 def rider_confirm():
-    """商家确认收货：接收确认包子数量与商家地址，扣减剩余数量并更新最新配送地址"""
+    """商家确认收货：接收确认包子数量与商家地址，扣减剩余数量并更新最新配送地址；确认后推送 Telegram 照片通知"""
     data = request.get_json(silent=True) or {}
     order_no = (data.get("order_no") or "").strip()
     phone = (data.get("phone") or "").strip()
@@ -700,6 +679,7 @@ def rider_confirm():
     address = (data.get("address") or "").strip()
     payment_method = (data.get("payment_method") or "").strip()
     amount = (data.get("amount") or "").strip()
+    proof_url = (data.get("proof_url") or "").strip()
     if not order_no or not phone:
         return jsonify({"ok": False, "msg": "အမှာစာနံပါတ် သို့မဟုတ် ဖုန်းနံပါတ် မပါရှိပါ"}), 400
     conn = get_db()
@@ -719,8 +699,34 @@ def rider_confirm():
         (new_baozi, new_shop, address, payment_method, amount, order_no),
     )
     conn.commit()
+    # 确认完成后推送 Telegram：先查扣减后的订单数据 + 骑手名 + 最新位置
+    tg_ok, tg_msg = False, "no photo"
+    if proof_url:
+        photo_rel = proof_url.lstrip("/")
+        photo_path = os.path.join(BASE_DIR, photo_rel.replace("/", os.sep))
+        if os.path.exists(photo_path):
+            cur.execute(_q("SELECT * FROM orders WHERE order_no=?"), (order_no,))
+            od_row = cur.fetchone()
+            od = _row_to_dict(cur, od_row)
+            rider_name = ""
+            cur.execute(_q("SELECT rider_name FROM order_history WHERE order_no=? AND rider_phone=? ORDER BY id DESC LIMIT 1"),
+                        (order_no, phone))
+            h_row = cur.fetchone()
+            if h_row:
+                rider_name = _row_to_dict(cur, h_row).get("rider_name", "") or ""
+            latest = None
+            cur.execute(_q("SELECT lat, lng, status, report_time FROM locations WHERE order_no=? AND is_sim=0 ORDER BY id DESC LIMIT 1"),
+                        (order_no,))
+            lt_row = cur.fetchone()
+            if lt_row:
+                latest = _row_to_dict(cur, lt_row)
+                latest["address"] = reverse_geocode(latest["lat"], latest["lng"])
+            caption = build_proof_caption(order_no, phone, od, rider_name, latest)
+            tg_ok, tg_msg = send_telegram_photo(photo_path, caption)
+        else:
+            tg_ok, tg_msg = False, "photo file missing"
     conn.close()
-    return jsonify({"ok": True, "msg": "လက်ခံပြီးပါပြီ", "status": "လက်ခံပြီးပါပြီ", "baozi_received": new_baozi, "shop_received": new_shop, "payment_method": payment_method, "amount": amount})
+    return jsonify({"ok": True, "msg": "လက်ခံပြီးပါပြီ", "status": "လက်ခံပြီးပါပြီ", "baozi_received": new_baozi, "shop_received": new_shop, "payment_method": payment_method, "amount": amount, "telegram": tg_ok, "telegram_msg": tg_msg})
 
 
 @app.route("/api/rider/info", methods=["GET"])

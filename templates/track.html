@@ -77,7 +77,7 @@
   /* 顶部文字预留用户区空间，避免与头像/昵称/按钮/铃铛重叠 */
   .top h2, .top .sub { padding-right: 285px; }
   .top-right { position:absolute; top:10px; right:12px; display:flex; align-items:center; gap:8px; z-index:30; }
-  .user-area { position:static; display:flex; flex-direction:column; align-items:center; gap:2px; }
+  .user-area { position:static; display:flex; flex-direction:row; align-items:center; gap:8px; }
   .user-avatar { width:34px; height:34px; border-radius:50%; background:#fff; color:#e07b00; font-size:17px; display:flex; align-items:center; justify-content:center; overflow:hidden; border:2px solid #fff; cursor:pointer; }
   .user-avatar img { width:100%; height:100%; object-fit:cover; }
   .user-name { font-size:11px; color:#fff; font-weight:bold; max-width:120px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -1048,6 +1048,22 @@ function applyUser(u) {
   document.getElementById("userName").textContent = u.nickname || u.username || "-";
   document.getElementById("btnLogin").style.display = "none";
   document.getElementById("btnLogout").style.display = "block";
+  // 头像/昵称永久保留：写入 localStorage，刷新或重开浏览器都从服务器/缓存恢复
+  try {
+    localStorage.setItem("marvis_avatar", u.avatar || "");
+    localStorage.setItem("marvis_nickname", u.nickname || u.username || "");
+  } catch (e) {}
+}
+function restoreCachedUser() {
+  // 未登录/接口暂不可用时也保留上次头像与昵称，做到永久保留
+  var avatarEl = document.getElementById("userAvatar");
+  var nameEl = document.getElementById("userName");
+  try {
+    var a = localStorage.getItem("marvis_avatar");
+    if (a && avatarEl) avatarEl.innerHTML = '<img src="' + a + '" alt="avatar">';
+    var n = localStorage.getItem("marvis_nickname");
+    if (n && nameEl) nameEl.textContent = n;
+  } catch (e) {}
 }
 async function uploadAvatar(e) {
   var f = e.target.files && e.target.files[0];
@@ -1075,23 +1091,25 @@ async function checkLogin() {
   var input = document.getElementById("avatarInput");
   if (avatarEl) avatarEl.onclick = function () { if (input) input.click(); };
   if (input) input.onchange = uploadAvatar;
+  restoreCachedUser();
   try {
     var r = await fetch("/api/user/me", { headers: authHeaders() });
     var j = await r.json();
-    if (j.ok && (j.role === "super_admin" || j.role === "admin")) {
+    if (j.ok) {
       applyUser(j);
-      document.getElementById("adminRow").style.display = "flex";
-      loadAdminUsers();
+      if (j.role === "super_admin" || j.role === "admin") {
+        document.getElementById("adminRow").style.display = "flex";
+        loadAdminUsers();
+      }
       return;
     }
     if (r.status === 403) { forceLogout("သင့်အကောင့်ကို ပိတ်ထားပါသည်။ စီမံခန့်ခွဲသူကို ဆက်သွယ်ပါ။"); return; }
   } catch (e) {}
-  // 未登录，或 token 不属于管理员（如骑手登录态）：不显示用户信息、不显示管理面板
+  // 未登录，或 token 无效：仅显示 Login（Logout 隐藏），头像/昵称从缓存保留
   localStorage.removeItem("userToken");
-  // 未登录：Login 与 Logout 两个按键都显示
   document.getElementById("btnLogin").style.display = "block";
-  document.getElementById("btnLogout").style.display = "block";
-  document.getElementById("userName").textContent = "-";
+  document.getElementById("btnLogout").style.display = "none";
+  restoreCachedUser();
 }
 
 // ===== 管理员面板（超级管理员/管理员） =====
@@ -1319,8 +1337,8 @@ function processBellIncoming(list) {
     if (it.id <= bellState.after_id) return;
     bellState.items.push(it);
     if (bellState.items.length > 60) bellState.items.shift();
-    var no = it.order_no || "";
-    if (!bellState.orderNos[no]) { bellState.orderNos[no] = true; hasNew = true; }
+    // 骑手每个状态更新（新订单/接单/完成/取消）都触发通知，不只新订单
+    hasNew = true;
   });
   bellState.after_id = maxId;
   if (hasNew) {

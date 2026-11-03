@@ -859,6 +859,7 @@ async function reportLocation(lat, lng, status, isSim) {
       document.getElementById("lastTime").textContent =
         now.getHours() + ":" + String(now.getMinutes()).padStart(2,"0") + ":" + String(now.getSeconds()).padStart(2,"0");
     } else {
+      if (r.status === 403) { handleUnbound(j.msg); return; }
       showInfo(j.msg);
     }
   } catch (e) {
@@ -1111,6 +1112,13 @@ function resetAfterCompletion() {
   if (oldPhone) { loadRemaining(oldPhone); }
 }
 
+// ---------- ဖုန်းနံပါတ်နှင့် အမှာစာ မကိုက်ညီပါက အလိုအလျောက် ပြန်လည်သတ်မှတ်ခြင်း ----------
+// 旧订单残留/已解绑导致 403 未连接时自动解除死锁，允许重新绑定新订单
+function handleUnbound(msg) {
+  showInfo(msg || "ဤဖုန်းနံပါတ်သည် ဤအမှာစာနှင့် ချိတ်ဆက်မထားပါ။ ဦးစွာ ချိတ်ဆက်ပါ");
+  resetAfterCompletion();
+}
+
 // ---------- ကျန်ရှိသော အရေအတွက် အလိုအလျောက် ဖြည့်ခြင်း ----------
 async function loadRemaining(phone) {
   if (!phone) return;
@@ -1251,7 +1259,10 @@ async function refreshRiderInfo() {
   try {
     var r = await fetch("/api/rider/info?order_no=" + encodeURIComponent(state.orderNo) + "&phone=" + encodeURIComponent(state.phone));
     var j = await r.json();
-    if (!j.ok) return;
+    if (!j.ok) {
+      if (r.status === 403) { handleUnbound(j.msg); return; }
+      return;
+    }
     // 状态同步：仅当快递员已确认锁定状态后才同步后端状态显示；
     // 未选择前保持 "-"，不显示配送中
     if (j.status && state.statusLocked) {
@@ -1328,11 +1339,18 @@ async function refreshRiderInfo() {
     document.getElementById("bindBtn").textContent = "ချိတ်ဆက်ပြီးပါပြီ";
     document.getElementById("cancelOrderBtn").disabled = false;
     lockStatusButtons();
-    showRiderMap();
-    startGps();
-    refreshRiderInfo();
-    if (state.refreshTimer) clearInterval(state.refreshTimer);
-    state.refreshTimer = setInterval(refreshRiderInfo, 5000);
+    // 恢复前先校验绑定是否仍有效；旧订单已解绑则自动清除死锁
+    fetch("/api/rider/info?order_no=" + encodeURIComponent(saved.order_no) + "&phone=" + encodeURIComponent(phone))
+      .then(function (r) { return r.json().then(function (j) { return {r: r, j: j}; }); })
+      .then(function (res) {
+        if (!res.j.ok) { if (res.r.status === 403) { handleUnbound(res.j.msg); return; } return; }
+        showRiderMap();
+        startGps();
+        refreshRiderInfo();
+        if (state.refreshTimer) clearInterval(state.refreshTimer);
+        state.refreshTimer = setInterval(refreshRiderInfo, 5000);
+      })
+      .catch(function () {});
   } else if (phone) {
     // 无本地锁定时，从服务端恢复最近一条未完成任务（永久恢复，不依赖本地存储）
     fetch("/api/rider/active?phone=" + encodeURIComponent(phone))

@@ -638,17 +638,10 @@ function drawRouteLayers(coords, actualMps, expectedMps) {
   }
 }
 function routeEtaIcon(text) {
-  // 🏍️ 摩托车 logo 固定在白色圆圈（红色圆环）内居中；右侧时间用红底白字小块，与 track 页 guideEtaIcon 一致
-  var tail = text || "";
-  var m = /🛵\s*(.*)/.exec(text);
-  if (m) tail = m[1];
   return L.divIcon({
     className: "",
-    html: '<div style="display:flex; align-items:center; gap:5px;">' +
-      '<span style="width:40px; height:40px; border-radius:50%; background:#fff; border:3px solid #e53935; box-shadow:0 2px 6px rgba(0,0,0,0.25); display:flex; align-items:center; justify-content:center; font-size:24px; line-height:1;">🏍️</span>' +
-      (tail ? '<span style="color:#fff; font-weight:bold; font-size:13px; background:rgba(229,57,53,0.88); border-radius:12px; padding:3px 8px; text-shadow:0 1px 2px rgba(0,0,0,0.2); white-space:nowrap;">' + tail + '</span>' : '') +
-      '</div>',
-    iconSize: [0, 0], iconAnchor: [20, 20]
+    html: '<div style="background:#fff; border:1px solid #d0d0d0; border-radius:14px; padding:4px 10px; font-size:13px; color:#333; font-weight:bold; box-shadow:0 2px 6px rgba(0,0,0,0.18); white-space:nowrap;">' + text + '</div>',
+    iconSize: [0, 0], iconAnchor: [0, 0]
   });
 }
 function showRouteEta(coords, distM, durS) {
@@ -1511,26 +1504,10 @@ function applyUser(u) {
   document.getElementById("userName").textContent = u.nickname || u.username || "-";
   document.getElementById("btnLogin").style.display = "none";
   document.getElementById("btnLogout").style.display = "block";
-  // 头像/昵称永久保留：写入 localStorage，刷新或重开浏览器都从服务器/缓存恢复
-  try {
-    localStorage.setItem("marvis_avatar", u.avatar || "");
-    localStorage.setItem("marvis_nickname", u.nickname || u.username || "");
-  } catch (e) {}
   // 登录成功后每 5 秒检查账号状态，被管理员禁用/删除时立即强制退出
   if (!window._riderAccountCheck) {
     window._riderAccountCheck = setInterval(checkAccountStatus, 5000);
   }
-}
-function restoreCachedUser() {
-  // 未登录/接口暂不可用时也保留上次头像与昵称，做到永久保留
-  var avatarEl = document.getElementById("userAvatar");
-  var nameEl = document.getElementById("userName");
-  try {
-    var a = localStorage.getItem("marvis_avatar");
-    if (a && avatarEl) avatarEl.innerHTML = '<img src="' + a + '" alt="avatar">';
-    var n = localStorage.getItem("marvis_nickname");
-    if (n && nameEl) nameEl.textContent = n;
-  } catch (e) {}
 }
 async function forceLogout(msg) {
   try { await fetch("/api/logout", { method: "POST", headers: authHeaders() }); } catch (e) {}
@@ -1573,18 +1550,17 @@ async function checkLogin() {
   var input = document.getElementById("avatarInput");
   if (avatarEl) avatarEl.onclick = function () { if (input) input.click(); };
   if (input) input.onchange = uploadAvatar;
-  restoreCachedUser();
   try {
     var r = await fetch("/api/user/me", { headers: authHeaders() });
     var j = await r.json();
-    if (j.ok) { applyUser(j); return; }
+    if (j.ok && j.role === "rider") { applyUser(j); return; }
     if (r.status === 403) { forceLogout("သင့်အကောင့်ကို ပိတ်ထားပါသည်။ စီမံခန့်ခွဲသူကို ဆက်သွယ်ပါ။"); return; }
   } catch (e) {}
-  // 未登录或 token 无效：仅显示 Login（Logout 隐藏），头像/昵称从缓存保留
+  // 未登录或 token 不属于骑手（如管理员登录态）：不显示用户信息，仅显示 Login/Logout
   localStorage.removeItem("riderToken");
   document.getElementById("btnLogin").style.display = "block";
-  document.getElementById("btnLogout").style.display = "none";
-  restoreCachedUser();
+  document.getElementById("btnLogout").style.display = "block";
+  document.getElementById("userName").textContent = "-";
 }
 checkLogin();
 </script>

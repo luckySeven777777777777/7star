@@ -184,7 +184,7 @@
     <label>Order Number</label>
     <input id="orderNo" placeholder="ဥပမာ - BZ1001102030">
     <div class="row2">
-      <button class="btn" id="bindBtn" onclick="bindOrder()">အမှာစာ ချိတ်ဆက်၍ ပို့ဆောင်စမည်</button>
+      <button class="btn" id="bindBtn" onclick="bindOrder()">Order ချိတ်ဆက်၍ ပို့ဆောင်စမည်</button>
       <button class="btn" id="updateShopBtn" onclick="updateShopLocation()">Update Shop Location</button>
       <button class="btn" id="historyBtn" onclick="openHistory()">Order History</button>
     </div>
@@ -748,8 +748,8 @@ async function bindOrder() {
     document.getElementById("curOrder").textContent = orderNo;
     document.getElementById("curDate").textContent = formatEnglishDate(new Date());
     document.getElementById("curCity").textContent = state.city || "-";
-    // 绑定后保留绑定按钮可点击，方便直接换绑/绑定新订单
-    document.getElementById("bindBtn").disabled = false;
+    // 绑定后禁止重复点击，须确认✅订单或取消❌订单后才能再次绑定
+    document.getElementById("bindBtn").disabled = true;
     document.getElementById("bindBtn").textContent = "ချိတ်ဆက်ပြီးပါပြီ";
     // 显示骑手端地图：商家位置 + 骑手自身位置 + 绿色路线
     showRiderMap();
@@ -1084,7 +1084,7 @@ function resetAfterCompletion() {
   document.getElementById("reportPanel").style.display = "none";
   document.getElementById("orderNo").value = "";
   document.getElementById("bindBtn").disabled = false;
-  document.getElementById("bindBtn").textContent = "အမှာစာ ချိတ်ဆက်၍ ပို့ဆောင်စမည်";
+  document.getElementById("bindBtn").textContent = "Order ချိတ်ဆက်၍ ပို့ဆောင်စမည်";
   document.getElementById("curOrder").textContent = "";
   document.getElementById("curStatus").textContent = "-";
   document.getElementById("curStatus").style.color = "";
@@ -1335,7 +1335,7 @@ async function refreshRiderInfo() {
       if (citySel && citySel.value !== saved.city) citySel.value = saved.city;
     }
     document.getElementById("orderNo").value = saved.order_no;
-    document.getElementById("bindBtn").disabled = false;
+    document.getElementById("bindBtn").disabled = true;
     document.getElementById("bindBtn").textContent = "ချိတ်ဆက်ပြီးပါပြီ";
     document.getElementById("cancelOrderBtn").disabled = false;
     lockStatusButtons();
@@ -1383,8 +1383,8 @@ function restoreActiveOrder(act, phone) {
   document.getElementById("curCity").textContent = act.city || "-";
   var citySel = document.getElementById("citySelect");
   if (citySel && act.city && citySel.value !== act.city) citySel.value = act.city;
-  // 恢复后仍允许直接换绑/绑定新订单（后端 bind 自动覆盖旧绑定）
-  document.getElementById("bindBtn").disabled = false;
+  // 恢复后绑定按钮保持禁用，须确认✅/取消❌后才能重新绑定
+  document.getElementById("bindBtn").disabled = true;
   document.getElementById("bindBtn").textContent = "ချိတ်ဆက်ပြီးပါပြီ";
   document.getElementById("cancelOrderBtn").disabled = false;
   showRiderMap();

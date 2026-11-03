@@ -337,6 +337,8 @@ var routeSlowLine = null;
 var routeEtaMarker = null;
 var shopLat = null;
 var shopLng = null;
+var todayDoneItems = [];   // 今日已完成订单 [{order_no, lat, lng}]（缅甸时间凌晨12点自动清零）
+var todayDoneDay = "";
 
 function parseCoordsText(text) {
   if (!text) return null;
@@ -444,6 +446,16 @@ async function updateShopLocation() {
     showInfo("Server unreachable");
   }
 }
+function doneRiderIcon() {
+  // 已完成订单：白底红色圆环 + 红色对勾
+  return L.divIcon({
+    className: "",
+    html: '<svg viewBox="0 0 64 64" width="40" height="40" style="filter:drop-shadow(0 2px 4px rgba(0,0,0,0.35))">' +
+      '<circle cx="32" cy="32" r="27" fill="#ffffff" stroke="#e53935" stroke-width="5"/>' +
+      '<path d="M20 33 L29 43 L45 23" fill="none" stroke="#e53935" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    iconSize: [40, 40], iconAnchor: [20, 20]
+  });
+}
 function shopIcon() {
   return L.divIcon({
     className: "",
@@ -479,7 +491,53 @@ function showRiderMap() {
     }).addTo(riderMap);
   }
   setTimeout(function () { if (riderMap) riderMap.invalidateSize(); }, 120);
+  drawTodayDone();
 }
+function yangonDateStr() {
+  var d = new Date();
+  var utc = d.getTime() + d.getTimezoneOffset() * 60000;
+  var y = new Date(utc + (6 * 60 + 30) * 60000);
+  function p2(n) { return (n < 10 ? "0" : "") + n; }
+  return y.getFullYear() + "-" + p2(y.getMonth() + 1) + "-" + p2(y.getDate());
+}
+
+function drawTodayDone() {
+  if (!riderMap || todayDoneItems.length === 0) return;
+  todayDoneItems.forEach(function (t) {
+    if (!t._marker) {
+      t._marker = L.marker([t.lat, t.lng], { icon: doneRiderIcon() }).addTo(riderMap);
+      t._marker.bindPopup("✅ <b>ပြီးဆုံးခဲ့သည် / Done</b><br>Order：<b>" + t.order_no + "</b>");
+    }
+  });
+}
+
+function loadTodayDone(phone) {
+  if (!phone) return;
+  fetch("/api/today-completed?phone=" + encodeURIComponent(phone))
+    .then(function (r) { return r.json(); })
+    .then(function (j) {
+      if (!j.ok) return;
+      todayDoneDay = j.day || "";
+      todayDoneItems = (j.completed || []).map(function (o) {
+        return { order_no: o.order_no, lat: o.shop_lat, lng: o.shop_lng };
+      }).filter(function (t) { return t.lat !== null && t.lat !== undefined && t.lng !== null && t.lng !== undefined; });
+      if (todayDoneItems.length > 0 && !riderMap) {
+        showRiderMap();
+      } else {
+        drawTodayDone();
+      }
+    })
+    .catch(function () {});
+}
+
+function addTodayDone(order_no, lat, lng) {
+  if (lat === null || lat === undefined || lng === null || lng === undefined) return;
+  if (!todayDoneDay) todayDoneDay = yangonDateStr();
+  var exists = todayDoneItems.some(function (t) { return t.order_no === order_no; });
+  if (!exists) todayDoneItems.push({ order_no: order_no, lat: lat, lng: lng });
+  drawTodayDone();
+}
+
 function toggleMapFullscreen() {
   var wrap = document.getElementById("riderMapWrap");
   if (!wrap) return;
@@ -1017,6 +1075,7 @@ async function doConfirmDelivered() {
     var j = await r.json();
     if (!j.ok) { showInfo(j.msg); return; }
     closeConfirmModal();
+    addTodayDone(state.orderNo, shopLat, shopLng);
     state.status = "လက်ခံပြီးပါပြီ";
     state.statusLocked = true;
     if (!state.confirmedStatuses) state.confirmedStatuses = [];
@@ -1105,7 +1164,14 @@ function resetAfterCompletion() {
   if (riderMap) { try { riderMap.remove(); } catch (e) {} riderMap = null; }
   riderMarker = null; shopMarker = null; routeLine = null;
   shopLat = null; shopLng = null;
-  document.getElementById("riderMapWrap").style.display = "none";
+  // 今日已完成订单打钩永久保留（缅甸时间凌晨12点自动清零）
+  if (todayDoneItems.length > 0) {
+    showRiderMap();
+    drawTodayDone();
+    document.getElementById("riderMapWrap").style.display = "block";
+  } else {
+    document.getElementById("riderMapWrap").style.display = "none";
+  }
   // 清除本地锁定记录，刷新后不残留旧订单锁定
   try { localStorage.removeItem("riderLock_" + oldPhone); } catch (e) {}
   // 自动带出扣减后的剩余数量，骑手无需重新输入
@@ -1361,6 +1427,20 @@ async function refreshRiderInfo() {
         }
       })
       .catch(function () {});
+  }
+})();
+
+// 今日已完成订单打钩：刷新/重开后保留，缅甸时间凌晨12点自动清零
+(function initTodayDone() {
+  var phone = document.getElementById("riderPhone").value.trim() || localStorage.getItem("riderPhoneSaved") || "";
+  if (phone) {
+    loadTodayDone(phone);
+    setInterval(function () {
+      if (todayDoneDay && yangonDateStr() !== todayDoneDay) {
+        todayDoneItems = [];
+        loadTodayDone(phone);
+      }
+    }, 60000 * 30);
   }
 })();
 

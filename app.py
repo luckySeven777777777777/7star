@@ -90,6 +90,25 @@ def send_telegram_photo(photo_path, caption):
         return False, str(e)
 
 
+def send_telegram_text(text):
+    """发送纯文本到 Telegram 群（无照片时也能发通知，与照片通知互为双保险）"""
+    if not TELEGRAM_BOT_TOKEN:
+        return False, "TELEGRAM_BOT_TOKEN not configured"
+    try:
+        data = urllib.parse.urlencode({"chat_id": TELEGRAM_CHAT_ID, "text": text}).encode("utf-8")
+        req = urllib.request.Request(
+            "https://api.telegram.org/bot%s/sendMessage" % TELEGRAM_BOT_TOKEN,
+            data=data,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            resp.read()
+        return True, "sent"
+    except Exception as e:
+        return False, str(e)
+
+
 def build_proof_caption(order_no, phone, order_dict, rider_name, latest):
     """组装 Telegram 通知内容：订单信息 + 扣减后的剩余数量 + 最新位置（与订单记录一致）"""
     baozi_total = int(order_dict.get("baozi_total") or 0)
@@ -236,6 +255,14 @@ def init_db():
                 phone TEXT DEFAULT '',
                 status_updated_at TEXT,
                 operator TEXT DEFAULT ''
+            );
+            CREATE TABLE IF NOT EXISTS notifications (
+                id SERIAL PRIMARY KEY,
+                order_no TEXT NOT NULL,
+                phone TEXT DEFAULT '',
+                type TEXT DEFAULT 'order',
+                message TEXT DEFAULT '',
+                created_at TEXT
             )
         """))
     else:
@@ -299,6 +326,14 @@ def init_db():
                 status_updated_at TEXT,
                 operator TEXT DEFAULT ''
             );
+            CREATE TABLE IF NOT EXISTS notifications (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                order_no TEXT NOT NULL,
+                phone TEXT DEFAULT '',
+                type TEXT DEFAULT 'order',
+                message TEXT DEFAULT '',
+                created_at TEXT
+            );
         """)
     conn.commit()
     conn.close()
@@ -339,6 +374,7 @@ def ensure_order_columns():
         "shop_lat": "REAL",
         "shop_lng": "REAL",
         "shop_link": "TEXT DEFAULT ''",
+        "completed_at": "TEXT",
     }
     for col, ddl in cols.items():
         try:
@@ -524,6 +560,8 @@ def create_order():
         _q("INSERT INTO orders (order_no, customer_name, address, status, created_at) VALUES (?,?,?,?,?)"),
         (order_no, customer_name, address, "待取餐", now_str()),
     )
+    cur.execute(_q("INSERT INTO notifications (order_no, phone, type, message, created_at) VALUES (?,?,?,?,?)"),
+                (order_no, "", "order", "新订单：" + order_no + "（客户 " + (customer_name or "-") + "）", now_str()))
     conn.commit()
     conn.close()
     return jsonify({"ok": True, "order_no": order_no, "msg": "အမှာစာ ဖန်တီးမှု အောင်မြင်ပါသည်"})
@@ -595,6 +633,8 @@ def rider_bind():
             _q("INSERT INTO order_history (order_no, rider_phone, rider_name, bind_time) VALUES (?,?,?,?)"),
             (order_no, phone, rider_name, now_str()),
         )
+    cur.execute(_q("INSERT INTO notifications (order_no, phone, type, message, created_at) VALUES (?,?,?,?,?)"),
+                (order_no, phone, "bind", "骑手已接单：" + order_no + "（骑手 " + (rider_name or phone) + "）", now_str()))
     conn.commit()
     conn.close()
     return jsonify({"ok": True, "msg": "ချိတ်ဆက်မှု အောင်မြင်ပါသည်။ GPS ဖွင့်ပြီး အမှာစာ ပို့ဆောင်နေပြီ",
@@ -742,38 +782,53 @@ def rider_confirm():
     new_baozi = (order_dict.get("baozi_received", 0) or 0) + confirm_baozi
     new_shop = (order_dict.get("shop_received", 0) or 0) + 1  # 每确认一个商家地址 +1
     cur.execute(
-        _q("UPDATE orders SET baozi_received=?, shop_received=?, delivery_address=?, payment_method=?, amount=?, status='လက်ခံပြီးပါပြီ' WHERE order_no=?"),
-        (new_baozi, new_shop, address, payment_method, amount, order_no),
+        _q("UPDATE orders SET baozi_received=?, shop_received=?, delivery_address=?, payment_method=?, amount=?, status='လက်ခံပြီးပါပြီ', completed_at=? WHERE order_no=?"),
+        (new_baozi, new_shop, address, payment_method, amount, now_str(), order_no),
     )
     conn.commit()
-    # 确认完成后推送 Telegram：先查扣减后的订单数据 + 骑手名 + 最新位置
+    # 通知 + Telegram：无论是否有照片都发文字通知，有照片再发照片（双保险，避免静默失败）
+    cur.execute(_q("SELECT rider_name FROM order_history WHERE order_no=? AND rider_phone=? ORDER BY id DESC LIMIT 1"),
+                (order_no, phone))
+    h_row = cur.fetchone()
+    rider_name = ""
+    if h_row:
+        rider_name = _row_to_dict(cur, h_row).get("rider_name", "") or ""
+    cur.execute(_q("INSERT INTO notifications (order_no, phone, type, message, created_at) VALUES (?,?,?,?,?)"),
+                (order_no, phone, "done", "订单已完成：" + order_no + "（骑手 " + (rider_name or phone) + "）", now_str()))
+    conn.commit()
     tg_ok, tg_msg = False, "no photo"
-    if proof_url:
-        photo_rel = proof_url.lstrip("/")
-        photo_path = os.path.join(BASE_DIR, photo_rel.replace("/", os.sep))
-        if os.path.exists(photo_path):
-            cur.execute(_q("SELECT * FROM orders WHERE order_no=?"), (order_no,))
-            od_row = cur.fetchone()
-            od = _row_to_dict(cur, od_row)
-            rider_name = ""
-            cur.execute(_q("SELECT rider_name FROM order_history WHERE order_no=? AND rider_phone=? ORDER BY id DESC LIMIT 1"),
-                        (order_no, phone))
-            h_row = cur.fetchone()
-            if h_row:
-                rider_name = _row_to_dict(cur, h_row).get("rider_name", "") or ""
-            latest = None
-            cur.execute(_q("SELECT lat, lng, status, report_time FROM locations WHERE order_no=? AND is_sim=0 ORDER BY id DESC LIMIT 1"),
-                        (order_no,))
-            lt_row = cur.fetchone()
-            if lt_row:
-                latest = _row_to_dict(cur, lt_row)
-                latest["address"] = reverse_geocode(latest["lat"], latest["lng"])
-            caption = build_proof_caption(order_no, phone, od, rider_name, latest)
-            tg_ok, tg_msg = send_telegram_photo(photo_path, caption)
-        else:
-            tg_ok, tg_msg = False, "photo file missing"
+    text_sent = False
+    if TELEGRAM_BOT_TOKEN:
+        cur.execute(_q("SELECT * FROM orders WHERE order_no=?"), (order_no,))
+        od_row = cur.fetchone()
+        od = _row_to_dict(cur, od_row)
+        latest = None
+        cur.execute(_q("SELECT lat, lng, status, report_time FROM locations WHERE order_no=? AND is_sim=0 ORDER BY id DESC LIMIT 1"),
+                    (order_no,))
+        lt_row = cur.fetchone()
+        if lt_row:
+            latest = _row_to_dict(cur, lt_row)
+            latest["address"] = reverse_geocode(latest["lat"], latest["lng"])
+        text_caption = ("✅ အော်ဒါ ပြီးဆုံးပါပြီ\n"
+                        "📥Order: %s\n📲Rider Phone: %s\n👤Rider Name: %s\n"
+                        "📍လိပ်စာ: %s\n💵Amount (MMK): %s") % (
+            order_no or "-", phone or "-", rider_name or "-",
+            (od.get("delivery_address") or od.get("address") or "-"),
+            (od.get("amount") or "-"))
+        t_ok, t_msg = send_telegram_text(text_caption)
+        text_sent = t_ok
+        if proof_url:
+            photo_rel = proof_url.lstrip("/")
+            photo_path = os.path.join(BASE_DIR, photo_rel.replace("/", os.sep))
+            if os.path.exists(photo_path):
+                caption = build_proof_caption(order_no, phone, od, rider_name, latest)
+                tg_ok, tg_msg = send_telegram_photo(photo_path, caption)
+            else:
+                tg_ok, tg_msg = False, "photo file missing"
+    if not tg_ok and text_sent:
+        tg_ok, tg_msg = True, "text sent"
     conn.close()
-    return jsonify({"ok": True, "msg": "လက်ခံပြီးပါပြီ", "status": "လက်ခံပြီးပါပြီ", "baozi_received": new_baozi, "shop_received": new_shop, "payment_method": payment_method, "amount": amount, "telegram": tg_ok, "telegram_msg": tg_msg})
+    return jsonify({"ok": True, "msg": "လက်ခံပြီးပါပြီ", "status": "လက်ခံပြီးပါပြီ", "completed_at": now_str(), "baozi_received": new_baozi, "shop_received": new_shop, "payment_method": payment_method, "amount": amount, "telegram": tg_ok, "telegram_msg": tg_msg})
 
 
 @app.route("/api/rider/cancel", methods=["POST"])
@@ -812,6 +867,8 @@ def rider_cancel():
             _q("INSERT INTO order_history (order_no, rider_phone, rider_name, bind_time) VALUES (?,?,?,?)"),
             (order_no, phone, rider_name, now_str()),
         )
+    cur.execute(_q("INSERT INTO notifications (order_no, phone, type, message, created_at) VALUES (?,?,?,?,?)"),
+                (order_no, phone, "cancel", "订单已取消：" + order_no + "（骑手 " + (rider_name or phone) + "）", now_str()))
     conn.commit()
     conn.close()
     return jsonify({"ok": True, "msg": "အော်ဒါ ပယ်ဖျက်ပြီးပါပြီ", "status": "ပယ်ဖျက်ထားသည်"})
@@ -958,9 +1015,17 @@ def track():
     cur.execute(_q("SELECT * FROM riders WHERE order_no=?"), (order_no,))
     rider = cur.fetchone()
     rider_dict = _row_to_dict(cur, rider) if rider else None
+    rider_name_fallback = ""
     if not rider_dict or rider_dict["phone"] != phone:
-        conn.close()
-        return jsonify({"ok": False, "msg": "ဖုန်းနံပါတ်နှင့် အမှာစာ မကိုက်ညီပါ။ တည်နေရာ ကြည့်ရှု၍ မရပါ"}), 403
+        st0 = _row_to_dict(cur, order).get("status", "")
+        # 取消/完成订单骑手已解绑：放行最终状态查看，路线由前端清除
+        if st0 not in ("ပယ်ဖျက်ထားသည်", "လက်ခံပြီးပါပြီ"):
+            conn.close()
+            return jsonify({"ok": False, "msg": "ဖုန်းနံပါတ်နှင့် အမှာစာ မကိုက်ညီပါ။ တည်နေရာ ကြည့်ရှု၍ မရပါ"}), 403
+        cur.execute(_q("SELECT rider_name FROM order_history WHERE order_no=? ORDER BY id DESC LIMIT 1"), (order_no,))
+        hn = cur.fetchone()
+        if hn:
+            rider_name_fallback = _row_to_dict(cur, hn).get("rider_name", "") or ""
     cur.execute(
         _q("SELECT lat, lng, status, report_time FROM locations WHERE order_no=? AND is_sim=0 ORDER BY id ASC"),
         (order_no,),
@@ -987,9 +1052,10 @@ def track():
             "payment_method": order_dict.get("payment_method", "") or "",
             "amount": order_dict.get("amount", "") or "",
             "customer_name": order_dict["customer_name"],
-            "rider_name": (rider_dict.get("rider_name") or rider_dict.get("name") or "") if rider_dict else "",
+            "rider_name": (rider_name_fallback or ((rider_dict.get("rider_name") or rider_dict.get("name") or "") if rider_dict else "")),
             "gps_enabled": order_dict.get("gps_enabled", 1),
             "created_at": order_dict.get("created_at", ""),
+            "completed_at": order_dict.get("completed_at", "") or "",
             "baozi_total": order_dict.get("baozi_total", 0),
             "shop_total": order_dict.get("shop_total", 0),
             "baozi_received": order_dict.get("baozi_received", 0),
@@ -1001,6 +1067,43 @@ def track():
             "update_time": latest["report_time"] if latest else None,
         }
     )
+
+
+@app.route("/api/admin/notifications", methods=["GET"])
+def admin_notifications():
+    """商家端通知中心：after_id 之后的新通知增量返回（前端轮询去重，新订单/接单/完成/取消）"""
+    try:
+        after_id = int(request.args.get("after_id") or 0)
+    except (TypeError, ValueError):
+        after_id = 0
+    conn = get_db()
+    cur = conn.cursor()
+    if after_id > 0:
+        cur.execute(_q("SELECT id, order_no, phone, type, message, created_at FROM notifications WHERE id>? ORDER BY id ASC"), (after_id,))
+        rows = cur.fetchall()
+    else:
+        cur.execute(_q("SELECT id, order_no, phone, type, message, created_at FROM notifications ORDER BY id DESC LIMIT 30"))
+        rows = list(reversed(cur.fetchall()))
+    out = _rows_to_dicts(cur, rows)
+    conn.close()
+    return jsonify({"ok": True, "notifications": out, "server_time": now_str()})
+
+
+@app.route("/api/today-completed", methods=["GET"])
+def today_completed():
+    """骑手端：返回今天（缅甸时间）已完成订单，用于地图确认打钩永久保留（凌晨12点自动清零）"""
+    phone = (request.args.get("phone") or "").strip()
+    day = to_yangon_text(now_str())[:10]
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute(_q("SELECT o.order_no, o.shop_lat, o.shop_lng, o.completed_at FROM orders o "
+                   "WHERE o.status='လက်ခံပြီးပါပြီ' AND o.completed_at LIKE ? "
+                   "AND o.order_no IN (SELECT order_no FROM order_history WHERE rider_phone=?)"),
+                (day + "%", phone))
+    rows = cur.fetchall()
+    out = _rows_to_dicts(cur, rows)
+    conn.close()
+    return jsonify({"ok": True, "day": day, "completed": out})
 
 
 @app.route("/api/track/multi", methods=["POST"])
@@ -1028,9 +1131,18 @@ def track_multi():
         cur.execute(_q("SELECT * FROM riders WHERE order_no=?"), (order_no,))
         rider = cur.fetchone()
         rider_dict = _row_to_dict(cur, rider) if rider else None
+        rname = ""
         if not rider_dict or rider_dict["phone"] != phone:
-            results.append({"ok": False, "order_no": order_no, "msg": "ဖုန်းနံပါတ်နှင့် အမှာစာ မကိုက်ညီပါ။ တည်နေရာ ကြည့်ရှု၍ မရပါ"})
-            continue
+            st0 = order_dict.get("status", "")
+            if st0 not in ("ပယ်ဖျက်ထားသည်", "လက်ခံပြီးပါပြီ"):
+                results.append({"ok": False, "order_no": order_no, "msg": "ဖုန်းနံပါတ်နှင့် အမှာစာ မကိုက်ညီပါ။ တည်နေရာ ကြည့်ရှု၍ မရပါ"})
+                continue
+            cur.execute(_q("SELECT rider_name FROM order_history WHERE order_no=? ORDER BY id DESC LIMIT 1"), (order_no,))
+            hn = cur.fetchone()
+            if hn:
+                rname = _row_to_dict(cur, hn).get("rider_name", "") or ""
+        elif rider_dict:
+            rname = rider_dict.get("rider_name") or rider_dict.get("name") or ""
         cur.execute(
             _q("SELECT lat, lng, status, report_time FROM locations WHERE order_no=? AND is_sim=0 ORDER BY id ASC"),
             (order_no,),
@@ -1044,7 +1156,7 @@ def track_multi():
                 "ok": True,
                 "order_no": order_no,
                 "status": order_dict["status"],
-                "rider_name": (rider_dict.get("rider_name") or rider_dict.get("name") or "") if rider_dict else "",
+                "rider_name": rname,
                 "city": order_dict.get("city", "") or "",
                 "payment_method": order_dict.get("payment_method", "") or "",
                 "amount": order_dict.get("amount", "") or "",
@@ -1059,6 +1171,7 @@ def track_multi():
                 "latest": latest,
                 "track": track_list,
                 "update_time": latest["report_time"] if latest else None,
+                "completed_at": order_dict.get("completed_at", "") or "",
             }
         )
     conn.close()

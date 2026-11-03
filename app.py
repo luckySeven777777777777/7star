@@ -694,7 +694,7 @@ def rider_active():
         return jsonify({"ok": False, "msg": "phone required"}), 400
     conn = get_db()
     cur = conn.cursor()
-    cur.execute(_q("SELECT h.order_no, h.rider_name, o.* FROM order_history h JOIN orders o ON h.order_no=o.order_no WHERE h.rider_phone=? AND (o.status IS NULL OR o.status='' OR (o.status != 'လက်ခံပြီးပါပြီ' AND o.status != 'ပယ်ဖျက်ထားသည်')) ORDER BY h.id DESC LIMIT 1"), (phone,))
+    cur.execute(_q("SELECT h.order_no, h.rider_name, o.* FROM order_history h JOIN orders o ON h.order_no=o.order_no JOIN riders r ON r.phone=? AND r.order_no=o.order_no WHERE h.rider_phone=? AND (o.status IS NULL OR o.status='' OR (o.status != 'လက်ခံပြီးပါပြီ' AND o.status != 'ပယ်ဖျက်ထားသည်')) ORDER BY h.id DESC LIMIT 1"), (phone, phone))
     row = cur.fetchone()
     if not row:
         conn.close()
@@ -788,11 +788,16 @@ def rider_cancel():
     cur = conn.cursor()
     cur.execute(_q("SELECT * FROM riders WHERE phone=? AND order_no=?"), (phone, order_no))
     rider = cur.fetchone()
-    if not rider:
-        conn.close()
-        return jsonify({"ok": False, "msg": "ဤဖုန်းနံပါတ်သည် ဤအမှာစာနှင့် ချိတ်ဆက်မထားပါ"}), 403
-    rd = _row_to_dict(cur, rider)
-    rider_name = rd.get("rider_name", "") or ""
+    rider_name = ""
+    if rider:
+        rd = _row_to_dict(cur, rider)
+        rider_name = rd.get("rider_name", "") or ""
+    else:
+        # 无当前绑定：若该手机号历史确有此订单（已解绑残留），仍允许取消以解除死锁
+        cur.execute(_q("SELECT id FROM order_history WHERE order_no=? AND rider_phone=?"), (order_no, phone))
+        if not cur.fetchone():
+            conn.close()
+            return jsonify({"ok": False, "msg": "ဤဖုန်းနံပါတ်သည် ဤအမှာစာနှင့် ချိတ်ဆက်မထားပါ"}), 403
     cur.execute(_q("UPDATE orders SET status='ပယ်ဖျက်ထားသည်' WHERE order_no=?"), (order_no,))
     cur.execute(_q("UPDATE riders SET order_no='', rider_name='' WHERE phone=? AND order_no=?"), (phone, order_no))
     # 保留订单历史：存在则更新骑手名与绑定时间，不存在则补记一条

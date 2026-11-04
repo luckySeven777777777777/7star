@@ -439,6 +439,11 @@ def now_str():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
+def utc_iso_now():
+    """通知专用：UTC ISO8601（带 Z 后缀），前端按缅甸时区 UTC+6:30 换算显示，与服务器时区无关"""
+    return datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def ensure_admin():
     """首次运行时自动创建超级管理员账号（admin / Admin@123456），登录后建议立即修改密码"""
     conn = get_db()
@@ -561,7 +566,7 @@ def create_order():
         (order_no, customer_name, address, "待取餐", now_str()),
     )
     cur.execute(_q("INSERT INTO notifications (order_no, phone, type, message, created_at) VALUES (?,?,?,?,?)"),
-                (order_no, "", "order", "新订单：" + order_no + "（客户 " + (customer_name or "-") + "）", now_str()))
+                (order_no, "", "order", "新订单：" + order_no + "（客户 " + (customer_name or "-") + "）", utc_iso_now()))
     conn.commit()
     conn.close()
     return jsonify({"ok": True, "order_no": order_no, "msg": "အမှာစာ ဖန်တီးမှု အောင်မြင်ပါသည်"})
@@ -634,7 +639,7 @@ def rider_bind():
             (order_no, phone, rider_name, now_str()),
         )
     cur.execute(_q("INSERT INTO notifications (order_no, phone, type, message, created_at) VALUES (?,?,?,?,?)"),
-                (order_no, phone, "bind", "骑手已接单：" + order_no + "（骑手 " + (rider_name or phone) + "）", now_str()))
+                (order_no, phone, "bind", "骑手已接单：" + order_no + "（骑手 " + (rider_name or phone) + "）", utc_iso_now()))
     conn.commit()
     conn.close()
     return jsonify({"ok": True, "msg": "ချိတ်ဆက်မှု အောင်မြင်ပါသည်။ GPS ဖွင့်ပြီး အမှာစာ ပို့ဆောင်နေပြီ",
@@ -794,7 +799,7 @@ def rider_confirm():
     if h_row:
         rider_name = _row_to_dict(cur, h_row).get("rider_name", "") or ""
     cur.execute(_q("INSERT INTO notifications (order_no, phone, type, message, created_at) VALUES (?,?,?,?,?)"),
-                (order_no, phone, "done", "订单已完成：" + order_no + "（骑手 " + (rider_name or phone) + "）", now_str()))
+                (order_no, phone, "done", "订单已完成：" + order_no + "（骑手 " + (rider_name or phone) + "）", utc_iso_now()))
     conn.commit()
     tg_ok, tg_msg = False, "no photo"
     text_sent = False
@@ -868,7 +873,7 @@ def rider_cancel():
             (order_no, phone, rider_name, now_str()),
         )
     cur.execute(_q("INSERT INTO notifications (order_no, phone, type, message, created_at) VALUES (?,?,?,?,?)"),
-                (order_no, phone, "cancel", "订单已取消：" + order_no + "（骑手 " + (rider_name or phone) + "）", now_str()))
+                (order_no, phone, "cancel", "订单已取消：" + order_no + "（骑手 " + (rider_name or phone) + "）", utc_iso_now()))
     conn.commit()
     conn.close()
     return jsonify({"ok": True, "msg": "အော်ဒါ ပယ်ဖျက်ပြီးပါပြီ", "status": "ပယ်ဖျက်ထားသည်"})

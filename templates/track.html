@@ -75,13 +75,15 @@
   .history-more .btn { margin-top:0; padding:8px; font-size:13px; }
   .top { position:relative; }
   /* 顶部文字预留用户区空间，避免与头像/昵称/按钮/铃铛重叠 */
-  .top h2, .top .sub { padding-right: 170px; }
-  .user-area { position:absolute; top:12px; right:64px; display:flex; flex-direction:column; align-items:center; gap:3px; z-index:5; }
+  .top h2, .top .sub { padding-right: 330px; }
+  .top-right { position:absolute; top:10px; right:12px; display:flex; align-items:center; gap:8px; z-index:30; }
+  /* 头像、昵称、铃铛、Login/Logout 同一行垂直居中，消除上下错位 */
+  .user-area { position:static; display:flex; flex-direction:row; align-items:center; gap:8px; }
   .user-avatar { width:34px; height:34px; border-radius:50%; background:#fff; color:#e07b00; font-size:17px; display:flex; align-items:center; justify-content:center; overflow:hidden; border:2px solid #fff; cursor:pointer; }
   .user-avatar img { width:100%; height:100%; object-fit:cover; }
   .user-name { font-size:11px; color:#fff; font-weight:bold; max-width:120px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   /* 通知铃铛 */
-  .bell { position:absolute; top:12px; right:12px; z-index:30; }
+  .bell { position:relative; }
   .bell-btn { position:relative; width:38px; height:38px; margin:0; padding:0; border:none; border-radius:50%; background:#fff; display:flex; align-items:center; justify-content:center; cursor:pointer; box-shadow:0 2px 6px rgba(0,0,0,0.15); }
   .bell-btn svg { width:20px; height:20px; stroke:#e07b00; fill:none; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
   .bell-badge { position:absolute; top:-4px; right:-4px; min-width:18px; height:18px; border-radius:10px; background:#e53935; color:#fff; font-size:11px; line-height:18px; text-align:center; padding:0 4px; font-weight:bold; box-shadow:0 1px 3px rgba(0,0,0,0.3); }
@@ -94,12 +96,13 @@
   .bell-item:hover { background:#f7f7f7; }
   .bell-item .bi-no { font-weight:bold; color:#e07b00; }
   .bell-item .bi-msg { color:#666; font-size:12px; margin-top:2px; line-height:1.5; }
+  .bell-item .bi-phone { color:#2e7d32; font-size:12px; margin-top:2px; font-weight:bold; }
   .bell-item .bi-time { color:#aaa; font-size:11px; margin-top:2px; }
   .bell-empty { padding:24px; text-align:center; color:#999; font-size:13px; }
   .user-btns { display:flex; gap:6px; white-space:nowrap; }
   .user-btns button { padding:4px 12px; border:none; border-radius:8px; font-size:12px; cursor:pointer; }
   .btn-login { background:#fff; color:#e07b00; font-weight:bold; }
-  .btn-logout { background:rgba(255,255,255,.92); color:#c62828; font-weight:bold; }
+  .btn-logout { background:#e53935; color:#fff; font-weight:bold; height:30px; padding:0 14px; border:none; border-radius:16px; box-shadow:0 2px 6px rgba(0,0,0,0.15); line-height:30px; cursor:pointer; }
   /* 密码可见性切换（眼睛按钮） */
   .input-wrap { position:relative; }
   .input-wrap input { padding-right:44px; }
@@ -134,14 +137,17 @@
   .multi-row { display:flex; gap:8px; align-items:center; margin-bottom:8px; }
   .multi-row input { flex:1; min-width:0; padding:8px; font-size:13px; }
   .multi-row .del { flex:0 0 36px; margin:0; padding:8px 0; background:#d32f2f; border-radius:8px; font-size:15px; line-height:1; }
-  .multi-summary { margin-top:10px; font-size:13px; line-height:1.9; }
-  .multi-summary .ok { color:#2e7d32; }
-  .multi-summary .bad { color:#d32f2f; }
-  .multi-summary b { color:#e07b00; }
+  .multi-summary { margin-top:10px; font-size:13px; }
+  /* 多骑手：一排 3 个独立格子，满 3 个自动换到下一排 */
+  .multi-grid { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:12px; align-items:start; }
+  .multi-card { background:#fff; border:1.5px solid #d8d8d8; border-left:5px solid #2e7d32; border-radius:10px; padding:10px 12px; box-shadow:0 1px 4px rgba(0,0,0,0.08); line-height:1.9; color:#333; word-break:break-word; min-height:60px; overflow:hidden; }
+  .multi-card.bad { border-left:4px solid #d32f2f; color:#d32f2f; }
+  .multi-card b { color:#e07b00; }
 </style>
 </head>
 <body>
   <div class="top">
+    <div class="top-right">
     <div class="user-area">
       <div class="user-avatar" id="userAvatar" title="Upload avatar">
         <span id="userAvatarIcon">👤</span>
@@ -149,7 +155,6 @@
       <div class="user-name" id="userName">-</div>
       <div class="user-btns">
         <button class="btn-login" id="btnLogin" onclick="goLogin()">Login</button>
-        <button class="btn-logout" id="btnLogout" onclick="doLogout()" style="display:none">Logout</button>
       </div>
     </div>
     <div class="bell" id="bellWrap">
@@ -165,6 +170,8 @@
         <div class="bell-list" id="bellList"></div>
       </div>
     </div>
+    <button class="btn-logout" id="btnLogout" onclick="doLogout()" style="display:none">Logout</button>
+    </div>
     <input type="file" id="avatarInput" accept="image/*" style="display:none">
     <h2>📍 ပို့ဆောင်သူ တည်နေရာ ရှာဖွေခြင်း</h2>
     <div class="sub">Order Number + ပို့ဆောင်သူ ဖုန်းနံပါတ် + ပို့ဆောင်သူအမည် ထည့်၍ မည်သည့်နေရာရောက်နေသည်ကို အချိန်နှင့်တပြေးညီ ကြည့်ပါ</div>
@@ -179,8 +186,8 @@
     <input id="riderName" placeholder="ပို့ဆောင်သူ အမည် ထည့်ပါ">
     <div class="row2">
       <button id="searchBtn" onclick="search()">တည်နေရာ ရှာမည်</button>
-      <button class="btn btn-gray" id="gpsBtn" onclick="toggleGpsModal()">GPS ထိန်းချုပ်ရန်</button>
-      <button class="btn btn-gray" id="historyBtn" onclick="openHistory()">Order History</button>
+      <button id="gpsBtn" onclick="toggleGpsModal()">GPS ထိန်းချုပ်ရန်</button>
+      <button id="historyBtn" onclick="openHistory()">Order History</button>
     </div>
     <div class="multi-panel">
       <h3>🛵 ပို့ဆောင်သူ အများအပြား တည်နေရာ ကြည့်ရှုခြင်း</h3>
@@ -436,7 +443,7 @@ function render(j) {
     if (st === "လက်ခံပြီးပါပြီ") {
       // 已完成：商家位置改为永久打钩（红色圆环 ✅），不再画引导路线
       if (!doneMarker) {
-        doneMarker = L.marker(shopLL, { icon: doneIcon() }).addTo(map);
+        doneMarker = L.marker(shopLL, { icon: doneIcon(j.order_no) }).addTo(map);
       } else {
         doneMarker.setLatLng(shopLL);
       }
@@ -537,15 +544,16 @@ function buildGuideLayers(coords, actualMps, expectedMps) {
   return layers;
 }
 function guideEtaIcon(text) {
-  // 🏍️ 摩托车 logo 固定在白色圆圈（红色圆环）内并居中，右侧显示预计时间
+  // 🏍️ 摩托车固定在白圆（红环）内；白圆与时间块都用绝对定位贴着标记点摆放，不再出现白底互相重叠/偏移
   var tail = text || "";
   var m = /🛵\s*(.*)/.exec(text);
   if (m) tail = m[1];
   return L.divIcon({
     className: "",
-    html: '<div style="display:flex; align-items:center; gap:6px; background:#fff; border:2px solid #e53935; border-radius:24px; padding:4px 12px 4px 4px; font-size:13px; color:#333; font-weight:bold; box-shadow:0 2px 6px rgba(0,0,0,0.18); white-space:nowrap;">' +
-      '<span style="width:34px; height:34px; border-radius:50%; background:#fff; border:2px solid #e53935; display:flex; align-items:center; justify-content:center; font-size:20px;">🏍️</span>' +
-      '<span>' + tail + '</span></div>',
+    html: '<div style="position:relative; width:0; height:0;">' +
+      '<div style="position:absolute; left:-21px; top:-21px; width:42px; height:42px; box-sizing:border-box; border-radius:50%; background:#fff; border:3px solid #e53935; box-shadow:0 2px 6px rgba(0,0,0,0.25); display:flex; align-items:center; justify-content:center; font-size:22px; line-height:1; overflow:hidden;">🏍️</div>' +
+      (tail ? '<div style="position:absolute; left:27px; top:-13px; white-space:nowrap; color:#fff; font-weight:bold; font-size:13px; background:rgba(229,57,53,0.92); border-radius:12px; padding:3px 9px; box-shadow:0 1px 4px rgba(0,0,0,0.25);">' + tail + '</div>' : '') +
+      '</div>',
     iconSize: [0, 0], iconAnchor: [0, 0]
   });
 }
@@ -617,14 +625,17 @@ function drawGuideRoute(fromLL, toLL) {
 }
 
 // 骑手模型图标：红色圆底 + 白色边框 + 白色线条骑手骑踏板车送包子（仿附件第三张图）
-function doneIcon() {
-  // 已完成订单：白底红色圆环 + 红色对勾
+function doneIcon(orderNo) {
+  // 已完成订单：白底红色圆环 + 红色对勾，圆环上方显示订单号，方便商家快速对应
+  var tag = orderNo ? '<div style="position:absolute; left:0; top:-32px; transform:translateX(-50%); white-space:nowrap; background:rgba(229,57,53,0.92); color:#fff; font-size:12px; font-weight:bold; padding:2px 8px; border-radius:10px; box-shadow:0 1px 4px rgba(0,0,0,0.25);">' + orderNo + '</div>' : '';
   return L.divIcon({
     className: "",
-    html: '<svg viewBox="0 0 64 64" width="44" height="44" style="filter:drop-shadow(0 2px 4px rgba(0,0,0,0.35))">' +
+    html: '<div style="position:relative; width:0; height:0;">' +
+      '<svg viewBox="0 0 64 64" width="44" height="44" style="position:absolute; left:-22px; top:-22px; filter:drop-shadow(0 2px 4px rgba(0,0,0,0.35))">' +
       '<circle cx="32" cy="32" r="27" fill="#ffffff" stroke="#e53935" stroke-width="5"/>' +
-      '<path d="M20 33 L29 43 L45 23" fill="none" stroke="#e53935" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-    iconSize: [44, 44], iconAnchor: [22, 22]
+      '<path d="M20 33 L29 43 L45 23" fill="none" stroke="#e53935" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/></svg>' + tag +
+      '</div>',
+    iconSize: [0, 0], iconAnchor: [0, 0]
   });
 }
 function riderIcon() {
@@ -757,7 +768,7 @@ function renderMulti(results, silent) {
       var dateTxt = x.update_time ? String(x.update_time).slice(0, 10) : "-";
       var stTxt = (x.status && x.status !== "待取餐") ? x.status : "-";
       var addrTxt = x.delivery_address || "-";
-      html += '<div class="ok">' +
+      html += '<div class="multi-card ok">' +
         'Date：' + dateTxt + '<br>' +
         'Name：🛵 <b>' + (x.rider_name || "-") + '</b><br>' +
         'Order：' + x.order_no + ' · City:' + (x.city || "-") + '<br>' +
@@ -770,11 +781,11 @@ function renderMulti(results, silent) {
         '📍 Location / Geographic Location：' + locDisplay(x) +
         '</div>';
     } else {
-      html += '<div class="bad">' + (x.order_no || "-") + '：' + (x.msg || "error") + '</div>';
+      html += '<div class="multi-card bad">' + (x.order_no || "-") + '：' + (x.msg || "error") + '</div>';
     }
   });
   var sum = document.getElementById("multiSummary");
-  sum.innerHTML = html;
+  sum.innerHTML = '<div class="multi-grid">' + html + '</div>';
   sum.style.display = "block";
 
   if (!map) {
@@ -1215,6 +1226,15 @@ function saveSoundPref() {
   localStorage.setItem("bellSound", on ? "1" : "0");
 }
 
+// 初始化时把 Sound 开关与已保存偏好对齐，避免开关显示开着却静音
+(function initSoundToggle() {
+  function sync() {
+    var el = document.getElementById("soundToggle");
+    if (el) el.checked = !!bellState.sound;
+  }
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", sync);
+  else sync();
+})();
 function toggleBellPanel() {
   var panel = document.getElementById("bellPanel");
   var show = (panel.style.display === "none");
@@ -1224,6 +1244,23 @@ function toggleBellPanel() {
     document.getElementById("bellBadge").style.display = "none";
     renderBellList();
   }
+}
+
+function yangonTimeStr(iso) {
+  // 后端 created_at 为 UTC，统一转换为缅甸时间（UTC+6:30）显示
+  if (!iso) return "";
+  var ts = null;
+  var m = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?/.exec(iso);
+  if (m && !/[zZ]|[+-]\d{2}:\d{2}/.test(iso)) {
+    ts = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +(m[6] || 0));
+  } else {
+    var d = new Date(iso);
+    if (isNaN(d.getTime())) return iso;
+    ts = d.getTime();
+  }
+  var y = new Date(ts + (6 * 60 + 30) * 60000);
+  function p2(n) { return (n < 10 ? "0" : "") + n; }
+  return p2(y.getHours()) + ":" + p2(y.getMinutes()) + ":" + p2(y.getSeconds()) + "  " + p2(y.getDate()) + "/" + p2(y.getMonth() + 1) + "/" + y.getFullYear();
 }
 
 function renderBellList() {
@@ -1236,8 +1273,9 @@ function renderBellList() {
     var jPhone = it.phone ? "', " + JSON.stringify(it.phone).replace(/"/g, "'") + "'" : "";
     h += '<div class="bell-item" onclick="bellJump(\'' + safe + jPhone + '\')">' +
       '<div class="bi-no">Order：' + (it.order_no || "-") + '</div>' +
+      '<div class="bi-phone">Phone Number：' + (it.phone || "-") + '</div>' +
       '<div class="bi-msg">' + (it.message || "") + '</div>' +
-      '<div class="bi-time">' + (it.created_at || "") + '</div>' +
+      '<div class="bi-time">' + yangonTimeStr(it.created_at) + '</div>' +
       '</div>';
   });
   list.innerHTML = h;
@@ -1254,32 +1292,51 @@ function bellJump(orderNo, phone) {
   search();
 }
 
-function ringBell() {
+var _audioCtx = null;
+function ensureAudio() {
   try {
-    var ctx = new (window.AudioContext || window.webkitAudioContext)();
+    if (!_audioCtx) _audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (_audioCtx.state === "suspended") _audioCtx.resume();
+  } catch (e) {}
+  return _audioCtx;
+}
+// 浏览器要求用户有交互后才能放声音：页面任意点击/触摸即解锁音频
+document.addEventListener("click", function () { ensureAudio(); }, true);
+document.addEventListener("touchstart", function () { ensureAudio(); }, true);
+document.addEventListener("keydown", function () { ensureAudio(); }, true);
+
+function ringBell() {
+  if (!bellState.sound) return;
+  var ctx = ensureAudio();
+  if (!ctx) return;
+  try {
     function tone(f, t, dur) {
       var o = ctx.createOscillator(), g = ctx.createGain();
       o.type = "sine"; o.frequency.value = f;
       g.gain.setValueAtTime(0.0001, ctx.currentTime + t);
-      g.gain.exponentialRampToValueAtTime(0.25, ctx.currentTime + t + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.3, ctx.currentTime + t + 0.02);
       g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + t + dur);
       o.connect(g); g.connect(ctx.destination);
       o.start(ctx.currentTime + t); o.stop(ctx.currentTime + t + dur);
     }
-    tone(880, 0, 0.35); tone(1174.66, 0.18, 0.5);
+    // 连续提示三遍，避免漏听
+    tone(880, 0, 0.3); tone(1174.66, 0.18, 0.4);
+    tone(880, 0.75, 0.3); tone(1174.66, 0.93, 0.4);
+    tone(880, 1.5, 0.3); tone(1174.66, 1.68, 0.4);
   } catch (e) {}
 }
 
 function speakNewOrder() {
   if (!bellState.sound) return;
   try {
-    var u = new SpeechSynthesisUtterance("အော်ဒါ အသစ်ရောက်လာပါပြီ။ ကျေးဇူးပြု၍ ကြည့်ရှုပါ။");
+    var u = new SpeechSynthesisUtterance("你有新的订单，请注意查看");
     var vs = speechSynthesis.getVoices();
     var v = null, i;
-    for (i = 0; i < vs.length; i++) { if (vs[i].lang && vs[i].lang.indexOf("my") === 0) { v = vs[i]; break; } }
-    if (!v) { for (i = 0; i < vs.length; i++) { var vv = vs[i]; if (vv.lang && vv.lang.indexOf("en") === 0 && /female|woman|zira|samantha|susan/i.test(vv.name)) { v = vv; break; } } }
-    if (!v) { for (i = 0; i < vs.length; i++) { var vv2 = vs[i]; if (vv2.lang && vv2.lang.indexOf("en") === 0) { v = vv2; break; } } }
-    if (v) { u.voice = v; } else { u.lang = "en-US"; }
+    for (i = 0; i < vs.length; i++) { var vv = vs[i]; if (vv.lang && vv.lang.indexOf("zh") === 0 && /female|woman|xiaoxiao|huihui|yaoyao|tingting|meijia|lili|hanhan/i.test(vv.name)) { v = vv; break; } }
+    if (!v) { for (i = 0; i < vs.length; i++) { var vv2 = vs[i]; if (vv2.lang && vv2.lang.indexOf("zh") === 0) { v = vv2; break; } } }
+    if (!v) { for (i = 0; i < vs.length; i++) { var vv3 = vs[i]; if (vv3.lang && vv3.lang.indexOf("en") === 0 && /female|woman|zira|samantha|susan/i.test(vv3.name)) { v = vv3; break; } } }
+    if (!v) { for (i = 0; i < vs.length; i++) { var vv4 = vs[i]; if (vv4.lang && vv4.lang.indexOf("en") === 0) { v = vv4; break; } } }
+    if (v) { u.voice = v; } else { u.lang = "zh-CN"; }
     speechSynthesis.cancel();
     speechSynthesis.speak(u);
   } catch (e) {}
@@ -1288,18 +1345,19 @@ function speakNewOrder() {
 function processBellIncoming(list) {
   if (!list || list.length === 0) return;
   var maxId = bellState.after_id;
-  var hasNew = false;
+  var fresh = 0;   // 每条新通知（新订单 / 已接单 / 已完成 / 已取消）都算一条新消息
   list.forEach(function (it) {
     if (it.id > maxId) maxId = it.id;
     if (it.id <= bellState.after_id) return;
     bellState.items.push(it);
     if (bellState.items.length > 60) bellState.items.shift();
     var no = it.order_no || "";
-    if (!bellState.orderNos[no]) { bellState.orderNos[no] = true; hasNew = true; }
+    if (no) bellState.orderNos[no] = true;
+    fresh += 1;
   });
   bellState.after_id = maxId;
-  if (hasNew) {
-    bellState.count += 1;
+  if (fresh > 0) {
+    bellState.count += fresh;
     var badge = document.getElementById("bellBadge");
     badge.style.display = "block";
     badge.textContent = bellState.count;

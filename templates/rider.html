@@ -446,14 +446,17 @@ async function updateShopLocation() {
     showInfo("Server unreachable");
   }
 }
-function doneRiderIcon() {
-  // 已完成订单：白底红色圆环 + 红色对勾
+function doneRiderIcon(orderNo) {
+  // 已完成订单：白底红色圆环 + 红色对勾，上方显示订单号
+  var tag = orderNo ? '<div style="position:absolute; left:0; top:-32px; transform:translateX(-50%); white-space:nowrap; background:rgba(229,57,53,0.92); color:#fff; font-size:12px; font-weight:bold; padding:2px 8px; border-radius:10px; box-shadow:0 1px 4px rgba(0,0,0,0.25);">' + orderNo + '</div>' : '';
   return L.divIcon({
     className: "",
-    html: '<svg viewBox="0 0 64 64" width="40" height="40" style="filter:drop-shadow(0 2px 4px rgba(0,0,0,0.35))">' +
+    html: '<div style="position:relative; width:0; height:0;">' +
+      '<svg viewBox="0 0 64 64" width="44" height="44" style="position:absolute; left:-22px; top:-22px; filter:drop-shadow(0 2px 4px rgba(0,0,0,0.35))">' +
       '<circle cx="32" cy="32" r="27" fill="#ffffff" stroke="#e53935" stroke-width="5"/>' +
-      '<path d="M20 33 L29 43 L45 23" fill="none" stroke="#e53935" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-    iconSize: [40, 40], iconAnchor: [20, 20]
+      '<path d="M20 33 L29 43 L45 23" fill="none" stroke="#e53935" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/></svg>' + tag +
+      '</div>',
+    iconSize: [0, 0], iconAnchor: [0, 0]
   });
 }
 function shopIcon() {
@@ -505,7 +508,7 @@ function drawTodayDone() {
   if (!riderMap || todayDoneItems.length === 0) return;
   todayDoneItems.forEach(function (t) {
     if (!t._marker) {
-      t._marker = L.marker([t.lat, t.lng], { icon: doneRiderIcon() }).addTo(riderMap);
+      t._marker = L.marker([t.lat, t.lng], { icon: doneRiderIcon(t.order_no) }).addTo(riderMap);
       t._marker.bindPopup("✅ <b>ပြီးဆုံးခဲ့သည် / Done</b><br>Order：<b>" + t.order_no + "</b>");
     }
   });
@@ -638,9 +641,16 @@ function drawRouteLayers(coords, actualMps, expectedMps) {
   }
 }
 function routeEtaIcon(text) {
+  // 与 track 页保持一致：🏍️ 固定白圆（红环）内，右侧红底白字时间块，绝对定位避免白底重叠
+  var tail = text || "";
+  var m = /🛵\s*(.*)/.exec(text);
+  if (m) tail = m[1];
   return L.divIcon({
     className: "",
-    html: '<div style="background:#fff; border:1px solid #d0d0d0; border-radius:14px; padding:4px 10px; font-size:13px; color:#333; font-weight:bold; box-shadow:0 2px 6px rgba(0,0,0,0.18); white-space:nowrap;">' + text + '</div>',
+    html: '<div style="position:relative; width:0; height:0;">' +
+      '<div style="position:absolute; left:-21px; top:-21px; width:42px; height:42px; box-sizing:border-box; border-radius:50%; background:#fff; border:3px solid #e53935; box-shadow:0 2px 6px rgba(0,0,0,0.25); display:flex; align-items:center; justify-content:center; font-size:22px; line-height:1; overflow:hidden;">🏍️</div>' +
+      (tail ? '<div style="position:absolute; left:27px; top:-13px; white-space:nowrap; color:#fff; font-weight:bold; font-size:13px; background:rgba(229,57,53,0.92); border-radius:12px; padding:3px 9px; box-shadow:0 1px 4px rgba(0,0,0,0.25);">' + tail + '</div>' : '') +
+      '</div>',
     iconSize: [0, 0], iconAnchor: [0, 0]
   });
 }

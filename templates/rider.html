@@ -127,6 +127,18 @@
   }
   .pay-option:hover { background:#f2f6ff; }
   .pay-option img.pay-logo { width:30px; height:30px; object-fit:contain; border-radius:6px; }
+  /* 地图四方向平移控制盘（Google 地图式上下左右查看） */
+  .map-holder { position:relative; }
+  .map-pad { position:absolute; right:10px; bottom:24px; z-index:25; display:grid; grid-template-columns:repeat(3, 38px); grid-template-rows:repeat(3, 38px); gap:4px; user-select:none; }
+  .map-pad button { width:38px; height:38px; margin:0; padding:0; border:none; border-radius:10px; background:rgba(255,255,255,0.94); color:#e07b00; font-size:16px; line-height:1; font-weight:bold; cursor:pointer; box-shadow:0 2px 8px rgba(0,0,0,0.22); display:flex; align-items:center; justify-content:center; }
+  .map-pad button:active { background:#ffe0b2; transform:scale(0.95); }
+  .map-pad .pad-up { grid-area:1/2; }
+  .map-pad .pad-left { grid-area:2/1; }
+  .map-pad .pad-center { grid-area:2/2; font-size:13px; color:#2e7d32; }
+  .map-pad .pad-right { grid-area:2/3; }
+  .map-pad .pad-down { grid-area:3/2; }
+  .map-pad .pad-zin { grid-area:1/3; font-size:18px; }
+  .map-pad .pad-zout { grid-area:3/3; font-size:18px; }
 </style>
 </head>
 <body>
@@ -217,7 +229,18 @@
       <div class="row2" style="margin-bottom:6px;">
         <button class="btn btn-gray" id="mapFullscreenBtn" onclick="toggleMapFullscreen()">⛶ Fullscreen Map</button>
       </div>
-      <div id="riderMap" style="width:100%; height:320px; border-radius:12px; z-index:1;"></div>
+      <div class="map-holder">
+        <div id="riderMap" style="width:100%; height:320px; border-radius:12px; z-index:1;"></div>
+        <div class="map-pad" id="riderMapPad">
+          <button type="button" class="pad-up" onclick="riderPadPan('up')" title="Move up / North">▲</button>
+          <button type="button" class="pad-zin" onclick="riderPadZoom(1)" title="Zoom in">＋</button>
+          <button type="button" class="pad-left" onclick="riderPadPan('left')" title="Move left / West">◀</button>
+          <button type="button" class="pad-center" onclick="riderPadReset()" title="Back to route">◎</button>
+          <button type="button" class="pad-right" onclick="riderPadPan('right')" title="Move right / East">▶</button>
+          <button type="button" class="pad-zout" onclick="riderPadZoom(-1)" title="Zoom out">－</button>
+          <button type="button" class="pad-down" onclick="riderPadPan('down')" title="Move down / South">▼</button>
+        </div>
+      </div>
       <div id="routeInfo" style="margin-top:8px; padding:8px 12px; background:#f1f8e9; border:1px solid #c8e6c9; border-radius:8px; font-size:14px; color:#2e7d32;">Arrival: - · Time left: -</div>
     </div>
   </div>
@@ -484,14 +507,40 @@ function riderSelfIcon() {
     iconSize: [46, 46], iconAnchor: [23, 23]
   });
 }
+// ===== 地图方向控制盘（Google 地图式自由查看：上下左右平移 + 缩放 + 回到路线） =====
+var riderMapPinned = false;
+var riderRouteBounds = null;
+function riderPadPan(dir) {
+  if (!riderMap) return;
+  var size = riderMap.getSize();
+  var dx = Math.round(size.x * 0.5), dy = Math.round(size.y * 0.5);
+  var off = { up: [0, -dy], down: [0, dy], left: [-dx, 0], right: [dx, 0] }[dir] || [0, 0];
+  riderMapPinned = true;
+  riderMap.panBy(off, { animate: true, duration: 0.35 });
+}
+function riderPadZoom(d) {
+  if (!riderMap) return;
+  riderMapPinned = true;
+  if (d > 0) riderMap.zoomIn(); else riderMap.zoomOut();
+}
+function riderPadReset() {
+  if (!riderMap) return;
+  riderMapPinned = false;
+  if (riderRouteBounds && riderRouteBounds.isValid()) { riderMap.fitBounds(riderRouteBounds, { padding: [40, 40] }); return; }
+  var pts = [];
+  riderMap.eachLayer(function (l) { if (l instanceof L.Marker) pts.push(l.getLatLng()); });
+  if (pts.length) { riderMap.fitBounds(L.latLngBounds(pts), { padding: [50, 50] }); }
+}
 function showRiderMap() {
   var wrap = document.getElementById("riderMapWrap");
   wrap.style.display = "block";
   if (!riderMap) {
-    riderMap = L.map("riderMap", { dragging: true, scrollWheelZoom: true, zoomControl: true }).setView([16.8661, 96.1951], 13);
+    riderMap = L.map("riderMap", { dragging: true, touchZoom: true, scrollWheelZoom: true, doubleClickZoom: true, tap: true, zoomControl: true }).setView([16.8661, 96.1951], 13);
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
       attribution: "&copy; OpenStreetMap contributors", maxZoom: 19
     }).addTo(riderMap);
+    riderMap.on("dragstart", function () { riderMapPinned = true; });
+    riderMap.on("zoomstart", function () { riderMapPinned = true; });
   }
   setTimeout(function () { if (riderMap) riderMap.invalidateSize(); }, 120);
   drawTodayDone();
@@ -575,8 +624,9 @@ function setShop(lat, lng, linkText) {
   updateRoute();
   if (riderMap) {
     if (state.curLat !== null && state.curLat !== undefined) {
-      riderMap.fitBounds(L.latLngBounds([[state.curLat, state.curLng], [lat, lng]]), { padding: [40, 40] });
-    } else {
+      riderRouteBounds = L.latLngBounds([[state.curLat, state.curLng], [lat, lng]]);
+      if (!riderMapPinned) riderMap.fitBounds(riderRouteBounds, { padding: [40, 40] });
+    } else if (!riderMapPinned) {
       riderMap.setView([lat, lng], 15);
     }
   }
@@ -738,7 +788,7 @@ function updateRiderMarker() {
     riderMarker.setLatLng([state.curLat, state.curLng]);
   }
   updateRoute();
-  if (shopLat === null && riderMap) {
+  if (shopLat === null && riderMap && !riderMapPinned) {
     riderMap.setView([state.curLat, state.curLng], 15);
   }
 }

@@ -436,7 +436,14 @@ def resolve_shop_location(link, coords_text):
 
 
 def now_str():
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    """统一返回缅甸仰光时间（UTC+6:30）文本，与服务器所在时区无关。
+    订单时间、完成时间、通知时间均基于它写入，前端直接显示即为仰光时间。"""
+    try:
+        if _YANGON:
+            return datetime.now(_YANGON).strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        pass
+    return (datetime.utcnow() + timedelta(hours=6, minutes=30)).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def utc_iso_now():
@@ -1098,7 +1105,7 @@ def admin_notifications():
 def today_completed():
     """骑手端：返回今天（缅甸时间）已完成订单，用于地图确认打钩永久保留（凌晨12点自动清零）"""
     phone = (request.args.get("phone") or "").strip()
-    day = to_yangon_text(now_str())[:10]
+    day = now_str()[:10]
     conn = get_db()
     cur = conn.cursor()
     cur.execute(_q("SELECT o.order_no, o.shop_lat, o.shop_lng, o.completed_at FROM orders o "
@@ -1274,10 +1281,33 @@ def user_me():
 
 @app.route("/api/user/avatar", methods=["POST"])
 def upload_avatar():
-    """上传头像（手机/电脑选图），保存到 static/uploads/avatars"""
+    """上传头像（手机/电脑选图）。支持两种方式：
+    1) JSON {avatar_data: data:image/...;base64,...}：压缩后的头像直接存数据库，服务器重置/重新部署后依然保留；
+    2) 表单文件 avatar：保存到 static/uploads/avatars（兼容旧流程）。"""
     user = get_current_user()
     if not user:
         return jsonify({"ok": False, "msg": "Not logged in."}), 401
+    # 方式一：base64 直存数据库（永久保留，不依赖服务器文件系统）
+    data_url = ""
+    try:
+        if request.is_json:
+            data_url = (request.get_json(silent=True) or {}).get("avatar_data") or ""
+        else:
+            data_url = request.form.get("avatar_data") or ""
+    except Exception:
+        data_url = ""
+    data_url = (data_url or "").strip()
+    if data_url:
+        if not data_url.startswith("data:image/"):
+            return jsonify({"ok": False, "msg": "Invalid image data."}), 400
+        if len(data_url) > 3 * 1024 * 1024:
+            return jsonify({"ok": False, "msg": "Image too large."}), 400
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute(_q("UPDATE users SET avatar=? WHERE id=?"), (data_url, user["id"]))
+        conn.commit()
+        conn.close()
+        return jsonify({"ok": True, "avatar": data_url})
     f = request.files.get("avatar")
     if not f:
         return jsonify({"ok": False, "msg": "No file uploaded."}), 400
@@ -1324,8 +1354,7 @@ def admin_banned_users():
     rows = cur.fetchall()
     conn.close()
     records = _rows_to_dicts(cur, rows)
-    for rec in records:
-        rec["status_updated_at"] = to_yangon_text(rec.get("status_updated_at"))
+    # status_updated_at 由 now_str() 写入，已是仰光时间，无需再次转换
     return jsonify({"ok": True, "records": records})
 
 

@@ -2277,13 +2277,20 @@ checkLogin();
       if (el) ph = (el.value || "").trim();
       if (!ph) ph = (localStorage.getItem("riderPhoneSaved") || "").trim();
     } catch (e) {}
-    if (!ph) { window.updateGetNewOrderState(); return; }
+    if (!ph) { window.__activeOrderNo = ""; if (typeof window.__saveActiveNo === "function") window.__saveActiveNo(""); window.__activeChecked = true; window.updateGetNewOrderState(); return; }
     var _raw = window.__rawFetch || window.fetch;
     _raw.call(window, "/api/rider/active?phone=" + encodeURIComponent(ph), { cache: "no-store" })
       .then(function (r) { return r.json(); })
       .then(function (j) {
-        if (j && j.ok && j.active) window.__activeOrderNo = j.active.order_no || "";
-        else window.__activeOrderNo = "";
+        // 以服务端为准：服务端没有未完成订单时，清掉本地遗留锁（旧部署/旧标签页残留），避免一打开就 Locked
+        if (j && j.ok && j.active) {
+          window.__activeOrderNo = j.active.order_no || "";
+          if (window.__activeOrderNo && typeof window.__saveActiveNo === "function") window.__saveActiveNo(window.__activeOrderNo);
+        } else {
+          window.__activeOrderNo = "";
+          if (typeof window.__saveActiveNo === "function") window.__saveActiveNo("");
+        }
+        window.__activeChecked = true;
         window.updateGetNewOrderState();
       })
       .catch(function () { window.updateGetNewOrderState(); });
@@ -2356,6 +2363,8 @@ checkLogin();
   // 1) 未完成 / 未取消的订单存在时，Get New Orders 一律禁用（刷新页面后依然生效）
   window.isOrderOpen = function () {
     var st = (window.__remain && window.__remain.status) || (window.state && state.status) || "";
+    // 服务端已确认无未完成订单时，忽略本地遗留锁（旧部署/旧标签页残留），不再一打开就 Locked
+    if (window.__activeChecked && !window.__activeOrderNo) return false;
     var no = window.__activeOrderNo || savedActiveNo() || "";
     if (!no) return false;
     if (st === "လက်ခံပြီးပါပြီ" || st === "ပယ်ဖျက်ထားသည်") return false;
@@ -2475,12 +2484,16 @@ checkLogin();
     window.updateGetNewOrderState();
   }, 30000);
 
-  // 启动时恢复锁定状态
+  // 启动时恢复锁定状态（以服务端为准，本地残留锁一律作废）
   setTimeout(function () {
-    var no = savedActiveNo();
-    if (no && !window.__activeOrderNo) window.__activeOrderNo = no;
+    if (typeof window.checkActiveLock === "function") {
+      window.checkActiveLock();
+    } else {
+      var no = savedActiveNo();
+      if (no && !window.__activeOrderNo) window.__activeOrderNo = no;
+    }
     window.updateGetNewOrderState();
-    window.validateCountInputs();
+    if (window.validateCountInputs) window.validateCountInputs();
   }, 1500);
 })();
 })();

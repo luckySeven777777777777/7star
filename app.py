@@ -18,6 +18,7 @@
 """
 
 import os
+import gzip
 import sqlite3
 import json
 import uuid
@@ -438,11 +439,145 @@ _COORD_PATTERNS = [
     (r"!3d(-?\d{1,3}\.\d+)!4d(-?\d{1,3}\.\d+)", False),
     (r"!2d(-?\d{1,3}\.\d+)!3d(-?\d{1,3}\.\d+)", True),
     (r"[?&](?:q|query|ll|sll|center|destination|daddr|saddr)=(-?\d{1,3}\.\d+)\s*[,،]\s*(-?\d{1,3}\.\d+)", False),
+    (r"[?&](?:q|query)=loc%3A(-?\d{1,3}\.\d+)%2C(-?\d{1,3}\.\d+)", False),
+    (r"geo:(-?\d{1,3}\.\d+),(-?\d{1,3}\.\d+)", False),
     (r"@(-?\d{1,3}\.\d+),(-?\d{1,3}\.\d+)", False),
-    (r"\[\s*null\s*,\s*null\s*,\s*(-?\d{1,3}\.\d+)\s*,\s*(-?\d{1,3}\.\d+)\s*\]", False),
+    (r"\[(?:null|\d+),(?:null|\d+),(-?\d{1,3}\.\d+),(-?\d{1,3}\.\d+)", False),
+    (r'"latitude"\s*:\s*(-?\d{1,3}\.\d+)\s*,\s*"longitude"\s*:\s*(-?\d{1,3}\.\d+)', False),
     (r'"lat"\s*:\s*(-?\d{1,3}\.\d+)\s*,\s*"lng"\s*:\s*(-?\d{1,3}\.\d+)', False),
     (r"(-?\d{1,3}\.\d{3,})\s*,\s*(-?\d{1,3}\.\d{3,})", False),
 ]
+
+_URL_RE = re.compile(r"https?://[^\s\u3000\"'<>）)】\]，,；;]+", re.I)
+_SHORT_HOST = re.compile(r"(goo\.gl|g\.co|maps\.app\.goo\.gl|bit\.ly|tinyurl\.com)", re.I)
+
+
+def _extract_url(text):
+    """App 直接分享的文本常带店名/地址/表情，先从中抽出真正的链接，避免整段当 URL 请求失败。"""
+    s = str(text or "").strip().strip("\"'“”")
+    if not s:
+        return ""
+    m = _URL_RE.search(s)
+    if m:
+        u = m.group(0).rstrip(".,;)]}>\"'，。；）】")
+        return u
+    return ""
+
+
+def _strip_url_junk(u):
+    """清理手机粘贴产生的多余字符（首尾标点、换行、中文引号、零宽字符）"""
+    u = str(u or "").strip().replace("\u200b", "").replace("\n", "").replace("\r", "")
+    u = u.strip("\"'“”‘’<>【】[]()（）")
+    u = u.rstrip(".,;!，。；！")
+    return u
+
+
+def _http_get(url, timeout=8):
+    """带浏览器 UA 抓取：强制 identity 编码（避免 gzip 二进制破坏解析），异常时解压兜底。
+    返回 (最终URL, 网页正文)；失败返回 (url, "")。"""
+    headers = {
+        "User-Agent": ("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+                       "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 "
+                       "Mobile/15E148 Safari/604.1"),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "identity",
+        "Cookie": "CONSENT=YES+cb.20210328-17-p0.en+FX+000; SOCS=CAESHAgBEhJnd3NfMjAyMzA4MTAtMF9SQzIaAmVuIAEaBgiA_LyaBg",
+    }
+    try:
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            final_url = resp.geturl()
+            raw = resp.read(400000)
+            enc = (resp.headers.get("Content-Encoding") or "").lower()
+        if "gzip" in enc:
+            try:
+                raw = gzip.decompress(raw)
+            except Exception:
+                pass
+        elif raw[:2] == b"\x1f\x8b":
+            try:
+                raw = gzip.decompress(raw)
+            except Exception:
+                pass
+        body = raw.decode("utf-8", "ignore")
+        return final_url, body
+    except Exception:
+        return url, ""
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """禁止自动跳转，手动逐跳读取 Location，便于在每一跳里挖坐标（也避免被跳到 consent 页）。"""
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _follow_redirects(url, timeout=15, max_hops=8):
+    """手动跟随跳转链，返回 (链上所有 URL, 终点URL)。上一跳的 Location 里通常就带坐标，
+    比等待完整地图页面快得多，能显著改善手机 Google 短链解析成功率。"""
+    chain = []
+    cur = url
+    headers = {
+        "User-Agent": ("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+                       "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 "
+                       "Mobile/15E148 Safari/604.1"),
+        "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Cookie": "CONSENT=YES+cb.20210328-17-p0.en+FX+000; SOCS=CAESHAgBEhJnd3NfMjAyMzA4MTAtMF9SQzIaAmVuIAEaBgiA_LyaBg",
+    }
+    opener = urllib.request.build_opener(_NoRedirect())
+    for _ in range(max_hops):
+        chain.append(cur)
+        try:
+            req = urllib.request.Request(cur, headers=headers)
+            with opener.open(req, timeout=timeout) as resp:
+                return chain, resp.geturl()
+        except urllib.error.HTTPError as e:
+            loc = e.headers.get("Location") if e.headers else None
+            if not loc:
+                return chain, cur
+            cur = urllib.parse.urljoin(cur, loc)
+        except Exception:
+            return chain, cur
+    return chain, cur
+
+
+def _extract_place_name(text):
+    """从 Google Maps 链接里抽取地点名，作为最后的名称地理编码兜底"""
+    s = str(text or "")
+    m = re.search(r"/maps/place/([^/@?\s]+)", s)
+    if not m:
+        m = re.search(r"/maps/search/([^/@?\s]+)", s)
+    if not m:
+        return ""
+    try:
+        name = urllib.parse.unquote(m.group(1)).replace("+", " ")
+    except Exception:
+        return ""
+    name = name.strip()
+    if not name or re.match(r"^-?\d", name):
+        return ""
+    return name
+
+
+def geocode_by_name(name, near="Yangon, Myanmar"):
+    """名称兜底：短链拿不到坐标时，用地点名在 OpenStreetMap 上做一次地理编码（精度够用于画点）"""
+    if not name:
+        return None
+    try:
+        q = urllib.parse.quote(name + ", " + near)
+        url = ("https://nominatim.openstreetmap.org/search?format=json&limit=1&q=" + q)
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "Marvis-Delivery-Tracker/1.0 (shop location resolver)",
+            "Accept": "application/json",
+        })
+        with urllib.request.urlopen(req, timeout=6) as resp:
+            data = json.loads(resp.read(200000).decode("utf-8", "ignore") or "[]")
+        if data:
+            return (float(data[0]["lat"]), float(data[0]["lon"]))
+    except Exception:
+        return None
+    return None
 
 
 def parse_link_coords(text):
@@ -472,48 +607,75 @@ def parse_link_coords(text):
 
 
 def resolve_shop_location(link, coords_text):
-    """骑手输入的商家位置解析：优先坐标文本，其次链接正则，最后展开 goo.gl 短链再解析。
+    """骑手输入的商家位置解析：坐标文本 > 链接自带坐标 > 短链展开（多次跳转/网页正文）> 地点名兜底。
     返回 (lat, lng, link)；解析失败时 lat/lng 为 None，仅保留链接原文。"""
     c = parse_coords_text(coords_text)
     if c:
         return c[0], c[1], (link or "").strip()
-    link = (link or "").strip()
-    if not link:
+    raw = str(link or "").strip()
+    if not raw:
         return None, None, ""
+    # 手机分享常带店名/地址文本，先抽出真正的 URL
+    url = _extract_url(raw)
+    if not url:
+        url = _strip_url_junk(raw)
+    # 手机端常直接粘贴店名（不含链接）：直接按地点名做地理编码，避免拼成无效网址
+    if not re.match(r"^https?://", url, re.I) and not re.match(
+            r"^(?:(?:maps|www)\.)?(?:google|goo|g)\.(?:com|gl)|goo\.gl|maps\.app\.goo\.gl|bit\.ly", url, re.I):
+        if not parse_coords_text(url):
+            c_name = geocode_by_name(url.strip()[:80])
+            if c_name:
+                return c_name[0], c_name[1], raw
+    if not re.match(r"^https?://", url, re.I):
+        url = "https://" + _strip_url_junk(url)
     # 1) 链接本身已带坐标（含 URL 编码与各种分享参数）
-    c = parse_link_coords(link)
+    c = parse_link_coords(url) or parse_link_coords(raw)
     if c:
-        return c[0], c[1], link
+        return c[0], c[1], raw
     # 2) 链接里夹了裸坐标文本
-    c = parse_coords_text(link)
+    c = parse_coords_text(raw)
     if c:
-        return c[0], c[1], link
-    # 3) 短链（maps.app.goo.gl / goo.gl/maps / g.co/kgs）：跟随重定向，并从最终 URL 与页面内容里挖坐标
-    candidates = [link]
-    if not re.match(r"^https?://", link, re.I):
-        candidates.insert(0, "https://" + link)
-    headers = {
-        "User-Agent": ("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
-                       "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 "
-                       "Mobile/15E148 Safari/604.1"),
-        "Accept-Language": "en-US,en;q=0.9",
-        "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
-    }
-    for u in candidates:
-        try:
-            req = urllib.request.Request(u, headers=headers)
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                final_url = resp.geturl()
-                try:
-                    body = resp.read(400000).decode("utf-8", "ignore")
-                except Exception:
-                    body = ""
-            c = parse_link_coords(final_url) or parse_link_coords(body)
+        return c[0], c[1], raw
+    # 3) 短链/带跳转链接：先手动逐跳抓 Location（最快最稳），再抓正文里挖坐标
+    hops = [url]
+    chain, end_url = _follow_redirects(url, timeout=15)
+    for u in chain:
+        if u and u not in hops:
+            hops.append(u)
+    if end_url and end_url not in hops:
+        hops.append(end_url)
+    for u in hops:
+        c = parse_link_coords(u)
+        if c:
+            return c[0], c[1], raw
+    # 4) 仍无坐标：跟着终点页抓正文（手机 Google 分享页可能把坐标写在页面数据里）
+    final_url, body = _http_get(end_url or url, timeout=12)
+    if final_url and final_url not in hops:
+        hops.append(final_url)
+        c = parse_link_coords(final_url)
+        if c:
+            return c[0], c[1], raw
+    if body:
+        c = parse_link_coords(body)
+        if c:
+            return c[0], c[1], raw
+        # 网页里可能还有二级跳转地址
+        m = re.search(r'(https://[^"\'\\\s<>]*maps[^"\'\\\s<>]*)', body)
+        if m:
+            u2 = m.group(1).replace("\\u0026", "&").replace("\\/", "/")
+            c = parse_link_coords(u2)
             if c:
-                return c[0], c[1], link
-        except Exception:
-            continue
-    return None, None, link
+                return c[0], c[1], raw
+            fu2, body2 = _http_get(u2, timeout=8)
+            c = parse_link_coords(fu2) or parse_link_coords(body2)
+            if c:
+                return c[0], c[1], raw
+    # 4) 名称兜底：链接里带地点名时，用 OSM 地理编码补一个可用坐标
+    name = _extract_place_name(final_url or url) or _extract_place_name(raw)
+    c = geocode_by_name(name)
+    if c:
+        return c[0], c[1], raw
+    return None, None, raw
 
 
 def now_str():
@@ -675,6 +837,21 @@ def require_admin():
 
 
 # ==================== 页面路由 ====================
+@app.after_request
+def _no_cache_pages(resp):
+    """手机浏览器会强缓存 HTML，导致改版后仍跑旧代码（语音/✅❌/链接解析看起来没生效）。
+    页面统一禁止缓存，保证每次打开都拿到最新版本。"""
+    try:
+        ctype = (resp.headers.get("Content-Type") or "").lower()
+        if "text/html" in ctype:
+            resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+            resp.headers["Pragma"] = "no-cache"
+            resp.headers["Expires"] = "0"
+    except Exception:
+        pass
+    return resp
+
+
 @app.route("/")
 def index():
     return render_template("index.html")
@@ -890,7 +1067,13 @@ def rider_update_shop():
         return jsonify({"ok": False, "msg": "Order number required"}), 400
     shop_lat, shop_lng, shop_link = resolve_shop_location(link, coords_text)
     if shop_lat is None or shop_lng is None:
-        return jsonify({"ok": False, "msg": "Cannot resolve shop location from link/coordinates"}), 400
+        msg = "Cannot resolve shop location from link/coordinates"
+        if link and _SHORT_HOST.search(link):
+            msg = ("Short link could not be opened. Open it once in Google Maps, then paste the "
+                   "full URL (the one containing @lat,lng), or type the coordinates")
+        elif link and "goo.gl" in link:
+            msg = "Link has no coordinates. Paste the full Google Maps URL or type the coordinates"
+        return jsonify({"ok": False, "msg": msg, "reason": "no_coords"}), 400
     conn = get_db()
     cur = conn.cursor()
     cur.execute(_q("UPDATE orders SET shop_lat=?, shop_lng=?, shop_link=? WHERE order_no=?"),

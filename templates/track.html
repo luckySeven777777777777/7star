@@ -88,7 +88,17 @@
   .bell-btn { position:relative; width:34px; height:34px; margin:0; padding:0; border:none; border-radius:50%; background:#fff; display:flex; align-items:center; justify-content:center; cursor:pointer; box-shadow:0 2px 6px rgba(0,0,0,0.15); box-sizing:border-box; }
   .bell-btn svg { width:18px; height:18px; stroke:#e07b00; fill:none; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
   .bell-badge { position:absolute; top:-4px; right:-4px; min-width:18px; height:18px; border-radius:10px; background:#e53935; color:#fff; font-size:11px; line-height:18px; text-align:center; padding:0 4px; font-weight:bold; box-shadow:0 1px 3px rgba(0,0,0,0.3); }
-  .bell-panel { position:absolute; top:42px; right:-8px; width:310px; max-width:calc(100vw - 24px); max-height:380px; background:#fff; border-radius:12px; box-shadow:0 6px 20px rgba(0,0,0,0.2); display:none; flex-direction:column; overflow:hidden; z-index:60; }
+  .bell-panel { position:absolute; top:42px; right:0; width:310px; max-width:calc(100vw - 24px); max-height:380px; background:#fff; border-radius:12px; box-shadow:0 6px 20px rgba(0,0,0,0.2); display:none; flex-direction:column; overflow:hidden; z-index:60; box-sizing:border-box; }
+  .bell-panel.open { display:flex; }
+  .today-mark { background:none; border:none; }
+  .tm-box { display:flex; flex-direction:column; align-items:center; gap:2px; }
+  .tm-no { display:inline-block; max-width:100%; padding:1px 6px; border-radius:8px; font-size:10px; font-weight:bold; color:#fff; line-height:14px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; box-shadow:0 1px 3px rgba(0,0,0,.35); }
+  .tm-done-chip { background:#2e7d32; }
+  .tm-cancel-chip { background:#c62828; }
+  .tm-em { font-size:15px; line-height:16px; text-shadow:0 1px 2px rgba(0,0,0,.35); }
+  @media (max-width: 620px) {
+    .bell-panel { position:fixed; top:64px; right:8px; left:auto; width:calc(100vw - 16px); max-width:none; max-height:70vh; }
+  }
   .bell-head { display:flex; justify-content:space-between; align-items:center; padding:10px 14px; border-bottom:1px solid #eee; font-size:13px; font-weight:bold; color:#333; }
   .bell-head .sound-toggle { display:flex; align-items:center; gap:5px; font-weight:normal; font-size:12px; color:#666; cursor:pointer; }
   .bell-head .sound-toggle input { width:auto; margin:0; }
@@ -262,9 +272,9 @@
   <div class="result" id="result">
     Date：<b id="rDate"></b><br>
     Order Number：<b id="rOrderNo"></b>（<span id="rCustomer"></span>）
-    <span class="status-tag st-ပို့ဆောင်နေသည်" id="rStatusTag">ပို့ဆောင်နေသည်</span><br>
+    Status：<span class="status-tag" id="rStatusTag">-</span><br>
     ပို့ရမည့်လိပ်စာ：<span id="rAddress"></span><br>
-    ပို့ဆောင်သူ နောက်ဆုံးတည်နေရာ အချိန်：<b id="rTime"></b><br>
+    Update：<b id="rTime"></b><br>
     城市：<b id="rCity"></b><br>
     ပို့ဆောင်သူ နောက်ဆုံးတည်နေရာ：<b id="rLatest"></b><br>
     ပို့ဆောင်သူ ကျန်ရှိသော ပေါက်စီအလုံးအရေတွက်：<b id="rBaozi"></b><br>
@@ -409,6 +419,19 @@ document.addEventListener("fullscreenchange", function () {
   if (map) setTimeout(function () { map.invalidateSize(); }, 200);
 });
 var refreshTimer = null;
+
+// ---------- 状态显示：统一英文（内部仍用缅文键值，不影响业务逻辑） ----------
+var STATUS_EN = {
+  "အစားအစာယူရန် စောင့်ဆိုင်း": "Waiting for pickup",
+  "ပို့ဆောင်နေသည်": "Delivering",
+  "ရောက်ရှိပြီး": "Arrived",
+  "လက်ခံပြီးပါပြီ": "Completed",
+  "ပယ်ဖျက်ထားသည်": "Cancelled"
+};
+function enSt(s) {
+  if (!s || s === "待取餐") return "-";
+  return STATUS_EN[s] || s;
+}
 var currentOrderNo = "";
 var currentPhone = "";
 var multiGroup = null;
@@ -470,7 +493,7 @@ function render(j) {
     tag.textContent = "-";
   } else {
     tag.className = "status-tag st-" + st;
-    tag.textContent = st;
+    tag.textContent = enSt(st);
   }
 
   // 取消/完成态：状态标签已刷新，同时清理商家引导路线与 ETA
@@ -1473,14 +1496,19 @@ function saveSoundPref() {
 })();
 function toggleBellPanel() {
   var panel = document.getElementById("bellPanel");
-  var show = (panel.style.display === "none");
+  if (!panel) return;
+  var show = !panel.classList.contains("open");
+  // 统一用 class + inline display 双控制，打开/关闭尺寸恒定，绝不因二次点击变形放大
+  panel.classList.toggle("open", show);
   panel.style.display = show ? "flex" : "none";
   if (show) {
     bellState.count = 0;
-    document.getElementById("bellBadge").style.display = "none";
+    var b = document.getElementById("bellBadge");
+    if (b) b.style.display = "none";
     renderBellList();
   }
 }
+window.toggleBellPanel = toggleBellPanel;
 
 function yangonTimeStr(iso) {
   // 后端 created_at 为 UTC，统一转换为缅甸时间（UTC+6:30）显示
@@ -1519,7 +1547,8 @@ function renderBellList() {
 }
 
 function bellJump(orderNo, phone) {
-  document.getElementById("bellPanel").style.display = "none";
+  var _bp = document.getElementById("bellPanel");
+  if (_bp) { _bp.classList.remove("open"); _bp.style.display = "none"; }
   var inp = document.getElementById("orderNo");
   if (inp) inp.value = orderNo;
   if (phone) {
@@ -1767,13 +1796,30 @@ startBellPolling();
   if (!window.__rawFetch) { window.__rawFetch = window.fetch; }
 
   function markIcon(orderNo, isDone) {
+    var no = String(orderNo || "");
+    var w = Math.max(92, Math.min(200, no.length * 8 + 20));
     return L.divIcon({
       className: "today-mark",
-      html: '<div class="tm-wrap ' + (isDone ? "tm-done" : "tm-cancel") + '">' + (isDone ? "✅" : "❌") + '</div>' +
-            '<span class="tm-no">' + (orderNo || "") + '</span>',
-      iconSize: [34, 46],
-      iconAnchor: [17, 23]
+      html: '<div class="tm-box">' +
+              '<div class="tm-no ' + (isDone ? "tm-done-chip" : "tm-cancel-chip") + '">' + no + '</div>' +
+              '<div class="tm-em">' + (isDone ? "✅" : "❌") + '</div>' +
+            '</div>',
+      iconSize: [w, 44],
+      iconAnchor: [w / 2, 42]
     });
+  }
+
+  // 同一坐标（同一商家）多张订单时做环形微偏移，避免订单号与 ✅/❌ 完全叠在一起
+  function _offsetLatLng(o, seen) {
+    var lat = Number(o.lat), lng = Number(o.lng);
+    var k = lat.toFixed(6) + "," + lng.toFixed(6);
+    var n = seen[k] || 0;
+    seen[k] = n + 1;
+    if (n === 0) return [lat, lng];
+    var ring = Math.ceil(n / 6);
+    var ang = (n % 6) * (Math.PI / 3);
+    var rad = 0.00016 * ring;
+    return [lat + rad * Math.cos(ang), lng + rad * Math.sin(ang)];
   }
 
   function ensureMarksGroup() {
@@ -1783,30 +1829,36 @@ startBellPolling();
     return _marksGroup;
   }
 
-  function drawTodayMarks() {
+  var _marksSig = "";
+  function drawTodayMarks(force) {
     var g = ensureMarksGroup();
     if (!g) return;
-    window.__rawFetch.call(window, "/api/today-marks", { cache: "no-store" })
+    window.__rawFetch.call(window, "/api/today-marks", { cache: "no-store", headers: { "X-Page": "track" } })
       .then(function (r) { return r.json(); })
       .then(function (j) {
         if (!j || !j.ok) return;
-        g.clearLayers();
+        var done = j.done || [], canc = j.cancelled || [];
         var curNo = String(window.currentOrderNo || "");
-        (j.done || []).forEach(function (o) {
-          if (curNo && o.order_no === curNo) return;
+        // 数据签名：只有集合变化才重绘，避免闪烁；变化（含刚取消）3 秒内必现
+        var sig = done.map(function (o) { return "D" + o.order_no; }).join(",") + "|" +
+                  canc.map(function (o) { return "C" + o.order_no; }).join(",");
+        if (!force && sig === _marksSig && g.getLayers().length) return;
+        _marksSig = sig;
+        g.clearLayers();
+        var seen = {};
+        done.forEach(function (o) {
           if (o.lat === null || o.lat === undefined || o.lng === null || o.lng === undefined) return;
-          L.marker([o.lat, o.lng], { icon: markIcon(o.order_no, true) })
+          L.marker(_offsetLatLng(o, seen), { icon: markIcon(o.order_no, true), zIndexOffset: 600 })
             .addTo(g)
-            .bindPopup("✅ <b>ပြီးဆုံးခဲ့သည် / 已完成</b><br>Order：<b>" + (o.order_no || "") + "</b>" +
-                       (o.rider_name ? "<br>骑手：" + o.rider_name : "") + (o.time ? "<br>" + o.time : ""));
+            .bindPopup("✅ <b>ပြီးဆုံးခဲ့သည် / Completed</b><br>Order：<b>" + (o.order_no || "") + "</b>" +
+                       (o.rider_name ? "<br>Rider：" + o.rider_name : "") + (o.time ? "<br>" + o.time : ""));
         });
-        (j.cancelled || []).forEach(function (o) {
-          if (curNo && o.order_no === curNo) return;
+        canc.forEach(function (o) {
           if (o.lat === null || o.lat === undefined || o.lng === null || o.lng === undefined) return;
-          L.marker([o.lat, o.lng], { icon: markIcon(o.order_no, false) })
+          L.marker(_offsetLatLng(o, seen), { icon: markIcon(o.order_no, false), zIndexOffset: 700 })
             .addTo(g)
-            .bindPopup("❌ <b>ပယ်ဖျက်ထားသည် / 已取消</b><br>Order：<b>" + (o.order_no || "") + "</b>" +
-                       (o.rider_name ? "<br>骑手：" + o.rider_name : "") + (o.time ? "<br>" + o.time : ""));
+            .bindPopup("❌ <b>ပယ်ဖျက်ထားသည် / Cancelled</b><br>Order：<b>" + (o.order_no || "") + "</b>" +
+                       (o.rider_name ? "<br>Rider：" + o.rider_name : "") + (o.time ? "<br>" + o.time : ""));
         });
         _marksOnce = true;
       })
@@ -1814,28 +1866,32 @@ startBellPolling();
   }
   window.drawTodayMarks = drawTodayMarks;
 
-  // 地图尚未创建时（用户还没搜索）不报错，地图就绪后自动补画
+  // 每 3 秒真正重新拉取一次：骑手在手机端确认/取消后，电脑端标记立即跟着变
   setInterval(function () {
-    if (!_marksOnce || !_marksGroup) { drawTodayMarks(); return; }
     if (window.map && _marksGroup && !map.hasLayer(_marksGroup)) map.addLayer(_marksGroup);
-  }, 8000);
-  setTimeout(drawTodayMarks, 1200);
+    drawTodayMarks(true);
+  }, 3000);
+  setTimeout(function () { drawTodayMarks(true); }, 1200);
 
   /* ---------------- 通知面板：手机上不出屏 ---------------- */
+  // 通知面板位置：绝不再改写宽度 / left / right（原逻辑会把面板撑成整屏大，导致第二次点击后无法关闭）
+  // 尺寸完全交给 CSS，出屏时只用 transform 做轻微平移修正
   function fixBellPos() {
     var el = document.getElementById("bellPanel") || document.querySelector(".bell-panel");
     if (!el) return;
+    el.style.position = "";
+    el.style.left = "";
+    el.style.right = "";
+    el.style.width = "";
+    el.style.maxWidth = "";
+    el.style.transform = "";
     var r = el.getBoundingClientRect();
     var vw = window.innerWidth;
-    if (vw <= 620 || r.right > vw - 4 || r.left < 4) {
-      el.style.position = "fixed";
-      el.style.left = "8px";
-      el.style.right = "8px";
-      el.style.top = Math.max(8, Math.min(r.top, 70)) + "px";
-      el.style.width = "auto";
-      el.style.maxWidth = "calc(100vw - 16px)";
+    if (r.right > vw - 6) {
+      el.style.transform = "translateX(-" + Math.ceil(r.right - (vw - 6)) + "px)";
     }
   }
+  window.fixBellPos = fixBellPos;
   var _origToggle = window.toggleBellPanel;
   window.toggleBellPanel = function () {
     var r = (typeof _origToggle === "function") ? _origToggle.apply(this, arguments) : undefined;

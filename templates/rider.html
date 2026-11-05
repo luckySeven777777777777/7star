@@ -1732,5 +1732,218 @@ async function checkLogin() {
 }
 checkLogin();
 </script>
+
+<!-- ===== 手机端一致性补丁：按键整齐不溢出 / 确认后剩余数量 / 英文女声播报 ===== -->
+<style>
+  .remain-card { display:none; border-left:6px solid #2e7d32; background:#f1f8e9; }
+  .remain-card .rc-title { font-size:13px; color:#33691e; margin-bottom:8px; word-break:break-word; }
+  .remain-card .rc-row { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:8px 0; border-bottom:1px dashed #c8e6c9; }
+  .remain-card .rc-row:last-of-type { border-bottom:none; }
+  .remain-card .rc-label { font-size:13px; color:#4e6b3a; line-height:1.5; }
+  .remain-card .rc-val { font-size:22px; font-weight:bold; color:#1b5e20; white-space:nowrap; }
+  .remain-card .rc-sub { font-size:12px; color:#7a8f6b; margin-top:6px; }
+  @media (max-width: 620px) {
+    html, body { overflow-x: hidden; max-width:100%; }
+    body { padding: 12px; }
+    .top { margin: -12px -12px 16px; padding: 18px 14px 26px; }
+    .panel { padding: 14px; }
+    .row2 { flex-wrap: wrap; gap: 8px; }
+    .row2 .btn { flex: 1 1 100%; width: 100%; white-space: normal; word-break: break-word; font-size: 14px; padding: 12px 10px; margin-top: 8px; }
+    .row2 input { flex: 1 1 100%; width: 100%; min-width: 0; font-size: 13px; }
+    .btn { font-size: 15px; padding: 12px 10px; white-space: normal; word-break: break-word; }
+    .status-box { gap: 6px; }
+    .status-box button { flex: 1 1 30%; min-width: 0; font-size: 12px; padding: 9px 4px; white-space: normal; word-break: break-word; line-height:1.4; }
+    .top h2, .top .sub { padding-right: 92px; }
+    .top h2 { font-size: 19px; }
+    .map-pad { right: 6px; bottom: 16px; grid-template-columns: repeat(3, 34px); grid-template-rows: repeat(3, 34px); gap:3px; }
+    .map-pad button { width: 34px; height: 34px; font-size: 14px; }
+    .modal-box { width: calc(100vw - 22px); max-width: 100%; padding: 16px; }
+    .info { font-size: 13px; word-break: break-word; overflow-wrap: anywhere; }
+    .history-head { flex-wrap: wrap; }
+    .history-head select { max-width: 100%; }
+    #riderMap { height: 260px !important; }
+  }
+</style>
+<script>
+(function () {
+  // ---------- 英文女声：订单号逐位读数字 ----------
+  var DIGIT_WORDS = ["zero","one","two","three","four","five","six","seven","eight","nine"];
+  function pickEnglishFemaleVoice() {
+    try {
+      var vs = window.speechSynthesis.getVoices() || [];
+      var i, v;
+      for (i = 0; i < vs.length; i++) { v = vs[i];
+        if (v.lang && v.lang.toLowerCase().indexOf("en") === 0 &&
+            /female|woman|zira|samantha|susan|google us english|aria|jenny|michelle|karen|moira|tessa|victoria/i.test(v.name)) return v; }
+      for (i = 0; i < vs.length; i++) { v = vs[i]; if (v.lang && v.lang.toLowerCase().indexOf("en") === 0) return v; }
+    } catch (e) {}
+    return null;
+  }
+  var _voice = null;
+  function readyVoice() {
+    if (!_voice) _voice = pickEnglishFemaleVoice();
+    return _voice;
+  }
+  if (window.speechSynthesis) {
+    try { window.speechSynthesis.onvoiceschanged = function () { _voice = pickEnglishFemaleVoice(); }; } catch (e) {}
+    // 移动端需用户首次触摸解锁语音
+    document.addEventListener("touchstart", function unlockVoice() {
+      try {
+        var u = new SpeechSynthesisUtterance(" ");
+        u.volume = 0;
+        window.speechSynthesis.speak(u);
+      } catch (e) {}
+      document.removeEventListener("touchstart", unlockVoice);
+    }, { passive: true });
+    document.addEventListener("click", function unlockVoice2() {
+      try { var u = new SpeechSynthesisUtterance(" "); u.volume = 0; window.speechSynthesis.speak(u); } catch (e) {}
+      document.removeEventListener("click", unlockVoice2);
+    });
+  }
+
+  // 订单号：字母逐个读、数字逐位读，绝不按金额读法（不做千分位/万亿组合）
+  function orderNoToWords(orderNo) {
+    var s = String(orderNo || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+    if (!s) return "";
+    var out = [];
+    for (var i = 0; i < s.length; i++) {
+      var ch = s.charAt(i);
+      if (ch >= "0" && ch <= "9") out.push(DIGIT_WORDS[parseInt(ch, 10)]);
+      else out.push(ch);
+    }
+    return out.join(", ");
+  }
+  function speakEn(text) {
+    if (!window.speechSynthesis || !text) return;
+    try {
+      var u = new SpeechSynthesisUtterance(text);
+      var v = readyVoice();
+      if (v) { u.voice = v; u.lang = v.lang; } else { u.lang = "en-US"; }
+      u.rate = 0.92; u.pitch = 1.05; u.volume = 1.0;
+      window.speechSynthesis.cancel();
+      window.speechSynthesis.speak(u);
+    } catch (e) {}
+  }
+  window.speakEnOrder = function (prefix, orderNo, suffix) {
+    var w = orderNoToWords(orderNo);
+    speakEn((prefix || "Order") + (w ? " number " + w : "") + (suffix ? ". " + suffix : ""));
+  };
+
+  // ---------- 剩余数量卡片 ----------
+  function ensureRemainCard() {
+    var d = document.getElementById("remainCard");
+    if (d) return d;
+    d = document.createElement("div");
+    d.id = "remainCard";
+    d.className = "panel remain-card";
+    d.innerHTML = '<div class="rc-title">Order：<b id="rcOrder">-</b>　状态：<b id="rcStatus">-</b></div>' +
+      '<div class="rc-row"><span class="rc-label">ပေါက်စီ ကျန်ရှိအလုံးရေ / Baozi left</span><span class="rc-val" id="rcBaozi">-</span></div>' +
+      '<div class="rc-row"><span class="rc-label">ဆိုင် ကျန်ရှိအရေအတွက် / Shop left</span><span class="rc-val" id="rcShop">-</span></div>' +
+      '<div class="rc-sub" id="rcTime"></div>';
+    var top = document.querySelector(".top");
+    if (top && top.parentNode) top.parentNode.insertBefore(d, top.nextSibling);
+    else document.body.insertBefore(d, document.body.firstChild);
+    return d;
+  }
+  function paintRemain(j) {
+    var d = ensureRemainCard();
+    document.getElementById("rcOrder").textContent = j.order_no || "-";
+    document.getElementById("rcStatus").textContent = j.status || "-";
+    document.getElementById("rcBaozi").textContent = (j.baozi_remaining !== undefined ? j.baozi_remaining : "-") +
+      " / " + (j.baozi_total_orig !== undefined ? j.baozi_total_orig : "-");
+    document.getElementById("rcShop").textContent = (j.shop_remaining !== undefined ? j.shop_remaining : "-") +
+      " / " + (j.shop_total_orig !== undefined ? j.shop_total_orig : "-");
+    var now = new Date();
+    document.getElementById("rcTime").textContent = "更新：" + now.getHours() + ":" +
+      String(now.getMinutes()).padStart(2, "0") + ":" + String(now.getSeconds()).padStart(2, "0");
+    d.style.display = "block";
+  }
+  function loadRemain(phone, orderNo) {
+    if (!phone && !orderNo) return;
+    var q = [];
+    if (phone) q.push("phone=" + encodeURIComponent(phone));
+    if (orderNo) q.push("order_no=" + encodeURIComponent(orderNo));
+    var _raw = window.__rawFetch || window.fetch;
+    _raw.call(window, "/api/rider/remaining?" + q.join("&"), { cache: "no-store" })
+      .then(function (r) { return r.json(); })
+      .then(function (j) { if (j && j.ok) paintRemain(j); })
+      .catch(function () {});
+  }
+  window.loadRemain = loadRemain;
+
+  // ---------- 拦截关键请求，确认后立即显示剩余数量 + 英文播报 ----------
+  var _fetch = window.fetch;
+  window.__rawFetch = _fetch;
+  window.fetch = function (url, opts) {
+    var u = (typeof url === "string") ? url : ((url && url.url) || "");
+    var snapPhone = (window.state && state.phone) || "";
+    var snapOrder = (window.state && state.orderNo) || "";
+    var pr = _fetch.apply(this, arguments);
+    try {
+      if (/\/api\/rider\/confirm(\?|$)/.test(u)) {
+        pr.then(function (r) {
+          r.clone().json().then(function (j) {
+            if (!j || !j.ok) return;
+            loadRemain(snapPhone, snapOrder);
+            var bt = (j.baozi_remaining !== undefined) ? j.baozi_remaining : "-";
+            var st = (j.shop_remaining !== undefined) ? j.shop_remaining : "-";
+            speakEn("Order number " + orderNoToWords(snapOrder) + " completed. Baozi left " + bt + ". Shops left " + st);
+          }).catch(function () {});
+        }).catch(function () {});
+      } else if (/\/api\/rider\/cancel(\?|$)/.test(u)) {
+        pr.then(function (r) {
+          r.clone().json().then(function (j) {
+            if (!j || !j.ok) return;
+            loadRemain(snapPhone, snapOrder);
+            speakEn("Order number " + orderNoToWords(snapOrder) + " cancelled");
+          }).catch(function () {});
+        }).catch(function () {});
+      } else if (/\/api\/rider\/bind(\?|$)/.test(u)) {
+        pr.then(function (r) {
+          r.clone().json().then(function (j) {
+            if (!j || !j.ok) return;
+            var on = j.order_no || snapOrder;
+            speakEn("Order number " + orderNoToWords(on) + " connected. Start delivery");
+            setTimeout(function () { loadRemain(snapPhone, on); }, 400);
+          }).catch(function () {});
+        }).catch(function () {});
+      }
+    } catch (e) {}
+    return pr;
+  };
+
+  // ---------- 页面加载后，若已有骑手手机号则自动显示剩余数量 ----------
+  function bootRemain() {
+    var ph = "";
+    try {
+      var el = document.getElementById("riderPhone");
+      if (el) ph = (el.value || "").trim();
+      if (!ph) { try { ph = (localStorage.getItem("riderPhoneSaved") || "").trim(); } catch (e) {} }
+      if (!ph) {
+        for (var k in localStorage) {
+          if (k && k.indexOf("riderLock_") === 0) { ph = k.replace("riderLock_", ""); break; }
+        }
+      }
+    } catch (e) {}
+    if (ph) loadRemain(ph, "");
+  }
+  if (document.readyState === "complete" || document.readyState === "interactive") {
+    setTimeout(bootRemain, 600);
+  } else {
+    document.addEventListener("DOMContentLoaded", function () { setTimeout(bootRemain, 600); });
+  }
+  window.__bootRemain = bootRemain;
+
+  // 状态变更通知（确认状态）也用英文播报
+  var _origDoConfirmState = window.doConfirmState;
+  window.doConfirmState = async function () {
+    var s = (window.state && state.pendingStatus) || "";
+    var r = (typeof _origDoConfirmState === "function") ? await _origDoConfirmState.apply(this, arguments) : undefined;
+    try { speakEn("Status changed to " + s); } catch (e) {}
+    return r;
+  };
+})();
+</script>
+
 </body>
 </html>

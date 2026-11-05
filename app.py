@@ -434,18 +434,40 @@ def parse_coords_text(text):
     return None
 
 
+_COORD_PATTERNS = [
+    (r"!3d(-?\d{1,3}\.\d+)!4d(-?\d{1,3}\.\d+)", False),
+    (r"!2d(-?\d{1,3}\.\d+)!3d(-?\d{1,3}\.\d+)", True),
+    (r"[?&](?:q|query|ll|sll|center|destination|daddr|saddr)=(-?\d{1,3}\.\d+)\s*[,،]\s*(-?\d{1,3}\.\d+)", False),
+    (r"@(-?\d{1,3}\.\d+),(-?\d{1,3}\.\d+)", False),
+    (r"\[\s*null\s*,\s*null\s*,\s*(-?\d{1,3}\.\d+)\s*,\s*(-?\d{1,3}\.\d+)\s*\]", False),
+    (r'"lat"\s*:\s*(-?\d{1,3}\.\d+)\s*,\s*"lng"\s*:\s*(-?\d{1,3}\.\d+)', False),
+    (r"(-?\d{1,3}\.\d{3,})\s*,\s*(-?\d{1,3}\.\d{3,})", False),
+]
+
+
 def parse_link_coords(text):
-    """从 Google Maps 链接提取坐标：@lat,lng / ?q=lat,lng / !3d..!4d"""
+    """从 Google Maps 链接/网页内容提取坐标。
+    兼容：!3d..!4d..、!2d..!3d..、?q=/query=/ll=/center=/destination=、
+    /@lat,lng、页面内 [null,null,lat,lng]、"lat":..,"lng":..、以及裸坐标对。"""
     s = str(text or "")
-    m = re.search(r"!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)", s)
-    if m:
-        return (float(m.group(1)), float(m.group(2)))
-    m = re.search(r"[?&]q=(-?\d+\.\d+),(-?\d+\.\d+)", s)
-    if m:
-        return (float(m.group(1)), float(m.group(2)))
-    m = re.search(r"@(-?\d+\.\d+),(-?\d+\.\d+)", s)
-    if m:
-        return (float(m.group(1)), float(m.group(2)))
+    if not s:
+        return None
+    try:
+        s = urllib.parse.unquote(s)
+    except Exception:
+        pass
+    for pat, swap in _COORD_PATTERNS:
+        m = re.search(pat, s)
+        if not m:
+            continue
+        try:
+            a, b = float(m.group(1)), float(m.group(2))
+        except Exception:
+            continue
+        if swap:
+            a, b = b, a
+        if -90.0 <= a <= 90.0 and -180.0 <= b <= 180.0:
+            return (a, b)
     return None
 
 
@@ -455,20 +477,43 @@ def resolve_shop_location(link, coords_text):
     c = parse_coords_text(coords_text)
     if c:
         return c[0], c[1], (link or "").strip()
-    if link:
-        c = parse_link_coords(link)
-        if c:
-            return c[0], c[1], link.strip()
+    link = (link or "").strip()
+    if not link:
+        return None, None, ""
+    # 1) 链接本身已带坐标（含 URL 编码与各种分享参数）
+    c = parse_link_coords(link)
+    if c:
+        return c[0], c[1], link
+    # 2) 链接里夹了裸坐标文本
+    c = parse_coords_text(link)
+    if c:
+        return c[0], c[1], link
+    # 3) 短链（maps.app.goo.gl / goo.gl/maps / g.co/kgs）：跟随重定向，并从最终 URL 与页面内容里挖坐标
+    candidates = [link]
+    if not re.match(r"^https?://", link, re.I):
+        candidates.insert(0, "https://" + link)
+    headers = {
+        "User-Agent": ("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+                       "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 "
+                       "Mobile/15E148 Safari/604.1"),
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+    }
+    for u in candidates:
         try:
-            req = urllib.request.Request(link, headers={"User-Agent": "Mozilla/5.0"})
-            with urllib.request.urlopen(req, timeout=6) as resp:
+            req = urllib.request.Request(u, headers=headers)
+            with urllib.request.urlopen(req, timeout=10) as resp:
                 final_url = resp.geturl()
-            c = parse_link_coords(final_url)
+                try:
+                    body = resp.read(400000).decode("utf-8", "ignore")
+                except Exception:
+                    body = ""
+            c = parse_link_coords(final_url) or parse_link_coords(body)
             if c:
-                return c[0], c[1], link.strip()
+                return c[0], c[1], link
         except Exception:
-            pass
-    return None, None, (link or "").strip()
+            continue
+    return None, None, link
 
 
 def now_str():

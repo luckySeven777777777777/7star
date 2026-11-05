@@ -944,7 +944,13 @@ function renderMulti(results, silent) {
   if (_guideEtaMarker) { try { map.removeLayer(_guideEtaMarker); } catch (e) {} _guideEtaMarker = null; }
   updateRouteInfo(null);
 
-  var okItems = results.filter(function (x) { return x.ok && x.track && x.track.length > 0; });
+  function _isFinalStatus(s) { return s === "ပယ်ဖျက်ထားသည်" || s === "လက်ခံပြီးပါပြီ"; }
+  var okItems = results.filter(function (x) {
+    if (!x.ok) return false;
+    if (x.track && x.track.length > 0) return true;
+    // 骑手确认/取消后不再上报位置时，终态订单依然要在地图上显示 ✅ / ❌
+    return _isFinalStatus(x.status) && x.shop_lat !== null && x.shop_lat !== undefined && x.shop_lng !== null && x.shop_lng !== undefined;
+  });
   var html = "";
   results.forEach(function (x) {
     if (x.ok) {
@@ -955,13 +961,14 @@ function renderMulti(results, silent) {
       var sr = (x.shop_received || 0);
       var dateTxt = x.update_time ? String(x.update_time).slice(0, 10) : "-";
       var stTxt = (x.status && x.status !== "待取餐") ? x.status : "-";
+      var stIcon = (x.status === "လက်ခံပြီးပါပြီ") ? "✅ " : ((x.status === "ပယ်ဖျက်ထားသည်") ? "❌ " : "");
       var addrTxt = x.delivery_address || "-";
       html += '<div class="multi-card ok">' +
         'Date：' + dateTxt + '<br>' +
         'Name：🛵 <b>' + (x.rider_name || "-") + '</b><br>' +
         'Order：' + x.order_no + ' · City:' + (x.city || "-") + '<br>' +
         'ပို့ရမည့်လိပ်စာ：' + addrTxt + '<br>' +
-        stTagHtml(stTxt) + '<br>' +
+        stTagHtml(stIcon + stTxt) + '<br>' +
         'ကျန်ရှိသောပေါက်စီအလုံးအရေတွက်：' + (bt - br) + ' / ' + bt + '<br>' +
         'ကျန်ရှိသောဆိုင်အရေတွက်：' + (st - sr) + ' / ' + st + '<br>' +
         'ငွေပေးချေမှုနည်းလမ်း：' + (x.payment_method || "-") + '<br>' +
@@ -1000,10 +1007,15 @@ function renderMulti(results, silent) {
   var seen = {};
   okItems.forEach(function (x, idx) {
     var color = MULTI_COLORS[idx % MULTI_COLORS.length];
-    var latLngs = x.track.map(function (p) { return [p.lat, p.lng]; });
+    var _trk = x.track || [];
+    var latLngs = _trk.map(function (p) { return [p.lat, p.lng]; });
     allPts = allPts.concat(latLngs);
-    L.polyline(latLngs, { color: color, weight: 4 }).addTo(multiGroup);
-    var latest = latLngs[latLngs.length - 1];
+    if (latLngs.length > 0) {
+      L.polyline(latLngs, { color: color, weight: 4 }).addTo(multiGroup);
+    }
+    var latest = latLngs.length > 0 ? latLngs[latLngs.length - 1] : null;
+    if (!latest && x.shop_lat !== null && x.shop_lat !== undefined && x.shop_lng !== null && x.shop_lng !== undefined) latest = [x.shop_lat, x.shop_lng];
+    if (latest) allPts.push(latest); // 终态订单也纳入视野，避免 ✅/❌ 落在屏幕外
     var addr = x.latest ? (x.latest.address || (x.latest.lat.toFixed(6) + ", " + x.latest.lng.toFixed(6))) : "-";
     var popupHtml = '<b>' + (x.rider_name || "-") + '</b><br>' +
       'Order Number：' + x.order_no + '<br>' +
@@ -1074,6 +1086,58 @@ function renderMulti(results, silent) {
   } else if (allPts.length > 0) {
     _routeBounds = L.latLngBounds(allPts);
   }
+  loadTodayFinal();
+}
+
+// ===== 今日已完成 / 已取消兜底：即使没有轨迹点，也在地图上画 ✅ / ❌（手机、电脑表现一致）=====
+var finalGroup = null, finalMarkers = {};
+function loadTodayFinal() {
+  if (!map) return;
+  if (!finalGroup) finalGroup = L.layerGroup().addTo(map);
+  Promise.all([
+    fetch("/api/today-completed").then(function (r) { return r.json(); }).catch(function () { return null; }),
+    fetch("/api/today-cancelled").then(function (r) { return r.json(); }).catch(function () { return null; })
+  ]).then(function (arr) {
+    var items = [];
+    if (arr[0] && arr[0].ok) {
+      (arr[0].completed || []).forEach(function (o) {
+        items.push({ order_no: o.order_no, lat: (o.lat !== undefined && o.lat !== null) ? o.lat : o.shop_lat, lng: (o.lng !== undefined && o.lng !== null) ? o.lng : o.shop_lng, kind: "done" });
+      });
+    }
+    if (arr[1] && arr[1].ok) {
+      (arr[1].cancelled || []).forEach(function (o) {
+        items.push({ order_no: o.order_no, lat: (o.lat !== undefined && o.lat !== null) ? o.lat : o.shop_lat, lng: (o.lng !== undefined && o.lng !== null) ? o.lng : o.shop_lng, kind: "cancel" });
+      });
+    }
+    applyTodayFinal(items);
+  }).catch(function () {});
+}
+function applyTodayFinal(items) {
+  if (!map || !finalGroup) return;
+  var seen = {};
+  items.forEach(function (o) {
+    if (!o.order_no || o.lat === null || o.lat === undefined || o.lng === null || o.lng === undefined) return;
+    var key = o.order_no;
+    if (multiMarkers[key] && multiMarkers[key]._finalMarker) return; // 轨迹渲染已画过 ✅/❌
+    seen[key] = true;
+    var popup = (o.kind === "cancel" ? "❌ 已取消" : "✅ 已完成") + "<br>Order：<b>" + o.order_no + "</b>";
+    var mk = finalMarkers[key];
+    if (mk) {
+      mk.setLatLng([o.lat, o.lng]);
+      mk.setIcon(doneIcon(o.order_no, o.kind));
+      mk.setPopupContent(popup);
+    } else {
+      mk = L.marker([o.lat, o.lng], { icon: doneIcon(o.order_no, o.kind) }).addTo(finalGroup);
+      mk.bindPopup(popup);
+      finalMarkers[key] = mk;
+    }
+  });
+  Object.keys(finalMarkers).forEach(function (k) {
+    if (!seen[k]) {
+      try { finalGroup.removeLayer(finalMarkers[k]); } catch (e) {}
+      delete finalMarkers[k];
+    }
+  });
 }
 
 // 多骑手 marker 平滑移动（模拟实时行驶）
@@ -1637,26 +1701,88 @@ function ringBell() {
   } catch (e) {}
 }
 
-function speakNewOrder() {
-  if (!bellState.sound) return;
+// ---------- 中文女声播报（手机端必须先在用户手势内解锁，否则静默） ----------
+function pickZhFemaleVoice() {
+  var vs = (window.speechSynthesis && speechSynthesis.getVoices && speechSynthesis.getVoices()) || [];
+  var rx = /female|woman|xiaoxiao|xiaoyi|xiaohan|xiaomo|huihui|yaoyao|tingting|meijia|lili|hanhan|google 普通话|google zh|中文/i;
+  var i, v;
+  for (i = 0; i < vs.length; i++) {
+    v = vs[i];
+    if (v.lang && v.lang.toLowerCase().indexOf("zh") === 0 && rx.test(v.name)) return v;
+  }
+  for (i = 0; i < vs.length; i++) {
+    v = vs[i];
+    if (v.lang && v.lang.toLowerCase().indexOf("zh") === 0) return v;
+  }
+  return null;
+}
+// 订单号中文逐位读法：1105 -> 一，零，五（避免读成"一千一百零五"）
+function spellZhNo(text) {
+  var m = { "0": "零", "1": "一", "2": "二", "3": "三", "4": "四",
+            "5": "五", "6": "六", "7": "七", "8": "八", "9": "九" };
+  var s = String(text || "").toUpperCase(), out = [];
+  for (var i = 0; i < s.length; i++) {
+    var ch = s.charAt(i);
+    if (m[ch]) out.push(m[ch]);
+    else if (/[A-Z]/.test(ch)) out.push(ch);
+  }
+  return out.join("，");
+}
+var _zhQ = [], _zhSpeaking = false;
+function speakZh(text) {
+  if (!bellState.sound || !text) return;
   try {
-    var u = new SpeechSynthesisUtterance("你有新的订单，请注意查看");
-    var vs = speechSynthesis.getVoices();
-    var v = null, i;
-    for (i = 0; i < vs.length; i++) { var vv = vs[i]; if (vv.lang && vv.lang.indexOf("zh") === 0 && /female|woman|xiaoxiao|huihui|yaoyao|tingting|meijia|lili|hanhan/i.test(vv.name)) { v = vv; break; } }
-    if (!v) { for (i = 0; i < vs.length; i++) { var vv2 = vs[i]; if (vv2.lang && vv2.lang.indexOf("zh") === 0) { v = vv2; break; } } }
-    if (!v) { for (i = 0; i < vs.length; i++) { var vv3 = vs[i]; if (vv3.lang && vv3.lang.indexOf("en") === 0 && /female|woman|zira|samantha|susan/i.test(vv3.name)) { v = vv3; break; } } }
-    if (!v) { for (i = 0; i < vs.length; i++) { var vv4 = vs[i]; if (vv4.lang && vv4.lang.indexOf("en") === 0) { v = vv4; break; } } }
-    if (v) { u.voice = v; } else { u.lang = "zh-CN"; }
-    speechSynthesis.cancel();
-    speechSynthesis.speak(u);
+    if (!window.speechSynthesis || !window.SpeechSynthesisUtterance) return;
+    try { speechSynthesis.getVoices(); } catch (e0) {}
+    _zhQ.push(text);
+    if (_zhSpeaking) return;
+    _speakZhNext();
   } catch (e) {}
+}
+function _speakZhNext() {
+  if (!_zhQ.length) { _zhSpeaking = false; return; }
+  _zhSpeaking = true;
+  var text = _zhQ.shift();
+  try {
+    var u = new SpeechSynthesisUtterance(text);
+    var v = pickZhFemaleVoice();
+    if (v) { u.voice = v; u.lang = v.lang || "zh-CN"; } else { u.lang = "zh-CN"; }
+    u.rate = 1; u.pitch = 1.15; u.volume = 1;
+    var advanced = false;
+    function next() {
+      if (advanced) return;
+      advanced = true;
+      _zhSpeaking = false;
+      setTimeout(_speakZhNext, 150);
+    }
+    u.onend = next;
+    u.onerror = next;
+    speechSynthesis.speak(u);
+    // 兜底：部分手机 onend 不触发
+    setTimeout(next, Math.max(2600, text.length * 220));
+  } catch (e) { _zhSpeaking = false; }
+}
+if (window.speechSynthesis && speechSynthesis.onvoiceschanged !== undefined) {
+  speechSynthesis.onvoiceschanged = function () { try { speechSynthesis.getVoices(); } catch (e) {} };
+}
+// 每条新订单 / 每次状态变化都用中文女声播报一次订单号
+function speakNotify(it) {
+  if (!bellState.sound || !it) return;
+  var no = spellZhNo(it.order_no || "");
+  var t = it.type || "";
+  var txt;
+  if (t === "order") { txt = "您有新的订单，订单号 " + no + "，请注意查看"; }
+  else if (t === "bind") { txt = "骑手已接单，订单号 " + no; }
+  else if (t === "done") { txt = "订单已完成，订单号 " + no; }
+  else if (t === "cancel") { txt = "订单已取消，订单号 " + no; }
+  else { txt = "订单通知，订单号 " + no; }
+  speakZh(txt);
 }
 
 function processBellIncoming(list) {
   if (!list || list.length === 0) return;
   var maxId = bellState.after_id;
-  var fresh = 0;   // 每条新通知（新订单 / 已接单 / 已完成 / 已取消）都算一条新消息
+  var freshItems = [];   // 每条新通知（新订单 / 已接单 / 已完成 / 已取消）都单独播报一次
   list.forEach(function (it) {
     if (it.id > maxId) maxId = it.id;
     if (it.id <= bellState.after_id) return;
@@ -1664,16 +1790,16 @@ function processBellIncoming(list) {
     if (bellState.items.length > 60) bellState.items.shift();
     var no = it.order_no || "";
     if (no) bellState.orderNos[no] = true;
-    fresh += 1;
+    freshItems.push(it);
   });
   bellState.after_id = maxId;
-  if (fresh > 0) {
-    bellState.count += fresh;
+  if (freshItems.length > 0) {
+    bellState.count += freshItems.length;
     var badge = document.getElementById("bellBadge");
     badge.style.display = "block";
     badge.textContent = bellState.count;
     ringBell();
-    speakNewOrder();
+    freshItems.forEach(function (it) { speakNotify(it); });
   }
   renderBellList();
 }

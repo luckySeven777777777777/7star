@@ -479,9 +479,18 @@ function resolveShopLocation() {
   if (c) return c;
   return decodePlusCode(document.getElementById("shopLocationPlusCode").value);
 }
+// 手机端粘贴 Google 链接常带换行、空格、夹带店名等文本，提交前统一清理成纯 URL
+function cleanLinkInput(v) {
+  var s = String(v || "").replace(/[\u200b\u00a0\r\n\t]/g, " ").trim();
+  var m = s.match(/https?:\/\/[^\s"'<>）)】\]，,；;]+/i);
+  if (m) s = m[0];
+  s = s.replace(/^[\s"'“”‘’<>【】\[\]()（）]+/, "").replace(/[.,;:!?，。；：！？]+$/, "");
+  if (s && !/^https?:\/\//i.test(s)) s = "https://" + s.replace(/^\/+/, "");
+  return s;
+}
 async function updateShopLocation() {
   if (!state.orderNo) { showInfo("Bind an order first"); return; }
-  var link = document.getElementById("shopLocationLink").value.trim();
+  var link = cleanLinkInput(document.getElementById("shopLocationLink").value);
   var coords = document.getElementById("shopLocationCoords").value.trim();
   var plus = document.getElementById("shopLocationPlusCode").value.trim();
   if (!link && !coords && !plus) { showInfo("Enter Google Maps Link, Coordinates or Plus Code"); return; }
@@ -489,6 +498,9 @@ async function updateShopLocation() {
     var pc = decodePlusCode(plus);
     if (pc) { coords = pc[0].toFixed(6) + ", " + pc[1].toFixed(6); }
   }
+  var btn = document.getElementById("updateShopBtn");
+  var oldTxt = btn ? btn.textContent : "";
+  if (btn) { btn.disabled = true; btn.textContent = "Resolving link..."; }
   try {
     var r = await fetch("/api/rider/update-shop", {
       method: "POST",
@@ -502,10 +514,12 @@ async function updateShopLocation() {
       document.getElementById("shopHint").style.display = "none";
       showInfo("Shop location updated - marker & route shown");
     } else {
-      showInfo("Cannot resolve shop location, check link/coords");
+      showInfo("Cannot resolve this link. Paste the full https://www.google.com/maps/place/... URL (open the short link in browser first), or enter Coordinates / store name.");
     }
   } catch (e) {
     showInfo("Server unreachable");
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = oldTxt; }
   }
 }
 function doneRiderIcon(orderNo) {
@@ -779,16 +793,54 @@ function pickFemaleVoice() {
   } catch (e) {}
   return null;
 }
+// 订单号英文逐位读法：避免 "1105" 被读成 one thousand one hundred five（金额读法）
+// 数字 -> 英文单词，字母 -> 单独大写字母；用逗号分隔，强制 TTS 逐位停顿而不是合并成数字
+function spellOrderNo(text) {
+  var m = { "0": "zero", "1": "one", "2": "two", "3": "three", "4": "four",
+            "5": "five", "6": "six", "7": "seven", "8": "eight", "9": "nine" };
+  var s = String(text || "").toUpperCase(), out = [];
+  for (var i = 0; i < s.length; i++) {
+    var ch = s.charAt(i);
+    if (m[ch]) out.push(m[ch]);
+    else if (/[A-Z]/.test(ch)) out.push(ch);
+  }
+  if (!out.length) return "";
+  return out.join(", ");
+}
+var _speakQ = [], _speaking = false;
 function speakText(text) {
   try {
     if (!window.speechSynthesis || !window.SpeechSynthesisUtterance) return;
+    if (!text) return;
+    // 语音列表异步加载：先取一次，避免首次播报拿不到女声
+    try { speechSynthesis.getVoices(); } catch (e0) {}
+    _speakQ.push(text);
+    if (_speaking) return;
+    _speakNext();
+  } catch (e) {}
+}
+function _speakNext() {
+  if (!_speakQ.length) { _speaking = false; return; }
+  _speaking = true;
+  var text = _speakQ.shift();
+  try {
     var u = new SpeechSynthesisUtterance(text);
     var v = pickFemaleVoice();
     if (v) { u.voice = v; u.lang = v.lang || "en-US"; } else { u.lang = "en-US"; }
     u.rate = 1; u.pitch = 1.15; u.volume = 1;
-    try { speechSynthesis.cancel(); } catch (e2) {}
+    var advanced = false;
+    function next() {
+      if (advanced) return;
+      advanced = true;
+      _speaking = false;
+      setTimeout(_speakNext, 120);
+    }
+    u.onend = next;
+    u.onerror = next;
     speechSynthesis.speak(u);
-  } catch (e) {}
+    // 兜底：部分手机 onend 不触发，按文本长度估算后继续下一条
+    setTimeout(next, Math.max(2600, text.length * 95));
+  } catch (e) { _speaking = false; }
 }
 function unlockVoice() {
   if (voiceUnlocked) return;
@@ -1042,7 +1094,7 @@ async function bindOrder() {
     document.getElementById("bindBtn").disabled = true;
     document.getElementById("bindBtn").textContent = "ချိတ်ဆက်ပြီးပါပြီ";
     // 新订单语音播报（女声）
-    speakText("New order " + orderNo + ". Please start delivery.");
+    speakText("New order. Number, " + spellOrderNo(orderNo) + ". Please start delivery.");
     // 显示骑手端地图：商家位置 + 骑手自身位置 + 绿色路线
     showRiderMap();
     if (j.shop_lat !== null && j.shop_lat !== undefined) {
@@ -1323,7 +1375,7 @@ async function doConfirmDelivered() {
     saveLockLocal();
     showInfo("လက်ခံပြီးပါပြီ။ ဤအမှာစာ ပြီးဆုံးပါပြီ။ အမှာစာအသစ် ချိတ်ဆက်/ဖန်တီးနိုင်ပါပြီ");
     // 语音播报成功（手机端已在用户点击时解锁）
-    speakText("Order " + doneNo + " completed. Please check the green check mark on the map.");
+    speakText("Order completed. Number, " + spellOrderNo(doneNo) + ". Please check the green check mark on the map.");
     // 订单完成后重置本端状态，允许重新绑定新订单；保留"已完成"提示与地图 ✅ 标记
     resetAfterCompletion(doneNo);
     refreshRiderInfo();

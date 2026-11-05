@@ -957,7 +957,10 @@ def rider_confirm():
     if not tg_ok and text_sent:
         tg_ok, tg_msg = True, "text sent"
     conn.close()
-    return jsonify({"ok": True, "msg": "လက်ခံပြီးပါပြီ", "status": "လက်ခံပြီးပါပြီ", "completed_at": now_str(), "baozi_received": new_baozi, "shop_received": new_shop, "payment_method": payment_method, "amount": amount, "telegram": tg_ok, "telegram_msg": tg_msg})
+    _rem_bt_all, _, _rem_st_all, _ = order_counts(order_dict)
+    _rem_bt = max(_rem_bt_all - new_baozi, 0)
+    _rem_st = max(_rem_st_all - new_shop, 0)
+    return jsonify({"ok": True, "msg": "လက်ခံပြီးပါပြီ", "status": "လက်ခံပြီးပါပြီ", "completed_at": now_str(), "baozi_received": new_baozi, "baozi_remaining": _rem_bt, "baozi_total_orig": _rem_bt_all, "shop_remaining": _rem_st, "shop_total_orig": _rem_st_all, "shop_received": new_shop, "payment_method": payment_method, "amount": amount, "telegram": tg_ok, "telegram_msg": tg_msg})
 
 
 @app.route("/api/rider/cancel", methods=["POST"])
@@ -1670,6 +1673,97 @@ def admin_set_status_all():
     conn.commit()
     conn.close()
     return jsonify({"ok": True, "msg": "All rider accounts set to " + status + "."})
+
+
+# ================= 手机 / 电脑 功能一致性补丁 =================
+# 说明：全局禁用缓存（手机端不会读到旧页面/旧接口），并补充“剩余数量”“今日已完成/已取消标记”接口
+APP_VERSION = "20261105-v1"
+
+
+@app.after_request
+def _patch_no_cache(resp):
+    try:
+        ctype = (resp.headers.get("Content-Type") or "")
+        if request.path.startswith("/api/") or "text/html" in ctype:
+            resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+            resp.headers["Pragma"] = "no-cache"
+            resp.headers["Expires"] = "0"
+    except Exception:
+        pass
+    return resp
+
+
+@app.route("/api/version", methods=["GET"])
+def _patch_version():
+    return jsonify({"ok": True, "version": APP_VERSION, "server_time": now_str()})
+
+
+@app.route("/api/rider/remaining", methods=["GET"])
+def _patch_rider_remaining():
+    """返回某骑手最新一单 / 指定订单的原始总量与剩余数量（分母永不扣减）"""
+    phone = (request.args.get("phone") or "").strip()
+    order_no = (request.args.get("order_no") or "").strip()
+    if not phone and not order_no:
+        return jsonify({"ok": False, "msg": "phone required"}), 400
+    conn = get_db()
+    cur = conn.cursor()
+    od = None
+    if order_no:
+        cur.execute(_q("SELECT * FROM orders WHERE order_no=?"), (order_no,))
+        r = cur.fetchone()
+        if r:
+            od = _row_to_dict(cur, r)
+    if od is None and phone:
+        cur.execute(_q("SELECT o.* FROM orders o JOIN order_history h ON h.order_no=o.order_no WHERE h.rider_phone=? ORDER BY h.id DESC LIMIT 1"), (phone,))
+        r = cur.fetchone()
+        if r:
+            od = _row_to_dict(cur, r)
+    conn.close()
+    if not od:
+        return jsonify({"ok": False, "msg": "no order"}), 404
+    bt, br, st, sr = order_counts(od)
+    return jsonify({
+        "ok": True,
+        "order_no": od.get("order_no") or "",
+        "status": od.get("status") or "",
+        "completed_at": od.get("completed_at") or "",
+        "baozi_total_orig": bt, "baozi_received": br, "baozi_remaining": max(bt - br, 0),
+        "shop_total_orig": st, "shop_received": sr, "shop_remaining": max(st - sr, 0),
+        "server_time": now_str(),
+    })
+
+
+@app.route("/api/today-marks", methods=["GET"])
+def _patch_today_marks():
+    """今日已完成 ✅ / 已取消 ❌ 全量标记（管理员页与骑手端地图保持一致；取消不隐藏已完成店）"""
+    day = (request.args.get("day") or "").strip() or now_str()[:10]
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute(_q("SELECT order_no, shop_lat, shop_lng, status, completed_at FROM orders "
+                   "WHERE completed_at LIKE ? AND status IN ('လက်ခံပြီးပါပြီ','ပယ်ဖျက်ထားသည်') "
+                   "ORDER BY completed_at DESC LIMIT 300"), (day + "%",))
+    rows = [_row_to_dict(cur, r) for r in cur.fetchall()]
+    done, cancelled = [], []
+    for o in rows:
+        lat, lng = o.get("shop_lat"), o.get("shop_lng")
+        if lat is None or lng is None:
+            cur.execute(_q("SELECT lat,lng FROM locations WHERE order_no=? ORDER BY id DESC LIMIT 1"), (o.get("order_no"),))
+            pp = cur.fetchone()
+            if pp:
+                pd = _row_to_dict(cur, pp)
+                lat, lng = pd.get("lat"), pd.get("lng")
+        name = ""
+        cur.execute(_q("SELECT rider_name FROM order_history WHERE order_no=? ORDER BY id DESC LIMIT 1"), (o.get("order_no"),))
+        hr = cur.fetchone()
+        if hr:
+            name = (_row_to_dict(cur, hr).get("rider_name") or "")
+        item = {"order_no": o.get("order_no"), "lat": lat, "lng": lng, "rider_name": name, "time": o.get("completed_at") or ""}
+        if (o.get("status") or "") == "လက်ခံပြီးပါပြီ":
+            done.append(item)
+        else:
+            cancelled.append(item)
+    conn.close()
+    return jsonify({"ok": True, "day": day, "done": done, "cancelled": cancelled})
 
 
 if __name__ == "__main__":

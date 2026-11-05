@@ -111,10 +111,7 @@ def send_telegram_text(text):
 
 def build_proof_caption(order_no, phone, order_dict, rider_name, latest):
     """组装 Telegram 通知内容：订单信息 + 扣减后的剩余数量 + 最新位置（与订单记录一致）"""
-    baozi_total = int(order_dict.get("baozi_total") or 0)
-    baozi_received = int(order_dict.get("baozi_received") or 0)
-    shop_total = int(order_dict.get("shop_total") or 0)
-    shop_received = int(order_dict.get("shop_received") or 0)
+    baozi_total, baozi_received, shop_total, shop_received = order_counts(order_dict)
     loc_text = "-"
     if latest:
         loc_text = latest.get("address") or ("%.6f, %.6f" % (latest["lat"], latest["lng"]))
@@ -375,10 +372,22 @@ def ensure_order_columns():
         "shop_lng": "REAL",
         "shop_link": "TEXT DEFAULT ''",
         "completed_at": "TEXT",
+        # 骑手最初输入的原始总量：只写一次，之后永不参与扣减，显示分母永远用它
+        "baozi_total_orig": "INTEGER DEFAULT 0",
+        "shop_total_orig": "INTEGER DEFAULT 0",
     }
     for col, ddl in cols.items():
         try:
             cur.execute(_q("ALTER TABLE orders ADD COLUMN " + col + " " + ddl))
+        except Exception:
+            pass
+    # 一次性迁移：把现有总量固化为原始输入量（之后 total 与本列都不再被扣减）
+    for _col in ("baozi_total", "shop_total"):
+        try:
+            cur.execute(_q(
+                "UPDATE orders SET " + _col + "_orig = " + _col +
+                " WHERE (" + _col + "_orig IS NULL OR " + _col + "_orig = 0) AND " + _col + " > 0"
+            ))
         except Exception:
             pass
     conn.commit()
@@ -386,6 +395,33 @@ def ensure_order_columns():
 
 
 ensure_order_columns()
+
+
+def _to_int(v):
+    try:
+        return int(float(v))
+    except (TypeError, ValueError):
+        return 0
+
+
+def order_counts(od):
+    """统一数量口径：总量（分母）永远取骑手最初输入量，绝不被扣减；remaining = 总量 - 已收"""
+    total_bt = _to_int(od.get("baozi_total"))
+    total_st = _to_int(od.get("shop_total"))
+    orig_bt = _to_int(od.get("baozi_total_orig"))
+    orig_st = _to_int(od.get("shop_total_orig"))
+    br = _to_int(od.get("baozi_received"))
+    sr = _to_int(od.get("shop_received"))
+    # 分母 = 原始输入量的最大值：老数据 orig 缺失或曾被扣减时，用 total/received 兜底，绝不小于任何已知量
+    bo = max(orig_bt, total_bt, br)
+    so = max(orig_st, total_st, sr)
+    return bo, br, so, sr
+
+
+def orig_counts(od):
+    """独立返回原始总量（分母专用），与已收数量无关"""
+    bo, br, so, sr = order_counts(od)
+    return bo, so
 
 
 def parse_coords_text(text):
@@ -507,25 +543,85 @@ def reverse_geocode(lat, lng):
 
 
 # ==================== 账号认证辅助 ====================
-def get_current_user():
-    """从请求头(Authorization)或 Cookie 中解析当前登录用户，未登录/被禁返回 None"""
-    token = (request.headers.get("Authorization") or "").replace("Bearer ", "").strip()
-    if not token:
-        token = (request.cookies.get("token") or "").strip()
-    if not token:
-        return None
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute(_q("SELECT * FROM users WHERE token=? AND status='normal'"), (token,))
-    user = cur.fetchone()
-    ud = _row_to_dict(cur, user) if user else None
-    conn.close()
-    return ud
+# 登录态域：admin=商家管理后台(/track)，rider=骑手端(/rider)。Cookie 也按域分开，彻底避免互相顶号
+AUTH_COOKIE_ADMIN = "admin_token"
+AUTH_COOKIE_RIDER = "rider_token"
+
+# 仰光市中心默认坐标：订单无任何坐标时用于兜底显示标记，保证地图标记不丢失
+DEFAULT_MAP_LAT = 16.8661
+DEFAULT_MAP_LNG = 96.1951
+
+
+def _page_scope():
+    """从请求头 X-Page（/track 商家、/rider 骑手）或查询参数解析登录域。
+    前端两个页面都会显式带上该头，后端据此只认本域 cookie，彻底避免串号。"""
+    p = (request.headers.get("X-Page") or request.args.get("page") or "").strip().lower()
+    if p in ("track", "admin"):
+        return "admin"
+    if p == "rider":
+        return "rider"
+    return None
+
+
+def _token_candidates(scope=None):
+    """按登录域给出 token 候选顺序（去重）：
+    商家域 admin_token → Authorization；骑手域 rider_token → Authorization；
+    未指定域则 Authorization → admin_token → rider_token → 老版 token。"""
+    scope = scope or _page_scope()
+    auth = (request.headers.get("Authorization") or "").replace("Bearer ", "").strip()
+    ck_admin = (request.cookies.get(AUTH_COOKIE_ADMIN) or "").strip()
+    ck_rider = (request.cookies.get(AUTH_COOKIE_RIDER) or "").strip()
+    ck_old = (request.cookies.get("token") or "").strip()
+    if scope == "rider":
+        seq = [ck_rider, auth]
+    elif scope == "admin":
+        seq = [ck_admin, auth]
+    else:
+        seq = [auth, ck_admin, ck_rider, ck_old]
+    out = []
+    for t in seq:
+        if t and t not in out:
+            out.append(t)
+    return out
+
+
+def _token_from_request(scope=None):
+    """取该域的首选 token；域明确时以该域专属 Cookie 为准，Authorization 兜底。"""
+    seq = _token_candidates(scope)
+    return seq[0] if seq else ""
+
+
+def get_current_user(scope=None, allow_any_role=False):
+    """从请求头(Authorization)或按域 Cookie 解析当前登录用户，未登录/被禁返回 None。
+    scope: 'admin' 仅商家/管理员域，'rider' 仅骑手域；None 表示任一域。
+    allow_any_role: 为 True 时不校验角色与域是否匹配（页面壳层放行用）。
+    同一浏览器里商家与骑手各持独立 token、各自独立 Cookie，本函数只在本域内查找，
+    绝不会把骑手的登录态当成商家登录态。"""
+    scope = scope or _page_scope()
+    for token in _token_candidates(scope):
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute(_q("SELECT * FROM users WHERE token=? AND status='normal'"), (token,))
+        user = cur.fetchone()
+        ud = _row_to_dict(cur, user) if user else None
+        conn.close()
+        if not ud:
+            continue
+        if allow_any_role:
+            return ud
+        role = ud.get("role")
+        if scope == "rider" and role not in ("rider", "normal"):
+            continue
+        if scope == "admin" and role not in ("super_admin", "admin"):
+            continue
+        return ud
+    return None
+
 
 
 def require_admin():
     """仅超级管理员/管理员可调用；否则返回 None"""
-    u = get_current_user()
+    u = get_current_user(_page_scope() or "admin")
     if not u:
         return None
     if u.get("role") not in ("super_admin", "admin"):
@@ -546,14 +642,16 @@ def login_page():
 
 @app.route("/rider")
 def rider_page():
-    if not get_current_user():
+    # 只认骑手域（rider_token）：商家登录态绝不能放行进骑手页面，反之亦然
+    if not get_current_user("rider"):
         return redirect("/login?next=/rider")
     return render_template("rider.html")
 
 
 @app.route("/track")
 def track_page():
-    if not get_current_user():
+    # 只认商家域（admin_token）：骑手登录态绝不能放行进商家后台
+    if not get_current_user("admin"):
         return redirect("/login?next=/track")
     return render_template("track.html")
 
@@ -629,9 +727,28 @@ def rider_bind():
            "ON CONFLICT(phone) DO UPDATE SET name=excluded.name, order_no=excluded.order_no, rider_name=excluded.rider_name, gps_enabled=1, sim_mode=0"),
         (name, phone, order_no, rider_name),
     )
+    # 数量口径：分母 = 骑手最初输入的原始总量，写入 *_total_orig 后永久固定；
+    # 之后任何提交（包括剩余量回填）都不得覆盖它，只有「已收数量」参与扣减
+    old = _row_to_dict(cur, order)
+    old_bt = int(old.get("baozi_total") or 0)
+    old_br = int(old.get("baozi_received") or 0)
+    old_st = int(old.get("shop_total") or 0)
+    old_sr = int(old.get("shop_received") or 0)
+    old_bt_orig = int(old.get("baozi_total_orig") or 0)
+    old_st_orig = int(old.get("shop_total_orig") or 0)
+    baozi_orig = old_bt_orig or old_bt or 0
+    shop_orig = old_st_orig or old_st or 0
+    # 分母只增不减：骑手重新提交更大的原始总量时以新值为准（可自愈历史被误扣的分母），
+    # 提交较小值/空值一律不覆盖，保证「200/200」永远不被扣成 196/196
+    if baozi_total > baozi_orig:
+        baozi_orig = baozi_total
+    if shop_total > shop_orig:
+        shop_orig = shop_total
+    baozi_total = baozi_orig
+    shop_total = shop_orig
     cur.execute(
-        _q("UPDATE orders SET delivery_address=?, baozi_total=?, shop_total=?, city=?, gps_enabled=1, shop_lat=?, shop_lng=?, shop_link=? WHERE order_no=?"),
-        (delivery_address, baozi_total, shop_total, city, shop_lat, shop_lng, shop_link, order_no),
+        _q("UPDATE orders SET delivery_address=?, baozi_total=?, shop_total=?, baozi_total_orig=?, shop_total_orig=?, city=?, gps_enabled=1, shop_lat=?, shop_lng=?, shop_link=? WHERE order_no=?"),
+        (delivery_address, baozi_total, shop_total, baozi_orig, shop_orig, city, shop_lat, shop_lng, shop_link, order_no),
     )
     # 永久订单历史：每次绑定订单都记入 order_history（不因刷新/重绑丢失）
     cur.execute(_q("SELECT id FROM order_history WHERE order_no=? AND rider_phone=?"), (order_no, phone))
@@ -865,7 +982,7 @@ def rider_cancel():
         if not cur.fetchone():
             conn.close()
             return jsonify({"ok": False, "msg": "ဤဖုန်းနံပါတ်သည် ဤအမှာစာနှင့် ချိတ်ဆက်မထားပါ"}), 403
-    cur.execute(_q("UPDATE orders SET status='ပယ်ဖျက်ထားသည်' WHERE order_no=?"), (order_no,))
+    cur.execute(_q("UPDATE orders SET status='ပယ်ဖျက်ထားသည်', completed_at=? WHERE order_no=?"), (now_str(), order_no))
     cur.execute(_q("UPDATE riders SET order_no='', rider_name='' WHERE phone=? AND order_no=?"), (phone, order_no))
     # 保留订单历史：存在则更新骑手名与绑定时间，不存在则补记一条
     cur.execute(_q("SELECT id FROM order_history WHERE order_no=? AND rider_phone=?"), (order_no, phone))
@@ -912,6 +1029,7 @@ def rider_info():
     conn.close()
     if latest:
         latest["address"] = reverse_geocode(latest["lat"], latest["lng"])
+    _s_bt, _s_br, _s_st, _s_sr = order_counts(order_dict)
     return jsonify(
         {
             "ok": True,
@@ -924,10 +1042,14 @@ def rider_info():
             "city": order_dict.get("city", ""),
             "payment_method": order_dict.get("payment_method", ""),
             "amount": order_dict.get("amount", ""),
-            "baozi_total": order_dict.get("baozi_total", 0),
-            "shop_total": order_dict.get("shop_total", 0),
-            "baozi_received": order_dict.get("baozi_received", 0),
-            "shop_received": order_dict.get("shop_received", 0),
+            "baozi_total": _s_bt,
+            "shop_total": _s_st,
+            "baozi_received": _s_br,
+            "shop_received": _s_sr,
+            "baozi_remaining": _s_bt - _s_br,
+            "shop_remaining": _s_st - _s_sr,
+            "baozi_total_orig": _s_bt,
+            "shop_total_orig": _s_st,
             "gps_enabled": order_dict.get("gps_enabled", 1),
             "latest": latest,
         }
@@ -962,6 +1084,7 @@ def order_history_api():
         latest = _row_to_dict(cur, latest_row) if latest_row else None
         if latest:
             latest["address"] = reverse_geocode(latest["lat"], latest["lng"])
+        _h_bt, _h_br, _h_st, _h_sr = order_counts(od)
         history.append(
             {
                 "order_no": order_no,
@@ -973,12 +1096,14 @@ def order_history_api():
                 "city": od.get("city", "") or "",
                 "payment_method": od.get("payment_method", "") or "",
                 "amount": od.get("amount", "") or "",
-                "baozi_total": od.get("baozi_total", 0) or 0,
-                "shop_total": od.get("shop_total", 0) or 0,
-                "baozi_received": od.get("baozi_received", 0) or 0,
-                "shop_received": od.get("shop_received", 0) or 0,
-                "baozi_remaining": (od.get("baozi_total", 0) or 0) - (od.get("baozi_received", 0) or 0),
-                "shop_remaining": (od.get("shop_total", 0) or 0) - (od.get("shop_received", 0) or 0),
+                "baozi_total": _h_bt,
+                "shop_total": _h_st,
+                "baozi_received": _h_br,
+                "shop_received": _h_sr,
+                "baozi_remaining": _h_bt - _h_br,
+                "shop_remaining": _h_st - _h_sr,
+                "baozi_total_orig": _h_bt,
+                "shop_total_orig": _h_st,
                 "shop_link": od.get("shop_link", "") or "",
                 "shop_lat": od.get("shop_lat"),
                 "shop_lng": od.get("shop_lng"),
@@ -1050,6 +1175,7 @@ def track():
     conn.close()
     if latest:
         latest["address"] = reverse_geocode(latest["lat"], latest["lng"])
+    _d_bt, _d_br, _d_st, _d_sr = order_counts(order_dict)
     return jsonify(
         {
             "ok": True,
@@ -1068,12 +1194,14 @@ def track():
             "gps_enabled": order_dict.get("gps_enabled", 1),
             "created_at": order_dict.get("created_at", ""),
             "completed_at": order_dict.get("completed_at", "") or "",
-            "baozi_total": order_dict.get("baozi_total", 0),
-            "shop_total": order_dict.get("shop_total", 0),
-            "baozi_received": order_dict.get("baozi_received", 0),
-            "shop_received": order_dict.get("shop_received", 0),
-            "baozi_remaining": (order_dict.get("baozi_total", 0) or 0) - (order_dict.get("baozi_received", 0) or 0),
-            "shop_remaining": (order_dict.get("shop_total", 0) or 0) - (order_dict.get("shop_received", 0) or 0),
+            "baozi_total": _d_bt,
+            "shop_total": _d_st,
+            "baozi_received": _d_br,
+            "shop_received": _d_sr,
+            "baozi_remaining": _d_bt - _d_br,
+            "shop_remaining": _d_st - _d_sr,
+            "baozi_total_orig": _d_bt,
+            "shop_total_orig": _d_st,
             "latest": latest,
             "track": track_list,
             "update_time": latest["report_time"] if latest else None,
@@ -1101,6 +1229,42 @@ def admin_notifications():
     return jsonify({"ok": True, "notifications": out, "server_time": now_str()})
 
 
+@app.route("/api/today-cancelled", methods=["GET"])
+def today_cancelled():
+    """骑手端：返回今天（缅甸时间）被取消的订单，用于地图红圈 ❌ 标记（凌晨12点自动清零）"""
+    phone = (request.args.get("phone") or "").strip()
+    day = now_str()[:10]
+    conn = get_db()
+    cur = conn.cursor()
+    if phone:
+        cur.execute(_q("SELECT o.order_no, o.shop_lat, o.shop_lng, o.completed_at, h.rider_name "
+                       "FROM orders o JOIN order_history h ON h.order_no=o.order_no "
+                       "WHERE h.rider_phone=? AND o.status='ပယ်ဖျက်ထားသည်' AND o.completed_at LIKE ? "
+                       "ORDER BY o.completed_at DESC LIMIT 50"), (phone, day + "%"))
+    else:
+        cur.execute(_q("SELECT o.order_no, o.shop_lat, o.shop_lng, o.completed_at, '' AS rider_name FROM orders o "
+                       "WHERE o.status='ပယ်ဖျက်ထားသည်' AND o.completed_at LIKE ? "
+                       "ORDER BY o.completed_at DESC LIMIT 50"), (day + "%",))
+    rows = [_row_to_dict(cur, r) for r in cur.fetchall()]
+    out = []
+    for o in rows:
+        lat, lng = o.get("shop_lat"), o.get("shop_lng")
+        if lat is None or lng is None:
+            # 兜底1：该订单最后一次上报的位置；兜底2：仰光默认中心（保证 ❌ 标记一定画得出来）
+            cur.execute(_q("SELECT lat, lng FROM locations WHERE order_no=? ORDER BY id DESC LIMIT 1"), (o.get("order_no"),))
+            p = cur.fetchone()
+            if p:
+                pd = _row_to_dict(cur, p)
+                lat, lng = pd.get("lat"), pd.get("lng")
+        if lat is None or lng is None:
+            lat, lng = DEFAULT_MAP_LAT, DEFAULT_MAP_LNG
+        out.append({"order_no": o.get("order_no"), "lat": lat, "lng": lng,
+                    "shop_lat": lat, "shop_lng": lng, "cancel_time": o.get("completed_at"),
+                    "rider_name": o.get("rider_name") or ""})
+    conn.close()
+    return jsonify({"ok": True, "day": day, "cancelled": out})
+
+
 @app.route("/api/today-completed", methods=["GET"])
 def today_completed():
     """骑手端：返回今天（缅甸时间）已完成订单，用于地图确认打钩永久保留（凌晨12点自动清零）"""
@@ -1112,8 +1276,21 @@ def today_completed():
                    "WHERE o.status='လက်ခံပြီးပါပြီ' AND o.completed_at LIKE ? "
                    "AND o.order_no IN (SELECT order_no FROM order_history WHERE rider_phone=?)"),
                 (day + "%", phone))
-    rows = cur.fetchall()
-    out = _rows_to_dicts(cur, rows)
+    rows = [_row_to_dict(cur, r) for r in cur.fetchall()]
+    out = []
+    for o in rows:
+        lat, lng = o.get("shop_lat"), o.get("shop_lng")
+        if lat is None or lng is None:
+            cur.execute(_q("SELECT lat, lng FROM locations WHERE order_no=? ORDER BY id DESC LIMIT 1"), (o.get("order_no"),))
+            p = cur.fetchone()
+            if p:
+                pd = _row_to_dict(cur, p)
+                lat, lng = pd.get("lat"), pd.get("lng")
+        if lat is None or lng is None:
+            # 兜底：与取消标记一致，绝不让 ✅ 标记因缺坐标而消失
+            lat, lng = DEFAULT_MAP_LAT, DEFAULT_MAP_LNG
+        out.append({"order_no": o.get("order_no"), "lat": lat, "lng": lng,
+                    "shop_lat": lat, "shop_lng": lng, "completed_at": o.get("completed_at")})
     conn.close()
     return jsonify({"ok": True, "day": day, "completed": out})
 
@@ -1163,6 +1340,7 @@ def track_multi():
         track_list = _rows_to_dicts(cur, points)
         latest = track_list[-1] if track_list else None
         # 批量接口不串行调用逆地理编码（10-20 个骑手时避免阻塞），前端以坐标兜底显示
+        _m_bt, _m_br, _m_st, _m_sr = order_counts(order_dict)
         results.append(
             {
                 "ok": True,
@@ -1173,10 +1351,14 @@ def track_multi():
                 "payment_method": order_dict.get("payment_method", "") or "",
                 "amount": order_dict.get("amount", "") or "",
                 "delivery_address": order_dict.get("delivery_address") or order_dict.get("address", ""),
-                "baozi_total": order_dict.get("baozi_total", 0) or 0,
-                "baozi_received": order_dict.get("baozi_received", 0) or 0,
-                "shop_total": order_dict.get("shop_total", 0) or 0,
-                "shop_received": order_dict.get("shop_received", 0) or 0,
+                "baozi_total": _m_bt,
+                "baozi_received": _m_br,
+                "shop_total": _m_st,
+                "shop_received": _m_sr,
+                "baozi_remaining": _m_bt - _m_br,
+                "shop_remaining": _m_st - _m_sr,
+                "baozi_total_orig": _m_bt,
+                "shop_total_orig": _m_st,
                 "shop_lat": order_dict.get("shop_lat"),
                 "shop_lng": order_dict.get("shop_lng"),
                 "shop_link": order_dict.get("shop_link", "") or "",
@@ -1214,12 +1396,17 @@ def login_api():
         conn.close()
         return jsonify({"ok": False, "msg": "Account is disabled. Please contact your administrator."}), 403
     # 页面角色隔离：rider 页仅允许骑手账号，track 页仅允许管理员账号
-    page = (data.get("page") or "").strip()
+    page = (data.get("page") or request.args.get("page") or "").strip().lower()
     role = ud["role"]
-    if page == "rider" and role != "rider":
+    is_admin_acc = role in ("super_admin", "admin")
+    is_rider_acc = (role == "rider" or role == "normal")
+    if not page:
+        # 前端未传域时按账号角色自动归域，绝不让骑手 token 落进商家 cookie
+        page = "track" if is_admin_acc else "rider"
+    if page == "rider" and not is_rider_acc:
         conn.close()
         return jsonify({"ok": False, "msg": "This page is for rider accounts only. Please login with a rider account."}), 403
-    if page == "track" and role not in ("super_admin", "admin"):
+    if page == "track" and not is_admin_acc:
         conn.close()
         return jsonify({"ok": False, "msg": "This page is for administrator accounts only. Please login with an administrator account."}), 403
     token = uuid.uuid4().hex
@@ -1231,22 +1418,34 @@ def login_api():
         "username": ud["username"], "nickname": ud.get("nickname") or "",
         "avatar": ud.get("avatar") or "", "role": ud["role"],
     })
-    resp.set_cookie("token", token, max_age=60 * 60 * 24 * 30, samesite="Lax")
+    resp.set_cookie(AUTH_COOKIE_RIDER if page == "rider" else AUTH_COOKIE_ADMIN,
+                    token, max_age=60 * 60 * 24 * 30, samesite="Lax", path="/")
     return resp
 
 
 @app.route("/api/logout", methods=["POST"])
 def logout_api():
-    """登出：清除 token 与 Cookie"""
-    user = get_current_user()
+    """登出：按页面域（商家 /track、骑手 /rider）分别清理，互不影响"""
+    data = request.get_json(silent=True) or {}
+    page = (data.get("page") or request.args.get("page") or "").strip()
+    scope = "rider" if page == "rider" else ("admin" if page == "track" else None)
+    token = _token_from_request(scope)
+    user = get_current_user(scope, allow_any_role=True) if token else None
     if user:
         conn = get_db()
         cur = conn.cursor()
-        cur.execute(_q("UPDATE users SET token='' WHERE id=?"), (user["id"],))
+        cur.execute(_q("UPDATE users SET token='' WHERE id=? AND token=?"), (user["id"], token))
         conn.commit()
         conn.close()
     resp = jsonify({"ok": True})
-    resp.delete_cookie("token")
+    if scope == "rider":
+        resp.delete_cookie(AUTH_COOKIE_RIDER, path="/")
+    elif scope == "admin":
+        resp.delete_cookie(AUTH_COOKIE_ADMIN, path="/")
+    else:
+        resp.delete_cookie(AUTH_COOKIE_RIDER, path="/")
+        resp.delete_cookie(AUTH_COOKIE_ADMIN, path="/")
+        resp.delete_cookie("token")
     return resp
 
 
@@ -1254,19 +1453,25 @@ def logout_api():
 def user_me():
     """返回当前登录用户信息（前端用于头像/昵称/按钮显隐）。
     账号被禁止/删除时返回 403，前端据此强制退出登录。"""
-    token = (request.headers.get("Authorization") or "").replace("Bearer ", "").strip()
+    token = _token_from_request()
     if not token:
         token = (request.cookies.get("token") or "").strip()
-    if not token:
+    ud = None
+    if token:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute(_q("SELECT * FROM users WHERE token=?"), (token,))
+        user = cur.fetchone()
+        ud = _row_to_dict(cur, user) if user else None
+        conn.close()
+    if not ud:
         return jsonify({"ok": False, "msg": "Not logged in."}), 401
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute(_q("SELECT * FROM users WHERE token=?"), (token,))
-    user = cur.fetchone()
-    conn.close()
-    if not user:
+    # 域校验：商家页只认管理员账号，骑手页只认骑手账号，避免相互顶号后显示错账号
+    scope = _page_scope()
+    if scope == "admin" and ud["role"] not in ("super_admin", "admin"):
         return jsonify({"ok": False, "msg": "Not logged in."}), 401
-    ud = _row_to_dict(cur, user)
+    if scope == "rider" and ud["role"] not in ("rider", "normal"):
+        return jsonify({"ok": False, "msg": "Not logged in."}), 401
     if ud.get("status") != "normal":
         return jsonify({"ok": False, "msg": "Account is disabled. Please contact your administrator."}), 403
     return jsonify({
@@ -1284,10 +1489,9 @@ def upload_avatar():
     """上传头像（手机/电脑选图）。支持两种方式：
     1) JSON {avatar_data: data:image/...;base64,...}：压缩后的头像直接存数据库，服务器重置/重新部署后依然保留；
     2) 表单文件 avatar：保存到 static/uploads/avatars（兼容旧流程）。"""
-    user = get_current_user()
+    user = get_current_user(_page_scope())
     if not user:
         return jsonify({"ok": False, "msg": "Not logged in."}), 401
-    # 方式一：base64 直存数据库（永久保留，不依赖服务器文件系统）
     data_url = ""
     try:
         if request.is_json:

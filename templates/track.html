@@ -774,15 +774,16 @@ function drawGuideRoute(fromLL, toLL) {
 // 骑手模型图标：红色圆底 + 白色边框 + 白色线条骑手骑踏板车送包子（仿附件第三张图）
 function doneIcon(orderNo, kind) {
   // 已完成订单：白底红色圆环 + 红色对勾；已取消订单：同款圆环 + 红色叉号（❌）；圆环上方显示订单号
-  var tag = orderNo ? '<div style="position:absolute; left:0; top:-32px; transform:translateX(-50%); white-space:nowrap; background:rgba(229,57,53,0.92); color:#fff; font-size:12px; font-weight:bold; padding:2px 8px; border-radius:10px; box-shadow:0 1px 4px rgba(0,0,0,0.25);">' + orderNo + '</div>' : '';
+  var tag = orderNo ? '<div style="position:absolute; left:0; top:24px; transform:translateX(-50%); white-space:nowrap; background:' + (kind === "cancel" ? "rgba(211,47,47,0.95)" : "rgba(67,160,71,0.95)") + '; color:#fff; font-size:12px; font-weight:bold; padding:2px 8px; border-radius:10px; box-shadow:0 1px 4px rgba(0,0,0,0.25);">' + orderNo + '</div>' : '';
   var glyph = (kind === "cancel")
     ? '<path d="M22 22 L42 42 M42 22 L22 42" fill="none" stroke="#e53935" stroke-width="7" stroke-linecap="round"/>'
-    : '<path d="M20 33 L29 43 L45 23" fill="none" stroke="#e53935" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>';
+    : '<path d="M20 33 L29 43 L45 23" fill="none" stroke="#43a047" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>';
+  var ringColor = (kind === "cancel") ? "#e53935" : "#43a047";
   return L.divIcon({
     className: "",
     html: '<div style="position:relative; width:0; height:0;">' +
       '<svg viewBox="0 0 64 64" width="44" height="44" style="position:absolute; left:-22px; top:-22px; filter:drop-shadow(0 2px 4px rgba(0,0,0,0.35))">' +
-      '<circle cx="32" cy="32" r="27" fill="#ffffff" stroke="#e53935" stroke-width="5"/>' + glyph + '</svg>' + tag +
+      '<circle cx="32" cy="32" r="27" fill="#ffffff" stroke="' + ringColor + '" stroke-width="5"/>' + glyph + '</svg>' + tag +
       '</div>',
     iconSize: [0, 0], iconAnchor: [0, 0]
   });
@@ -1784,14 +1785,16 @@ startBellPolling();
 
   function markIcon(orderNo, isDone, dx, dy) {
     dx = dx || 0; dy = dy || 0;
+    // 布局：状态圆以坐标点为中心，订单号标签固定在其下方（单一标签、绝不与圆圈重叠）
+    var badgeBg = isDone ? "rgba(67,160,71,0.95)" : "rgba(211,47,47,0.95)";
     return L.divIcon({
       className: "today-mark",
-      html: '<div style="transform:translate(' + dx + 'px,' + dy + 'px)">' +
-              '<div class="tm-wrap ' + (isDone ? "tm-done" : "tm-cancel") + '">' + (isDone ? "✅" : "❌") + '</div>' +
-              '<span class="tm-no">' + (orderNo || "") + '</span>' +
+      html: '<div style="position:relative; width:0; height:0; transform:translate(' + dx + 'px,' + dy + 'px)">' +
+              '<div class="tm-wrap ' + (isDone ? "tm-done" : "tm-cancel") + '" style="position:absolute; left:-17px; top:-17px;">' + (isDone ? "✅" : "❌") + '</div>' +
+              '<div class="tm-no" style="position:absolute; left:0; top:22px; transform:translateX(-50%); background:' + badgeBg + '; color:#fff; font-size:12px; font-weight:bold; padding:2px 8px; border-radius:10px; box-shadow:0 1px 4px rgba(0,0,0,0.25); white-space:nowrap;">' + (orderNo || "") + '</div>' +
             '</div>',
-      iconSize: [34, 46],
-      iconAnchor: [17, 23]
+      iconSize: [0, 0],
+      iconAnchor: [0, 0]
     });
   }
 
@@ -1821,22 +1824,29 @@ startBellPolling();
         if (!j || !j.ok) return;
         g.clearLayers();
         var used = [];
-        (j.done || []).forEach(function (o) {
+        var seen = {};
+        // 当前正在查看的订单已有自己的状态标记（doneIcon），不再重复叠加今日标记，避免订单号显示两次
+        var curNo = "";
+        var elNo = document.getElementById("rOrderNo");
+        if (elNo && elNo.textContent) curNo = elNo.textContent.trim();
+        function addMark(o, isDone) {
           if (o.lat === null || o.lat === undefined || o.lng === null || o.lng === undefined) return;
+          var key = String(o.order_no || "");
+          if (key && seen[key]) return;                 // 同一订单只画一个标记
+          if (key && curNo && key === curNo) return;    // 与当前订单标记重合的不再画
+          // 多订单监控已画出该订单的终态标记（含订单号）时不再叠加，避免订单号出现两次
+          try {
+            if (key && multiMarkers && multiMarkers[key] && multiMarkers[key]._finalMarker) return;
+          } catch (e0) {}
+          if (key) seen[key] = 1;
           var off = _tmSlot(used, o.lat, o.lng);
-          L.marker([o.lat, o.lng], { icon: markIcon(o.order_no, true, off, off), zIndexOffset: 600 })
+          L.marker([o.lat, o.lng], { icon: markIcon(o.order_no, isDone, off, off), zIndexOffset: 600 })
             .addTo(g)
-            .bindPopup("✅ <b>Completed</b><br>Order：<b>" + (o.order_no || "") + "</b>" +
+            .bindPopup((isDone ? "✅ <b>Completed</b><br>Order：<b>" : "❌ <b>Cancelled</b><br>Order：<b>") + (o.order_no || "") + "</b>" +
                        (o.rider_name ? "<br>Rider: " + o.rider_name : "") + (o.time ? "<br>" + o.time : ""));
-        });
-        (j.cancelled || []).forEach(function (o) {
-          if (o.lat === null || o.lat === undefined || o.lng === null || o.lng === undefined) return;
-          var off = _tmSlot(used, o.lat, o.lng);
-          L.marker([o.lat, o.lng], { icon: markIcon(o.order_no, false, off, off), zIndexOffset: 600 })
-            .addTo(g)
-            .bindPopup("❌ <b>Cancelled</b><br>Order：<b>" + (o.order_no || "") + "</b>" +
-                       (o.rider_name ? "<br>Rider: " + o.rider_name : "") + (o.time ? "<br>" + o.time : ""));
-        });
+        }
+        (j.done || []).forEach(function (o) { addMark(o, true); });
+        (j.cancelled || []).forEach(function (o) { addMark(o, false); });
         _marksOnce = true;
       })
       .catch(function () {});

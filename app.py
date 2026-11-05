@@ -435,40 +435,81 @@ def parse_coords_text(text):
 
 
 def parse_link_coords(text):
-    """从 Google Maps 链接提取坐标：@lat,lng / ?q=lat,lng / !3d..!4d"""
+    """从 Google Maps 链接提取坐标：!3d..!4d / ?q= / ?ll= / /place/lat,lng / @lat,lng（支持 URL 编码）"""
     s = str(text or "")
-    m = re.search(r"!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)", s)
-    if m:
-        return (float(m.group(1)), float(m.group(2)))
-    m = re.search(r"[?&]q=(-?\d+\.\d+),(-?\d+\.\d+)", s)
-    if m:
-        return (float(m.group(1)), float(m.group(2)))
-    m = re.search(r"@(-?\d+\.\d+),(-?\d+\.\d+)", s)
-    if m:
-        return (float(m.group(1)), float(m.group(2)))
+    try:
+        if re.search(r"%[0-9A-Fa-f]{2}", s):
+            s = urllib.parse.unquote(s)
+    except Exception:
+        pass
+    patterns = [
+        r"!3d(-?\d{1,3}\.\d+)!4d(-?\d{1,3}\.\d+)",
+        r"[?&](?:q|query|ll|daddr|destination|center)=(-?\d{1,3}\.\d+)\s*,\s*(-?\d{1,3}\.\d+)",
+        r"/place/(-?\d{1,3}\.\d+),(-?\d{1,3}\.\d+)",
+        r"@(-?\d{1,3}\.\d+),(-?\d{1,3}\.\d+)",
+    ]
+    for pat in patterns:
+        m = re.search(pat, s)
+        if m:
+            return (float(m.group(1)), float(m.group(2)))
     return None
 
 
+# 手机端分享的链接常见形态：无协议头、前后夹带文字、maps.app.goo.gl 短链
+_MAPS_UA_LIST = (
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+    "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+)
+
+
+def normalize_maps_link(raw):
+    """把用户粘贴的内容规范成可请求的 Google 地图链接"""
+    s = str(raw or "").strip()
+    if not s:
+        return ""
+    m = re.search(r"https?://[^\s\"'<>]+", s, re.I)
+    if m:
+        return m.group(0)
+    m = re.search(r"(?:maps\.app\.goo\.gl|goo\.gl/maps|(?:www\.)?google\.[a-z.]{2,}/maps)[^\s\"'<>]*", s, re.I)
+    if m:
+        return "https://" + m.group(0)
+    return s
+
+
 def resolve_shop_location(link, coords_text):
-    """骑手输入的商家位置解析：优先坐标文本，其次链接正则，最后展开 goo.gl 短链再解析。
-    返回 (lat, lng, link)；解析失败时 lat/lng 为 None，仅保留链接原文。"""
+    """骑手输入的商家位置解析：优先坐标文本，其次链接正则，最后展开短链（多 UA，含重定向链与页面正文）。
+    返回 (lat, lng, link)；解析失败时 lat/lng 为 None。"""
     c = parse_coords_text(coords_text)
     if c:
         return c[0], c[1], (link or "").strip()
-    if link:
-        c = parse_link_coords(link)
-        if c:
-            return c[0], c[1], link.strip()
+    url = normalize_maps_link(link)
+    if not url:
+        return None, None, ""
+    c = parse_link_coords(url)
+    if c:
+        return c[0], c[1], url
+    if not url.lower().startswith(("http://", "https://")):
+        return None, None, url
+    for ua in _MAPS_UA_LIST:
         try:
-            req = urllib.request.Request(link, headers={"User-Agent": "Mozilla/5.0"})
-            with urllib.request.urlopen(req, timeout=6) as resp:
+            req = urllib.request.Request(url, headers={"User-Agent": ua, "Accept-Language": "en-US,en;q=0.9"})
+            with urllib.request.urlopen(req, timeout=8) as resp:
                 final_url = resp.geturl()
+                try:
+                    body = resp.read(300000).decode("utf-8", "ignore")
+                except Exception:
+                    body = ""
             c = parse_link_coords(final_url)
             if c:
-                return c[0], c[1], link.strip()
+                return c[0], c[1], url
+            if body:
+                c = parse_link_coords(body)
+                if c:
+                    return c[0], c[1], url
         except Exception:
-            pass
-    return None, None, (link or "").strip()
+            continue
+    return None, None, url
 
 
 def now_str():

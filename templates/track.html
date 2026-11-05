@@ -163,6 +163,27 @@
 .map-fs .row2 { position:absolute; top:10px; left:10px; right:10px; z-index:100000; margin:0 !important; }
 .map-fs .row2 .btn { background:rgba(255,255,255,0.94); box-shadow:0 2px 8px rgba(0,0,0,0.25); }
 body.map-fs-lock { overflow:hidden !important; }
+/* 手机窄屏：通知面板居中完整显示（不再贴右溢出被切断），按钮不溢出容器 */
+@media (max-width: 640px) {
+  .bell-panel {
+    position: fixed !important;
+    left: 10px !important;
+    right: 10px !important;
+    top: 64px !important;
+    width: auto !important;
+    max-width: none !important;
+    max-height: calc(100vh - 100px) !important;
+    border-radius: 14px;
+    z-index: 99998;
+    overflow-x: hidden;
+  }
+  .bell-head { flex-wrap:wrap; gap:6px; }
+  .bell-list { max-height: calc(100vh - 160px); }
+  .bell-item { overflow-wrap:anywhere; word-break:break-word; }
+  .bell-item .bi-no, .bell-item .bi-phone, .bell-item .bi-msg { overflow-wrap:anywhere; word-break:break-word; white-space:normal; }
+  .row2 { flex-wrap:wrap; gap:8px; }
+  .row2 button { flex:1 1 calc(50% - 8px); min-width:0; max-width:100%; white-space:normal; word-break:break-word; overflow-wrap:anywhere; font-size:12px; padding:10px 6px; line-height:1.3; box-sizing:border-box; }
+}
 </style>
 </head>
 <body>

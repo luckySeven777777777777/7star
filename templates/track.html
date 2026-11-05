@@ -332,6 +332,26 @@
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
+// ---------- 商家端请求统一注入 userToken：与骑手端登录态完全隔离，互不覆盖 ----------
+(function () {
+  var _origFetch = window.fetch.bind(window);
+  window.fetch = function (input, init) {
+    try {
+      var url = (typeof input === "string") ? input : ((input && input.url) ? input.url : "");
+      var sameOrigin = !/^https?:\/\//i.test(url) || url.indexOf(location.origin) === 0;
+      if (sameOrigin) {
+        var tk = localStorage.getItem("userToken");
+        init = init || {};
+        var h = new Headers(init.headers || {});
+        // 显式声明页面域：后端只按商家域解析登录态，绝不回落到骑手 token
+        if (!h.has("X-Page")) h.set("X-Page", "track");
+        if (tk && !h.has("Authorization")) h.set("Authorization", "Bearer " + tk);
+        init.headers = h;
+      }
+    } catch (e) {}
+    return _origFetch(input, init);
+  };
+})();
 var map = null;
 var marker = null;
 var trackLine = null;
@@ -436,8 +456,8 @@ function render(j) {
   document.getElementById("rTime").textContent = j.update_time || "-";
   document.getElementById("rCity").textContent = j.city || "-";
   document.getElementById("rLatest").textContent = j.latest ? (j.latest.address || (j.latest.lat.toFixed(6) + ", " + j.latest.lng.toFixed(6))) : "-";
-  document.getElementById("rBaozi").textContent = (j.baozi_remaining !== undefined && j.baozi_remaining !== null) ? (j.baozi_remaining + " / " + (j.baozi_total || 0)) : "-";
-  document.getElementById("rShop").textContent = (j.shop_remaining !== undefined && j.shop_remaining !== null) ? (j.shop_remaining + " / " + (j.shop_total || 0)) : "-";
+  document.getElementById("rBaozi").textContent = (j.baozi_remaining !== undefined && j.baozi_remaining !== null) ? (j.baozi_remaining + " / " + (j.baozi_total_orig || j.baozi_total || 0)) : "-";
+  document.getElementById("rShop").textContent = (j.shop_remaining !== undefined && j.shop_remaining !== null) ? (j.shop_remaining + " / " + (j.shop_total_orig || j.shop_total || 0)) : "-";
   document.getElementById("rPayment").textContent = j.payment_method || "-";
   document.getElementById("rAmount").textContent = j.amount || "-";
   document.getElementById("rShopLocation").textContent = locDisplay(j);
@@ -465,6 +485,40 @@ function render(j) {
 
   var latLngs = (j.track || []).map(function(p) { return [p.lat, p.lng]; });
   if (latLngs.length === 0) {
+    // 终态（取消 ❌ / 确认 ✅）即使没有轨迹点，也必须在商家位置保留标记，供商家与骑手第一时间查看
+    if (isFinal) {
+      var baseLL = null;
+      if (j.shop_lat !== null && j.shop_lat !== undefined && j.shop_lng !== null && j.shop_lng !== undefined) {
+        baseLL = [j.shop_lat, j.shop_lng];
+      } else if (j.latest && j.latest.lat !== undefined) {
+        baseLL = [j.latest.lat, j.latest.lng];
+      }
+      if (baseLL) {
+        var _k2 = (st === "ပယ်ဖျက်ထားသည်") ? "cancel" : "done";
+        if (!map) {
+          map = L.map("map", {
+            dragging: true, touchZoom: true, scrollWheelZoom: true,
+            doubleClickZoom: true, tap: true, zoomControl: true
+          }).setView(baseLL, 15);
+          L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+            attribution: "&copy; OpenStreetMap contributors", maxZoom: 19
+          }).addTo(map);
+          map.on("click", function () { setMapPinned(true); });
+          map.on("dragstart", function () { setMapPinned(true); });
+          map.on("zoomstart", function (ev) { if (!ev.originalEvent || ev.originalEvent.type !== "resize") setMapPinned(true); });
+        }
+        if (marker) { try { map.removeLayer(marker); } catch (e) {} marker = null; }
+        if (!doneMarker) {
+          doneMarker = L.marker(baseLL, { icon: doneIcon(j.order_no, _k2) }).addTo(map);
+          doneMarker.bindPopup((_k2 === "cancel" ? "❌ " : "✅ ") + "<b>" + st + "</b><br>Order：<b>" + j.order_no + "</b>");
+        } else {
+          doneMarker.setLatLng(baseLL);
+          doneMarker.setIcon(doneIcon(j.order_no, _k2));
+        }
+        if (!_mapPinned) map.setView(baseLL, 15);
+        return;
+      }
+    }
     if (!isFinal) {
       showErr("ဤအမှာစာအတွက် တည်နေရာဒေတာ မရှိသေးပါ။ ပို့ဆောင်သူသည် 「ပို့ဆောင်သူ」စာမျက်နှာတွင် ချိတ်ဆက်၍ တည်နေရာ တင်ရန် လိုအပ်ပါသည်");
     }
@@ -492,7 +546,10 @@ function render(j) {
   trackLine = L.polyline(latLngs, { color: "#fda085", weight: 4 }).addTo(map);
 
   var latest = latLngs[latLngs.length - 1];
-  if (!marker) {
+  if (isFinal) {
+    // 终态：轨迹保留、骑手小车移除，视野集中在 ❌/✅ 标记上
+    if (marker) { try { map.removeLayer(marker); } catch (e) {} marker = null; }
+  } else if (!marker) {
     marker = L.marker(latest, { icon: riderIcon() }).addTo(map);
   } else {
     // 像 Grab 一样：小车平滑移动到新位置，而不是瞬间跳变
@@ -503,12 +560,15 @@ function render(j) {
   var hasShop = (j.shop_lat !== null && j.shop_lat !== undefined && j.shop_lng !== null && j.shop_lng !== undefined);
   if (hasShop) {
     var shopLL = [j.shop_lat, j.shop_lng];
-    if (st === "လက်ခံပြီးပါပြီ") {
-      // 已完成：商家位置改为永久打钩（红色圆环 ✅），不再画引导路线
+    if (st === "လက်ခံပြီးပါပြီ" || st === "ပယ်ဖျက်ထားသည်") {
+      // 终态：确认 ✅ / 取消 ❌ 都在原商家位置画白色圆环 + 标记 + 订单号，地图与轨迹一并保留
+      var _kind = (st === "ပယ်ဖျက်ထားသည်") ? "cancel" : "done";
       if (!doneMarker) {
-        doneMarker = L.marker(shopLL, { icon: doneIcon(j.order_no) }).addTo(map);
+        doneMarker = L.marker(shopLL, { icon: doneIcon(j.order_no, _kind) }).addTo(map);
+        doneMarker.bindPopup((_kind === "cancel" ? "❌ " : "✅ ") + "<b>" + st + "</b><br>Order：<b>" + j.order_no + "</b>");
       } else {
         doneMarker.setLatLng(shopLL);
+        doneMarker.setIcon(doneIcon(j.order_no, _kind));
       }
     } else {
       if (!shopMarker) {
@@ -516,9 +576,7 @@ function render(j) {
       } else {
         shopMarker.setLatLng(shopLL);
       }
-      if (st !== "ပယ်ဖျက်ထားသည်") {
-        drawGuideRoute(latest, shopLL);
-      }
+      drawGuideRoute(latest, shopLL);
     }
     _routeBounds = L.latLngBounds(latLngs.concat([shopLL]));
     if (!_mapPinned) map.fitBounds(_routeBounds, { padding: [30, 30] });
@@ -528,6 +586,17 @@ function render(j) {
     if (guideSlowLine) { try { map.removeLayer(guideSlowLine); } catch (e) {} guideSlowLine = null; }
     if (_guideEtaMarker) { try { map.removeLayer(_guideEtaMarker); } catch (e) {} _guideEtaMarker = null; }
     updateRouteInfo(null);
+    if (isFinal) {
+      // 无商家坐标时退化为轨迹末端，保证 ❌/✅ 标记与地图始终保留
+      var _k3 = (st === "ပယ်ဖျက်ထားသည်") ? "cancel" : "done";
+      if (!doneMarker) {
+        doneMarker = L.marker(latest, { icon: doneIcon(j.order_no, _k3) }).addTo(map);
+        doneMarker.bindPopup((_k3 === "cancel" ? "❌ " : "✅ ") + "<b>" + st + "</b><br>Order：<b>" + j.order_no + "</b>");
+      } else {
+        doneMarker.setLatLng(latest);
+        doneMarker.setIcon(doneIcon(j.order_no, _k3));
+      }
+    }
     _routeBounds = L.latLngBounds(latLngs);
     if (!_mapPinned) map.setView(latest, 15);
   }
@@ -690,15 +759,17 @@ function drawGuideRoute(fromLL, toLL) {
 }
 
 // 骑手模型图标：红色圆底 + 白色边框 + 白色线条骑手骑踏板车送包子（仿附件第三张图）
-function doneIcon(orderNo) {
-  // 已完成订单：白底红色圆环 + 红色对勾，圆环上方显示订单号，方便商家快速对应
+function doneIcon(orderNo, kind) {
+  // 已完成订单：白底红色圆环 + 红色对勾；已取消订单：同款圆环 + 红色叉号（❌）；圆环上方显示订单号
   var tag = orderNo ? '<div style="position:absolute; left:0; top:-32px; transform:translateX(-50%); white-space:nowrap; background:rgba(229,57,53,0.92); color:#fff; font-size:12px; font-weight:bold; padding:2px 8px; border-radius:10px; box-shadow:0 1px 4px rgba(0,0,0,0.25);">' + orderNo + '</div>' : '';
+  var glyph = (kind === "cancel")
+    ? '<path d="M22 22 L42 42 M42 22 L22 42" fill="none" stroke="#e53935" stroke-width="7" stroke-linecap="round"/>'
+    : '<path d="M20 33 L29 43 L45 23" fill="none" stroke="#e53935" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>';
   return L.divIcon({
     className: "",
     html: '<div style="position:relative; width:0; height:0;">' +
       '<svg viewBox="0 0 64 64" width="44" height="44" style="position:absolute; left:-22px; top:-22px; filter:drop-shadow(0 2px 4px rgba(0,0,0,0.35))">' +
-      '<circle cx="32" cy="32" r="27" fill="#ffffff" stroke="#e53935" stroke-width="5"/>' +
-      '<path d="M20 33 L29 43 L45 23" fill="none" stroke="#e53935" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/></svg>' + tag +
+      '<circle cx="32" cy="32" r="27" fill="#ffffff" stroke="#e53935" stroke-width="5"/>' + glyph + '</svg>' + tag +
       '</div>',
     iconSize: [0, 0], iconAnchor: [0, 0]
   });
@@ -826,9 +897,10 @@ function renderMulti(results, silent) {
   var html = "";
   results.forEach(function (x) {
     if (x.ok) {
-      var bt = (x.baozi_total || 0);
+      // 分母（后面的数字）永远是骑手最初输入量，绝不随确认/取消扣减；分子才是剩余量
+      var bt = (x.baozi_total_orig || x.baozi_total || 0);
       var br = (x.baozi_received || 0);
-      var st = (x.shop_total || 0);
+      var st = (x.shop_total_orig || x.shop_total || 0);
       var sr = (x.shop_received || 0);
       var dateTxt = x.update_time ? String(x.update_time).slice(0, 10) : "-";
       var stTxt = (x.status && x.status !== "待取餐") ? x.status : "-";
@@ -890,8 +962,39 @@ function renderMulti(results, silent) {
       'အချိန်：' + (x.update_time || "-");
     var key = x.order_no;
     seen[key] = true;
-    if (multiMarkers[key]) {
+    // 终态订单（取消 ❌ / 确认 ✅）：多骑手地图同样保留轨迹并画出带订单号的圆环标记，骑手与商家都能第一时间看到
+    var _fin = (x.status === "ပယ်ဖျက်ထားသည်" || x.status === "လက်ခံပြီးပါပြီ");
+    if (_fin) {
+      var _kind = (x.status === "ပယ်ဖျက်ထားသည်") ? "cancel" : "done";
+      var anchor = latest;
+      if (x.shop_lat !== null && x.shop_lat !== undefined && x.shop_lng !== null && x.shop_lng !== undefined) {
+        anchor = [x.shop_lat, x.shop_lng];
+      }
+      var finPopup = (_kind === "cancel" ? "❌ " : "✅ ") + "<b>" + (x.status || "") + "</b><br>Order：<b>" + x.order_no + "</b><br>🛵 " + (x.rider_name || "-");
+      var fm = multiMarkers[key];
+      if (fm && fm._finalMarker) {
+        fm.setLatLng(anchor);
+        fm.setIcon(doneIcon(x.order_no, _kind));
+        fm.setPopupContent(finPopup);
+      } else {
+        if (fm) { try { map.removeLayer(fm); } catch (e) {} }
+        fm = L.marker(anchor, { icon: doneIcon(x.order_no, _kind) }).addTo(map);
+        fm._finalMarker = true;
+        fm.bindPopup(finPopup);
+        multiMarkers[key] = fm;
+      }
+    } else if (multiMarkers[key]) {
       var mk = multiMarkers[key];
+      if (mk._finalMarker) {
+        // 订单被重新激活（重新绑定）：撤掉 ❌/✅ 标记，恢复骑手小车
+        try { map.removeLayer(mk); } catch (e) {}
+        delete multiMarkers[key];
+        var m3 = L.marker(latest, { icon: riderIconColor(color) }).addTo(map);
+        m3._riderColor = color;
+        m3.bindPopup(popupHtml);
+        multiMarkers[key] = m3;
+        return;
+      }
       if (mk._riderColor !== color) { mk.setIcon(riderIconColor(color)); mk._riderColor = color; }
       var cur = mk.getLatLng();
       animateMarkerToLatLng(mk, [cur.lat, cur.lng], latest, 700);
@@ -1037,8 +1140,8 @@ function renderHistory() {
       + '城市：<b>' + (h.city || "-") + '</b><br>'
       + 'ပို့ဆောင်သူ နောက်ဆုံးတည်နေရာ：<b>' + loc + '</b><br>'
       + 'ပို့ရမည့်ဆိုင်လိပ်စာ：<b>' + (h.delivery_address || "-") + '</b><br>'
-      + 'ကျန်ရှိသောပေါက်စီအလုံးအရေတွက်：<b>' + h.baozi_remaining + ' / ' + h.baozi_total + '</b><br>'
-      + 'ကျန်ရှိသောဆိုင်အရေတွက်：<b>' + h.shop_remaining + ' / ' + h.shop_total + '</b><br>'
+      + 'ကျန်ရှိသောပေါက်စီအလုံးအရေတွက်：<b>' + h.baozi_remaining + ' / ' + (h.baozi_total_orig || h.baozi_total) + '</b><br>'
+      + 'ကျန်ရှိသောဆိုင်အရေတွက်：<b>' + h.shop_remaining + ' / ' + (h.shop_total_orig || h.shop_total) + '</b><br>'
       + 'ငွေပေးချေမှုနည်းလမ်း：<b>' + (h.payment_method || "-") + '</b><br>'
       + 'Amount (MMK)：<b>' + (h.amount || "-") + '</b><br>'
       + '📍 Location / Geographic Location：<b>' + locDisplay(h) + '</b><br>'
@@ -1115,7 +1218,7 @@ function getToken() { return localStorage.getItem("userToken") || ""; }
 function authHeaders() { var t = getToken(); return t ? { "Authorization": "Bearer " + t } : {}; }
 function goLogin() { location.href = "/login?next=" + encodeURIComponent(location.pathname); }
 async function doLogout() {
-  try { await fetch("/api/logout", { method: "POST", headers: authHeaders() }); } catch (e) {}
+  try { await fetch("/api/logout?page=track", { method: "POST", headers: authHeaders() }); } catch (e) {}
   localStorage.removeItem("userToken");
   location.href = "/login?next=" + encodeURIComponent(location.pathname);
 }
@@ -1198,7 +1301,7 @@ async function uploadAvatar(e) {
   });
 }
 async function forceLogout(msg) {
-  try { await fetch("/api/logout", { method: "POST", headers: authHeaders() }); } catch (e) {}
+  try { await fetch("/api/logout?page=track", { method: "POST", headers: authHeaders() }); } catch (e) {}
   localStorage.removeItem("userToken");
   if (msg) { try { alert(msg); } catch (e) {} }
   location.href = "/login?next=" + encodeURIComponent(location.pathname);
@@ -1219,15 +1322,17 @@ async function checkLogin() {
       return;
     }
     if (r.status === 403) { forceLogout("သင့်အကောင့်ကို ပိတ်ထားပါသည်။ စီမံခန့်ခွဲသူကို ဆက်သွယ်ပါ။"); return; }
-  } catch (e) {}
-  // 未登录，或 token 不属于管理员（如骑手登录态）：不显示用户信息、不显示管理面板
+    // 服务端临时异常/网络抖动：保持当前界面与登录态，绝不清除 userToken、不清头像
+    if (r.status !== 401) { return; }
+  } catch (e) {
+    return;
+  }
+  // 只有后端明确 401（商家域确实无有效登录）才清商家 token；头像缓存保留，重新登录后立刻恢复
   localStorage.removeItem("userToken");
-  // 未登录：Login 与 Logout 两个按键都显示
-  clearCachedAvatar();
-  setAvatarImg("");
   document.getElementById("btnLogin").style.display = "block";
   document.getElementById("btnLogout").style.display = "block";
   document.getElementById("userName").textContent = "-";
+  // 不跳转、不清头像：留在当前页，用户点 Login 重新登录商家账号即可，骑手端登录态不受影响;
 }
 
 // ===== 管理员面板（超级管理员/管理员） =====

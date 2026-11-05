@@ -351,6 +351,27 @@ var state = {
   curLat: null, curLng: null, gpsEnabled: true
 };
 
+// ---------- 骑手端请求统一注入 riderToken：与商家后台登录态完全隔离，互不覆盖 ----------
+(function () {
+  var _origFetch = window.fetch.bind(window);
+  window.fetch = function (input, init) {
+    try {
+      var url = (typeof input === "string") ? input : ((input && input.url) ? input.url : "");
+      var sameOrigin = !/^https?:\/\//i.test(url) || url.indexOf(location.origin) === 0;
+      if (sameOrigin) {
+        var tk = localStorage.getItem("riderToken");
+        init = init || {};
+        var h = new Headers(init.headers || {});
+        // 显式声明页面域：后端只按骑手域解析登录态，绝不回落到商家 token
+        if (!h.has("X-Page")) h.set("X-Page", "rider");
+        if (tk && !h.has("Authorization")) h.set("Authorization", "Bearer " + tk);
+        init.headers = h;
+      }
+    } catch (e) {}
+    return _origFetch(input, init);
+  };
+})();
+
 // ---------- စီးနင်းသူမြေပုံ（骑手端地图：自身位置 + 商家位置 + 绿色路线） ----------
 var riderMap = null;
 var riderMarker = null;
@@ -362,6 +383,7 @@ var shopLat = null;
 var shopLng = null;
 var todayDoneItems = [];   // 今日已完成订单 [{order_no, lat, lng}]（缅甸时间凌晨12点自动清零）
 var todayDoneDay = "";
+var cancelledItems = [];   // 今日已取消订单 [{order_no, lat, lng}]，地图显示红圈 ❌（凌晨12点自动清零）
 
 function parseCoordsText(text) {
   if (!text) return null;
@@ -482,6 +504,19 @@ function doneRiderIcon(orderNo) {
     iconSize: [0, 0], iconAnchor: [0, 0]
   });
 }
+function cancelledRiderIcon(orderNo) {
+  // 已取消订单：白底红色圆环 + 红色叉号，上方显示订单号（与确认 ✅ 样式一致）
+  var tag = orderNo ? '<div style="position:absolute; left:0; top:-32px; transform:translateX(-50%); white-space:nowrap; background:rgba(229,57,53,0.92); color:#fff; font-size:12px; font-weight:bold; padding:2px 8px; border-radius:10px; box-shadow:0 1px 4px rgba(0,0,0,0.25);">' + orderNo + '</div>' : '';
+  return L.divIcon({
+    className: "",
+    html: '<div style="position:relative; width:0; height:0;">' +
+      '<svg viewBox="0 0 64 64" width="44" height="44" style="position:absolute; left:-22px; top:-22px; filter:drop-shadow(0 2px 4px rgba(0,0,0,0.35))">' +
+      '<circle cx="32" cy="32" r="27" fill="#ffffff" stroke="#e53935" stroke-width="5"/>' +
+      '<path d="M22 22 L42 42 M42 22 L22 42" fill="none" stroke="#e53935" stroke-width="7" stroke-linecap="round"/></svg>' + tag +
+      '</div>',
+    iconSize: [0, 0], iconAnchor: [0, 0]
+  });
+}
 function shopIcon() {
   return L.divIcon({
     className: "",
@@ -563,6 +598,54 @@ function drawTodayDone() {
   });
 }
 
+function drawCancelled() {
+  if (!riderMap || cancelledItems.length === 0) return;
+  cancelledItems.forEach(function (t) {
+    if (!t._marker) {
+      t._marker = L.marker([t.lat, t.lng], { icon: cancelledRiderIcon(t.order_no) }).addTo(riderMap);
+      t._marker.bindPopup("❌ <b>ပယ်ဖျက်ထားသည် / Cancelled</b><br>Order：<b>" + t.order_no + "</b>");
+    }
+  });
+}
+
+function addCancelledMark(order_no, lat, lng) {
+  if (!todayDoneDay) todayDoneDay = yangonDateStr();
+  // 坐标缺失时退化为该订单已有标记位置 / 骑手当前位置，保证 ❌ 一定画得出来
+  if (lat === null || lat === undefined || lng === null || lng === undefined) {
+    var old = todayDoneItems.filter(function (t) { return t.order_no === order_no; })[0];
+    if (old) { lat = old.lat; lng = old.lng; }
+  }
+  if (lat === null || lat === undefined || lng === null || lng === undefined) return;
+  // 同一订单取消后，移除它的 ✅ 完成标记，避免同单同时出现 ✅ 与 ❌
+  for (var i = todayDoneItems.length - 1; i >= 0; i--) {
+    if (todayDoneItems[i].order_no === order_no) {
+      if (todayDoneItems[i]._marker && riderMap) { try { riderMap.removeLayer(todayDoneItems[i]._marker); } catch (e) {} }
+      todayDoneItems.splice(i, 1);
+    }
+  }
+  var exists = cancelledItems.some(function (t) { return t.order_no === order_no; });
+  if (!exists) cancelledItems.push({ order_no: order_no, lat: lat, lng: lng });
+  drawCancelled();
+}
+
+function loadTodayCancelled(phone) {
+  if (!phone) return;
+  fetch("/api/today-cancelled?phone=" + encodeURIComponent(phone))
+    .then(function (r) { return r.json(); })
+    .then(function (j) {
+      if (!j.ok) return;
+      var fresh = (j.cancelled || []).map(function (o) {
+        var la = (o.lat !== undefined && o.lat !== null) ? o.lat : o.shop_lat;
+        var ln = (o.lng !== undefined && o.lng !== null) ? o.lng : o.shop_lng;
+        return { order_no: o.order_no, lat: la, lng: ln };
+      }).filter(function (t) { return t.lat !== null && t.lat !== undefined && t.lng !== null && t.lng !== undefined; });
+      if (fresh.length === 0) return;
+      cancelledItems = fresh;
+      if (!riderMap) { showRiderMap(); } else { drawCancelled(); }
+    })
+    .catch(function () {});
+}
+
 function loadTodayDone(phone) {
   if (!phone) return;
   fetch("/api/today-completed?phone=" + encodeURIComponent(phone))
@@ -571,7 +654,9 @@ function loadTodayDone(phone) {
       if (!j.ok) return;
       todayDoneDay = j.day || "";
       todayDoneItems = (j.completed || []).map(function (o) {
-        return { order_no: o.order_no, lat: o.shop_lat, lng: o.shop_lng };
+        var la = (o.lat !== undefined && o.lat !== null) ? o.lat : o.shop_lat;
+        var ln = (o.lng !== undefined && o.lng !== null) ? o.lng : o.shop_lng;
+        return { order_no: o.order_no, lat: la, lng: ln };
       }).filter(function (t) { return t.lat !== null && t.lat !== undefined && t.lng !== null && t.lng !== undefined; });
       if (todayDoneItems.length > 0 && !riderMap) {
         showRiderMap();
@@ -1135,7 +1220,9 @@ async function doConfirmDelivered() {
     var j = await r.json();
     if (!j.ok) { showInfo(j.msg); return; }
     closeConfirmModal();
-    addTodayDone(state.orderNo, shopLat, shopLng);
+    addTodayDone(state.orderNo,
+      (shopLat === null || shopLat === undefined) ? state.curLat : shopLat,
+      (shopLat === null || shopLat === undefined) ? state.curLng : shopLng);
     state.status = "လက်ခံပြီးပါပြီ";
     state.statusLocked = true;
     if (!state.confirmedStatuses) state.confirmedStatuses = [];
@@ -1174,6 +1261,10 @@ async function doCancelOrder() {
     var j = await r.json();
     if (!j.ok) { showInfo(j.msg); return; }
     closeCancelOrder();
+    // 取消后地图保留红圈 ❌ + 订单号（与确认 ✅ 一致），骑手与商家都能第一时间看到
+    var cLat = (shopLat === null || shopLat === undefined) ? state.curLat : shopLat;
+    var cLng = (shopLat === null || shopLat === undefined) ? state.curLng : shopLng;
+    addCancelledMark(orderNo, cLat, cLng);
     showInfo(j.msg);
     resetAfterCompletion();
     refreshRiderInfo();
@@ -1224,18 +1315,19 @@ function resetAfterCompletion() {
   if (riderMap) { try { riderMap.remove(); } catch (e) {} riderMap = null; }
   riderMarker = null; shopMarker = null; routeLine = null;
   shopLat = null; shopLng = null;
-  // 今日已完成订单打钩永久保留（缅甸时间凌晨12点自动清零）
-  if (todayDoneItems.length > 0) {
+  // 今日已完成/已取消订单标记永久保留（缅甸时间凌晨12点自动清零）
+  if (todayDoneItems.length > 0 || cancelledItems.length > 0) {
     showRiderMap();
     drawTodayDone();
+    drawCancelled();
     document.getElementById("riderMapWrap").style.display = "block";
   } else {
     document.getElementById("riderMapWrap").style.display = "none";
   }
   // 清除本地锁定记录，刷新后不残留旧订单锁定
   try { localStorage.removeItem("riderLock_" + oldPhone); } catch (e) {}
-  // 自动带出扣减后的剩余数量，骑手无需重新输入
-  if (oldPhone) { loadRemaining(oldPhone); }
+  // 自动带出原始总量（分母不扣减，只扣减骑手确认时的剩余量）
+  if (oldPhone) { loadRemaining(oldPhone); loadTodayCancelled(oldPhone); }
 }
 
 // ---------- ဖုန်းနံပါတ်နှင့် အမှာစာ မကိုက်ညီပါက အလိုအလျောက် ပြန်လည်သတ်မှတ်ခြင်း ----------
@@ -1253,11 +1345,14 @@ async function loadRemaining(phone) {
     var j = await r.json();
     if (!j.ok || !j.history || j.history.length === 0) return;
     var h = j.history[0];
-    if (h.baozi_remaining !== undefined && h.baozi_remaining !== null && h.baozi_remaining !== "") {
-      document.getElementById("baoziCount").value = h.baozi_remaining;
+    // 输入框提交的是「原始总量」，必须回填 total；绝不能用扣减后的 remaining 覆盖，否则分母会被越扣越小
+    var bt = (h.baozi_total !== undefined && h.baozi_total !== null && h.baozi_total !== "") ? h.baozi_total : h.baozi_remaining;
+    var st = (h.shop_total !== undefined && h.shop_total !== null && h.shop_total !== "") ? h.shop_total : h.shop_remaining;
+    if (bt !== undefined && bt !== null && bt !== "") {
+      document.getElementById("baoziCount").value = bt;
     }
-    if (h.shop_remaining !== undefined && h.shop_remaining !== null && h.shop_remaining !== "") {
-      document.getElementById("shopCount").value = h.shop_remaining;
+    if (st !== undefined && st !== null && st !== "") {
+      document.getElementById("shopCount").value = st;
     }
   } catch (e) {}
 }
@@ -1348,8 +1443,8 @@ function renderHistory() {
       + 'လက်ရှိအခြေအနေ：' + stTagHtml((h.status && h.status !== "待取餐") ? h.status : "-") + '<br>'
       + 'လက်ရှိနေရာ：<b>' + loc + '</b><br>'
       + 'ပို့ရမည့်ဆိုင်လိပ်စာ：<b>' + (h.delivery_address || "-") + '</b><br>'
-      + 'ကျန်ရှိသောပေါက်စီအလုံးအရေတွက်：<b>' + h.baozi_remaining + ' / ' + h.baozi_total + '</b><br>'
-      + 'ကျန်ရှိသောဆိုင်အရေတွက်：<b>' + h.shop_remaining + ' / ' + h.shop_total + '</b><br>'
+      + 'ကျန်ရှိသောပေါက်စီအလုံးအရေတွက်：<b>' + h.baozi_remaining + ' / ' + (h.baozi_total_orig || h.baozi_total) + '</b><br>'
+      + 'ကျန်ရှိသောဆိုင်အရေတွက်：<b>' + h.shop_remaining + ' / ' + (h.shop_total_orig || h.shop_total) + '</b><br>'
       + 'ငွေပေးချေမှုနည်းလမ်း：<b>' + (h.payment_method || "-") + '</b><br>'
       + 'Amount (MMK)：<b>' + (h.amount || "-") + '</b><br>'
       + '📍 Location / Geographic Location：<b>' + locDisplay(h) + '</b><br>'
@@ -1419,8 +1514,9 @@ async function refreshRiderInfo() {
     // 位置显示地名（反向地理编码），失败时回退经纬度
     document.getElementById("curLocation").textContent = j.latest ? (j.latest.address || (j.latest.lat.toFixed(6) + ", " + j.latest.lng.toFixed(6))) : "-";
     document.getElementById("curCity").textContent = (j.city && j.city !== "") ? j.city : "-";
-    document.getElementById("curBaozi").textContent = (j.baozi_total - j.baozi_received) + " / " + j.baozi_total;
-    document.getElementById("curShop").textContent = (j.shop_total - j.shop_received) + " / " + j.shop_total;
+    var _obt = (j.baozi_total_orig || j.baozi_total || 0), _ost = (j.shop_total_orig || j.shop_total || 0);
+    document.getElementById("curBaozi").textContent = (_obt - j.baozi_received) + " / " + _obt;
+    document.getElementById("curShop").textContent = (_ost - j.shop_received) + " / " + _ost;
     // 商家关闭 GPS 后：立即停止本端上报（GPS 停止），且不能自行重新开启
     if (j.gps_enabled === 0 && state.gpsEnabled) {
       state.gpsEnabled = false;
@@ -1495,10 +1591,13 @@ async function refreshRiderInfo() {
   var phone = document.getElementById("riderPhone").value.trim() || localStorage.getItem("riderPhoneSaved") || "";
   if (phone) {
     loadTodayDone(phone);
+    loadTodayCancelled(phone);
     setInterval(function () {
       if (todayDoneDay && yangonDateStr() !== todayDoneDay) {
         todayDoneItems = [];
+        cancelledItems = [];
         loadTodayDone(phone);
+        loadTodayCancelled(phone);
       }
     }, 60000 * 30);
   }
@@ -1553,7 +1652,7 @@ function getToken() { return localStorage.getItem("riderToken") || ""; }
 function authHeaders() { var t = getToken(); return t ? { "Authorization": "Bearer " + t } : {}; }
 function goLogin() { location.href = "/login?next=" + encodeURIComponent(location.pathname); }
 async function doLogout() {
-  try { await fetch("/api/logout", { method: "POST", headers: authHeaders() }); } catch (e) {}
+  try { await fetch("/api/logout?page=rider", { method: "POST", headers: authHeaders() }); } catch (e) {}
   localStorage.removeItem("riderToken");
   location.href = "/login?next=" + encodeURIComponent(location.pathname);
 }
@@ -1570,7 +1669,7 @@ function applyUser(u) {
   }
 }
 async function forceLogout(msg) {
-  try { await fetch("/api/logout", { method: "POST", headers: authHeaders() }); } catch (e) {}
+  try { await fetch("/api/logout?page=rider", { method: "POST", headers: authHeaders() }); } catch (e) {}
   localStorage.removeItem("riderToken");
   if (msg) { try { alert(msg); } catch (e) {} }
   location.href = "/login?next=" + encodeURIComponent(location.pathname);
@@ -1615,8 +1714,17 @@ async function checkLogin() {
     var j = await r.json();
     if (j.ok && j.role === "rider") { applyUser(j); return; }
     if (r.status === 403) { forceLogout("သင့်အကောင့်ကို ပိတ်ထားပါသည်။ စီမံခန့်ခွဲသူကို ဆက်သွယ်ပါ။"); return; }
-  } catch (e) {}
-  // 未登录或 token 不属于骑手（如管理员登录态）：不显示用户信息，仅显示 Login/Logout
+    // 仅后端明确返回 401（token 真失效）才清除骑手 token；网络抖动、服务端临时异常一律保留登录态
+    if (r.status !== 401) {
+      document.getElementById("btnLogin").style.display = "block";
+      document.getElementById("btnLogout").style.display = "block";
+      document.getElementById("userName").textContent = "-";
+      return;
+    }
+  } catch (e) {
+    return;
+  }
+  // token 无效：清骑手 token（不影响商家后台 userToken），提示重新登录
   localStorage.removeItem("riderToken");
   document.getElementById("btnLogin").style.display = "block";
   document.getElementById("btnLogout").style.display = "block";

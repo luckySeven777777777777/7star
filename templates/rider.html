@@ -365,7 +365,8 @@ var state = {
   statusLocked: false, pendingStatus: "",
   confirmedStatuses: [],
   gpsTimer: null, simTimer: null, refreshTimer: null, gpsWatchId: null,
-  curLat: null, curLng: null, gpsEnabled: true
+  curLat: null, curLng: null, gpsEnabled: true,
+  keepOrderNo: "", keepPhone: ""
 };
 
 // ---------- 骑手端请求统一注入 riderToken：与商家后台登录态完全隔离，互不覆盖 ----------
@@ -1116,6 +1117,8 @@ async function bindOrder() {
     document.getElementById("gpsBtn").disabled = true;
     document.getElementById("gpsBtn").textContent = "GPS ဖွင့်ထားသည်";
     startGps();
+    // 绑定新订单后不再刷新上一单的剩余数量
+    state.keepOrderNo = ""; state.keepPhone = "";
     refreshRiderInfo();
     // 定期检查商家是否关闭 GPS（商家关闭后本端立即停止上报）
     if (state.refreshTimer) clearInterval(state.refreshTimer);
@@ -1360,6 +1363,8 @@ async function doConfirmDelivered() {
     });
     var j = await r.json();
     if (!j.ok) { showInfo(j.msg); return; }
+    // 立即回显服务端已扣减的剩余数量（不等下一次轮询），保证"确认后数量马上变"
+    applyRemain(j);
     var doneNo = state.orderNo;
     closeConfirmModal();
     var _dlat = (shopLat !== null && shopLat !== undefined) ? shopLat : state.curLat;
@@ -1404,6 +1409,7 @@ async function doCancelOrder() {
     });
     var j = await r.json();
     if (!j.ok) { showInfo(j.msg); return; }
+    applyRemain(j);
     closeCancelOrder();
     // 取消后地图保留红圈 ❌ + 订单号（与确认 ✅ 一致），骑手与商家都能第一时间看到
     var cLat = (shopLat === null || shopLat === undefined) ? state.curLat : shopLat;
@@ -1421,9 +1427,38 @@ function stTagHtml(st) {
   return '<span class="status-tag st-' + st + '">' + st + '</span>';
 }
 
+// ---------- ကျန်ရှိသော အရေအတွက် ချက်ချင်း ပြသခြင်း ----------
+// 统一回显：分母永远用原始总量，剩余用后端扣减后的 remaining
+function applyRemain(d) {
+  if (!d) return;
+  var _b = (d.baozi_total_orig !== undefined && d.baozi_total_orig !== null) ? d.baozi_total_orig : d.baozi_total;
+  var _s = (d.shop_total_orig !== undefined && d.shop_total_orig !== null) ? d.shop_total_orig : d.shop_total;
+  if (d.baozi_remaining !== undefined && d.baozi_remaining !== null && _b !== undefined && _b !== null && _b !== "") {
+    document.getElementById("curBaozi").textContent = d.baozi_remaining + " / " + _b;
+  }
+  if (d.shop_remaining !== undefined && d.shop_remaining !== null && _s !== undefined && _s !== null && _s !== "") {
+    document.getElementById("curShop").textContent = d.shop_remaining + " / " + _s;
+  }
+}
+
+// 确认/取消后本端已解绑订单，但仍要持续刷新该单的剩余数量（否则数量会停在旧值）
+async function refreshKeepRemain() {
+  if (!state.keepOrderNo || !state.keepPhone) return;
+  try {
+    var r = await fetch("/api/rider/info?order_no=" + encodeURIComponent(state.keepOrderNo) + "&phone=" + encodeURIComponent(state.keepPhone));
+    if (!r.ok) return;
+    var j = await r.json();
+    if (!j.ok) return;
+    applyRemain(j);
+  } catch (e) {}
+}
+
 // ---------- အမှာစာ ပြီးဆုံးပြီးနောက် ပြန်လည် ချိတ်ဆက်နိုင်ရန် ပြန်လည်သတ်မှတ်ခြင်း ----------
 function resetAfterCompletion(doneOrderNo) {
   var oldPhone = state.phone;
+  // 记住刚结束的订单，用于确认后继续刷新剩余数量
+  if (doneOrderNo && oldPhone) { state.keepOrderNo = doneOrderNo; state.keepPhone = oldPhone; }
+  else { state.keepOrderNo = ""; state.keepPhone = ""; }
   // 停止当前订单的 GPS 上报与轮询
   if (state.gpsWatchId !== null) { try { navigator.geolocation.clearWatch(state.gpsWatchId); } catch (e) {} state.gpsWatchId = null; }
   if (state.gpsTimer) { clearInterval(state.gpsTimer); state.gpsTimer = null; }
@@ -1451,8 +1486,11 @@ function resetAfterCompletion(doneOrderNo) {
   }
   document.getElementById("curCity").textContent = "-";
   document.getElementById("curLocation").textContent = "-";
-  document.getElementById("curBaozi").textContent = "-";
-  document.getElementById("curShop").textContent = "-";
+  // 刚完成/取消的订单：保留（并持续刷新）剩余数量，避免出现数量被清空或停在旧值
+  if (!doneOrderNo) {
+    document.getElementById("curBaozi").textContent = "-";
+    document.getElementById("curShop").textContent = "-";
+  }
   document.getElementById("curPayment").textContent = "-";
   document.getElementById("curAmount").textContent = "-";
   document.getElementById("lastTime").textContent = "-";
@@ -1481,6 +1519,11 @@ function resetAfterCompletion(doneOrderNo) {
   if (oldPhone) { loadRemaining(oldPhone); loadTodayCancelled(oldPhone); }
   // 从服务端回填今日已完成/已取消标记：手机端本地无坐标时也能显示 ✅/❌
   if (doneOrderNo && oldPhone) { loadTodayDone(oldPhone); }
+  // 结束后仍每 5 秒刷新该单剩余数量，商家/骑手看到的数字始终最新
+  if (doneOrderNo && oldPhone) {
+    refreshKeepRemain();
+    state.refreshTimer = setInterval(refreshKeepRemain, 5000);
+  }
 }
 
 // ---------- ဖုန်းနံပါတ်နှင့် အမှာစာ မကိုက်ညီပါက အလိုအလျောက် ပြန်လည်သတ်မှတ်ခြင်း ----------

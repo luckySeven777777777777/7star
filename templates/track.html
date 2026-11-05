@@ -930,7 +930,8 @@ async function searchMulti(silent) {
 
 function stTagHtml(st) {
   if (!st || st === "-") return "-";
-  return '<span class="status-tag st-' + st + '">' + st + '</span>';
+  var icon = (st === "လက်ခံပြီးပါပြီ") ? "✅ " : ((st === "ပယ်ဖျက်ထားသည်") ? "❌ " : "");
+  return '<span class="status-tag st-' + st + '">' + icon + st + '</span>';
 }
 
 function renderMulti(results, silent) {
@@ -1229,9 +1230,30 @@ async function openHistory() {
     sel.value = _historyDate;
     _historyVisible = 10;
     renderHistory();
+    // 订单记录弹窗打开期间每 5 秒自动刷新，确认/取消后状态与剩余数量立即变化
+    if (window._historyTimer) clearInterval(window._historyTimer);
+    window._historyTimer = setInterval(refreshHistorySilent, 5000);
   } catch (e) {
     document.getElementById("historyList").innerHTML = '<div class="history-empty">Failed to load history.</div>';
   }
+}
+
+// 静默刷新订单记录（不显示 Loading，不打断滚动）
+async function refreshHistorySilent() {
+  var modal = document.getElementById("historyModal");
+  if (!modal || modal.style.display === "none") {
+    if (window._historyTimer) { clearInterval(window._historyTimer); window._historyTimer = null; }
+    return;
+  }
+  var phone = document.getElementById("phone").value.trim();
+  if (!phone) return;
+  try {
+    var r = await fetch("/api/order/history?phone=" + encodeURIComponent(phone));
+    var j = await r.json();
+    if (!j.ok || !j.history) return;
+    _historyAll = j.history;
+    renderHistory();
+  } catch (e) {}
 }
 
 function renderHistory() {

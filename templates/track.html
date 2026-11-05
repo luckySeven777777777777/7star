@@ -88,17 +88,7 @@
   .bell-btn { position:relative; width:34px; height:34px; margin:0; padding:0; border:none; border-radius:50%; background:#fff; display:flex; align-items:center; justify-content:center; cursor:pointer; box-shadow:0 2px 6px rgba(0,0,0,0.15); box-sizing:border-box; }
   .bell-btn svg { width:18px; height:18px; stroke:#e07b00; fill:none; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
   .bell-badge { position:absolute; top:-4px; right:-4px; min-width:18px; height:18px; border-radius:10px; background:#e53935; color:#fff; font-size:11px; line-height:18px; text-align:center; padding:0 4px; font-weight:bold; box-shadow:0 1px 3px rgba(0,0,0,0.3); }
-  .bell-panel { position:absolute; top:42px; right:0; width:310px; max-width:calc(100vw - 24px); max-height:380px; background:#fff; border-radius:12px; box-shadow:0 6px 20px rgba(0,0,0,0.2); display:none; flex-direction:column; overflow:hidden; z-index:60; box-sizing:border-box; }
-  .bell-panel.open { display:flex; }
-  .today-mark { background:none; border:none; }
-  .tm-box { display:flex; flex-direction:column; align-items:center; gap:2px; }
-  .tm-no { display:inline-block; max-width:100%; padding:1px 6px; border-radius:8px; font-size:10px; font-weight:bold; color:#fff; line-height:14px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; box-shadow:0 1px 3px rgba(0,0,0,.35); }
-  .tm-done-chip { background:#2e7d32; }
-  .tm-cancel-chip { background:#c62828; }
-  .tm-em { font-size:15px; line-height:16px; text-shadow:0 1px 2px rgba(0,0,0,.35); }
-  @media (max-width: 620px) {
-    .bell-panel { position:fixed; top:64px; right:8px; left:auto; width:calc(100vw - 16px); max-width:none; max-height:70vh; }
-  }
+  .bell-panel { position:absolute; top:42px; right:-8px; width:310px; max-width:calc(100vw - 24px); max-height:380px; background:#fff; border-radius:12px; box-shadow:0 6px 20px rgba(0,0,0,0.2); display:none; flex-direction:column; overflow:hidden; z-index:60; }
   .bell-head { display:flex; justify-content:space-between; align-items:center; padding:10px 14px; border-bottom:1px solid #eee; font-size:13px; font-weight:bold; color:#333; }
   .bell-head .sound-toggle { display:flex; align-items:center; gap:5px; font-weight:normal; font-size:12px; color:#666; cursor:pointer; }
   .bell-head .sound-toggle input { width:auto; margin:0; }
@@ -272,9 +262,9 @@
   <div class="result" id="result">
     Date：<b id="rDate"></b><br>
     Order Number：<b id="rOrderNo"></b>（<span id="rCustomer"></span>）
-    Status：<span class="status-tag" id="rStatusTag">-</span><br>
+    <span class="status-tag st-ပို့ဆောင်နေသည်" id="rStatusTag">ပို့ဆောင်နေသည်</span><br>
     ပို့ရမည့်လိပ်စာ：<span id="rAddress"></span><br>
-    Update：<b id="rTime"></b><br>
+    ပို့ဆောင်သူ နောက်ဆုံးတည်နေရာ အချိန်：<b id="rTime"></b><br>
     城市：<b id="rCity"></b><br>
     ပို့ဆောင်သူ နောက်ဆုံးတည်နေရာ：<b id="rLatest"></b><br>
     ပို့ဆောင်သူ ကျန်ရှိသော ပေါက်စီအလုံးအရေတွက်：<b id="rBaozi"></b><br>
@@ -418,20 +408,20 @@ document.addEventListener("fullscreenchange", function () {
   }
   if (map) setTimeout(function () { map.invalidateSize(); }, 200);
 });
-var refreshTimer = null;
-
-// ---------- 状态显示：统一英文（内部仍用缅文键值，不影响业务逻辑） ----------
-var STATUS_EN = {
-  "အစားအစာယူရန် စောင့်ဆိုင်း": "Waiting for pickup",
-  "ပို့ဆောင်နေသည်": "Delivering",
-  "ရောက်ရှိပြီး": "Arrived",
-  "လက်ခံပြီးပါပြီ": "Completed",
-  "ပယ်ဖျက်ထားသည်": "Cancelled"
-};
-function enSt(s) {
-  if (!s || s === "待取餐") return "-";
-  return STATUS_EN[s] || s;
+// 状态英文映射（仅用于显示，后端存储值不变）
+function statusEn(st) {
+  var m = {
+    "": "Pending",
+    "အစားအစာယူရန် စောင့်ဆိုင်း": "Waiting for food",
+    "ပို့ဆောင်နေသည်": "Delivering",
+    "ရောက်ရှိပြီး": "Arrived",
+    "လက်ခံပြီးပါပြီ": "Completed",
+    "ပယ်ဖျက်ထားသည်": "Cancelled"
+  };
+  var k = st || "";
+  return m[k] || k || "Pending";
 }
+var refreshTimer = null;
 var currentOrderNo = "";
 var currentPhone = "";
 var multiGroup = null;
@@ -485,7 +475,7 @@ function render(j) {
   document.getElementById("rAmount").textContent = j.amount || "-";
   document.getElementById("rShopLocation").textContent = locDisplay(j);
 
-  // 快递员未选择状态前显示 "-"（不显示配送中）
+  // 快递员未选择状态前显示 "-"（不显示配送中）；状态一律英文显示
   var tag = document.getElementById("rStatusTag");
   var st = j.status || "";
   if (!st || st === "待取餐") {
@@ -493,7 +483,7 @@ function render(j) {
     tag.textContent = "-";
   } else {
     tag.className = "status-tag st-" + st;
-    tag.textContent = enSt(st);
+    tag.textContent = statusEn(st);
   }
 
   // 取消/完成态：状态标签已刷新，同时清理商家引导路线与 ETA
@@ -533,7 +523,7 @@ function render(j) {
         if (marker) { try { map.removeLayer(marker); } catch (e) {} marker = null; }
         if (!doneMarker) {
           doneMarker = L.marker(baseLL, { icon: doneIcon(j.order_no, _k2) }).addTo(map);
-          doneMarker.bindPopup((_k2 === "cancel" ? "❌ " : "✅ ") + "<b>" + st + "</b><br>Order：<b>" + j.order_no + "</b>");
+          doneMarker.bindPopup((_k2 === "cancel" ? "❌ " : "✅ ") + "<b>" + statusEn(st) + "</b><br>Order：<b>" + j.order_no + "</b>");
         } else {
           doneMarker.setLatLng(baseLL);
           doneMarker.setIcon(doneIcon(j.order_no, _k2));
@@ -588,7 +578,7 @@ function render(j) {
       var _kind = (st === "ပယ်ဖျက်ထားသည်") ? "cancel" : "done";
       if (!doneMarker) {
         doneMarker = L.marker(shopLL, { icon: doneIcon(j.order_no, _kind) }).addTo(map);
-        doneMarker.bindPopup((_kind === "cancel" ? "❌ " : "✅ ") + "<b>" + st + "</b><br>Order：<b>" + j.order_no + "</b>");
+        doneMarker.bindPopup((_kind === "cancel" ? "❌ " : "✅ ") + "<b>" + statusEn(st) + "</b><br>Order：<b>" + j.order_no + "</b>");
       } else {
         doneMarker.setLatLng(shopLL);
         doneMarker.setIcon(doneIcon(j.order_no, _kind));
@@ -614,7 +604,7 @@ function render(j) {
       var _k3 = (st === "ပယ်ဖျက်ထားသည်") ? "cancel" : "done";
       if (!doneMarker) {
         doneMarker = L.marker(latest, { icon: doneIcon(j.order_no, _k3) }).addTo(map);
-        doneMarker.bindPopup((_k3 === "cancel" ? "❌ " : "✅ ") + "<b>" + st + "</b><br>Order：<b>" + j.order_no + "</b>");
+        doneMarker.bindPopup((_k3 === "cancel" ? "❌ " : "✅ ") + "<b>" + statusEn(st) + "</b><br>Order：<b>" + j.order_no + "</b>");
       } else {
         doneMarker.setLatLng(latest);
         doneMarker.setIcon(doneIcon(j.order_no, _k3));
@@ -902,7 +892,7 @@ async function searchMulti(silent) {
 
 function stTagHtml(st) {
   if (!st || st === "-") return "-";
-  return '<span class="status-tag st-' + st + '">' + st + '</span>';
+  return '<span class="status-tag st-' + st + '">' + statusEn(st) + '</span>';
 }
 
 function renderMulti(results, silent) {
@@ -1496,19 +1486,14 @@ function saveSoundPref() {
 })();
 function toggleBellPanel() {
   var panel = document.getElementById("bellPanel");
-  if (!panel) return;
-  var show = !panel.classList.contains("open");
-  // 统一用 class + inline display 双控制，打开/关闭尺寸恒定，绝不因二次点击变形放大
-  panel.classList.toggle("open", show);
+  var show = (panel.style.display === "none");
   panel.style.display = show ? "flex" : "none";
   if (show) {
     bellState.count = 0;
-    var b = document.getElementById("bellBadge");
-    if (b) b.style.display = "none";
+    document.getElementById("bellBadge").style.display = "none";
     renderBellList();
   }
 }
-window.toggleBellPanel = toggleBellPanel;
 
 function yangonTimeStr(iso) {
   // 后端 created_at 为 UTC，统一转换为缅甸时间（UTC+6:30）显示
@@ -1547,8 +1532,7 @@ function renderBellList() {
 }
 
 function bellJump(orderNo, phone) {
-  var _bp = document.getElementById("bellPanel");
-  if (_bp) { _bp.classList.remove("open"); _bp.style.display = "none"; }
+  document.getElementById("bellPanel").style.display = "none";
   var inp = document.getElementById("orderNo");
   if (inp) inp.value = orderNo;
   if (phone) {
@@ -1675,6 +1659,9 @@ startBellPolling();
     display:block; margin-top:2px; font-size:10px; font-weight:bold; color:#333;
     background:rgba(255,255,255,.9); border-radius:4px; padding:0 3px; text-align:center; white-space:nowrap;
   }
+  /* 订单号底色：✅ 完成 = 绿色，❌ 取消 = 红色 */
+  .today-mark .tm-done + .tm-no { background:#43a047; color:#fff; }
+  .today-mark .tm-cancel + .tm-no { background:#d32f2f; color:#fff; }
   @media (max-width: 620px) {
     html, body { overflow-x: hidden; max-width:100%; }
     .bell-panel {
@@ -1795,31 +1782,17 @@ startBellPolling();
   var _marksOnce = false;
   if (!window.__rawFetch) { window.__rawFetch = window.fetch; }
 
-  function markIcon(orderNo, isDone) {
-    var no = String(orderNo || "");
-    var w = Math.max(92, Math.min(200, no.length * 8 + 20));
+  function markIcon(orderNo, isDone, dx, dy) {
+    dx = dx || 0; dy = dy || 0;
     return L.divIcon({
       className: "today-mark",
-      html: '<div class="tm-box">' +
-              '<div class="tm-no ' + (isDone ? "tm-done-chip" : "tm-cancel-chip") + '">' + no + '</div>' +
-              '<div class="tm-em">' + (isDone ? "✅" : "❌") + '</div>' +
+      html: '<div style="transform:translate(' + dx + 'px,' + dy + 'px)">' +
+              '<div class="tm-wrap ' + (isDone ? "tm-done" : "tm-cancel") + '">' + (isDone ? "✅" : "❌") + '</div>' +
+              '<span class="tm-no">' + (orderNo || "") + '</span>' +
             '</div>',
-      iconSize: [w, 44],
-      iconAnchor: [w / 2, 42]
+      iconSize: [34, 46],
+      iconAnchor: [17, 23]
     });
-  }
-
-  // 同一坐标（同一商家）多张订单时做环形微偏移，避免订单号与 ✅/❌ 完全叠在一起
-  function _offsetLatLng(o, seen) {
-    var lat = Number(o.lat), lng = Number(o.lng);
-    var k = lat.toFixed(6) + "," + lng.toFixed(6);
-    var n = seen[k] || 0;
-    seen[k] = n + 1;
-    if (n === 0) return [lat, lng];
-    var ring = Math.ceil(n / 6);
-    var ang = (n % 6) * (Math.PI / 3);
-    var rad = 0.00016 * ring;
-    return [lat + rad * Math.cos(ang), lng + rad * Math.sin(ang)];
   }
 
   function ensureMarksGroup() {
@@ -1829,36 +1802,40 @@ startBellPolling();
     return _marksGroup;
   }
 
-  var _marksSig = "";
-  function drawTodayMarks(force) {
+  // 同一坐标多单依次错位，订单号与 ✅/❌ 圈不重叠
+  function _tmSlot(used, lat, lng) {
+    var n = 0;
+    used.forEach(function (u) {
+      if (Math.abs(u[0] - lat) < 1e-5 && Math.abs(u[1] - lng) < 1e-5) n++;
+    });
+    used.push([lat, lng]);
+    return n * 40;
+  }
+
+  function drawTodayMarks() {
     var g = ensureMarksGroup();
     if (!g) return;
-    window.__rawFetch.call(window, "/api/today-marks", { cache: "no-store", headers: { "X-Page": "track" } })
+    window.__rawFetch.call(window, "/api/today-marks", { cache: "no-store" })
       .then(function (r) { return r.json(); })
       .then(function (j) {
         if (!j || !j.ok) return;
-        var done = j.done || [], canc = j.cancelled || [];
-        var curNo = String(window.currentOrderNo || "");
-        // 数据签名：只有集合变化才重绘，避免闪烁；变化（含刚取消）3 秒内必现
-        var sig = done.map(function (o) { return "D" + o.order_no; }).join(",") + "|" +
-                  canc.map(function (o) { return "C" + o.order_no; }).join(",");
-        if (!force && sig === _marksSig && g.getLayers().length) return;
-        _marksSig = sig;
         g.clearLayers();
-        var seen = {};
-        done.forEach(function (o) {
+        var used = [];
+        (j.done || []).forEach(function (o) {
           if (o.lat === null || o.lat === undefined || o.lng === null || o.lng === undefined) return;
-          L.marker(_offsetLatLng(o, seen), { icon: markIcon(o.order_no, true), zIndexOffset: 600 })
+          var off = _tmSlot(used, o.lat, o.lng);
+          L.marker([o.lat, o.lng], { icon: markIcon(o.order_no, true, off, off), zIndexOffset: 600 })
             .addTo(g)
-            .bindPopup("✅ <b>ပြီးဆုံးခဲ့သည် / Completed</b><br>Order：<b>" + (o.order_no || "") + "</b>" +
-                       (o.rider_name ? "<br>Rider：" + o.rider_name : "") + (o.time ? "<br>" + o.time : ""));
+            .bindPopup("✅ <b>Completed</b><br>Order：<b>" + (o.order_no || "") + "</b>" +
+                       (o.rider_name ? "<br>Rider: " + o.rider_name : "") + (o.time ? "<br>" + o.time : ""));
         });
-        canc.forEach(function (o) {
+        (j.cancelled || []).forEach(function (o) {
           if (o.lat === null || o.lat === undefined || o.lng === null || o.lng === undefined) return;
-          L.marker(_offsetLatLng(o, seen), { icon: markIcon(o.order_no, false), zIndexOffset: 700 })
+          var off = _tmSlot(used, o.lat, o.lng);
+          L.marker([o.lat, o.lng], { icon: markIcon(o.order_no, false, off, off), zIndexOffset: 600 })
             .addTo(g)
-            .bindPopup("❌ <b>ပယ်ဖျက်ထားသည် / Cancelled</b><br>Order：<b>" + (o.order_no || "") + "</b>" +
-                       (o.rider_name ? "<br>Rider：" + o.rider_name : "") + (o.time ? "<br>" + o.time : ""));
+            .bindPopup("❌ <b>Cancelled</b><br>Order：<b>" + (o.order_no || "") + "</b>" +
+                       (o.rider_name ? "<br>Rider: " + o.rider_name : "") + (o.time ? "<br>" + o.time : ""));
         });
         _marksOnce = true;
       })
@@ -1866,34 +1843,39 @@ startBellPolling();
   }
   window.drawTodayMarks = drawTodayMarks;
 
-  // 每 3 秒真正重新拉取一次：骑手在手机端确认/取消后，电脑端标记立即跟着变
+  // 地图尚未创建时（用户还没搜索）不报错，地图就绪后自动补画；
+  // 必须持续轮询重画，否则手机端确认/取消后电脑端不会出现新的 ✅/❌
   setInterval(function () {
-    if (window.map && _marksGroup && !map.hasLayer(_marksGroup)) map.addLayer(_marksGroup);
-    drawTodayMarks(true);
-  }, 3000);
-  setTimeout(function () { drawTodayMarks(true); }, 1200);
+    if (!window.map) return;
+    drawTodayMarks();
+  }, 5000);
+  setTimeout(drawTodayMarks, 1200);
 
   /* ---------------- 通知面板：手机上不出屏 ---------------- */
-  // 通知面板位置：绝不再改写宽度 / left / right（原逻辑会把面板撑成整屏大，导致第二次点击后无法关闭）
-  // 尺寸完全交给 CSS，出屏时只用 transform 做轻微平移修正
+  function resetBellInline(el) {
+    if (!el) return;
+    ["position", "left", "right", "top", "width", "maxWidth", "transform"].forEach(function (k) {
+      el.style[k] = "";
+    });
+  }
   function fixBellPos() {
     var el = document.getElementById("bellPanel") || document.querySelector(".bell-panel");
     if (!el) return;
-    el.style.position = "";
-    el.style.left = "";
-    el.style.right = "";
-    el.style.width = "";
-    el.style.maxWidth = "";
-    el.style.transform = "";
+    // 面板关闭时 getBoundingClientRect 全为 0，绝不能据此写入定位样式，
+    // 否则下次打开会被撑成整屏放大、并盖住关闭按钮（第二次点击变大的根因）
+    if (el.style.display === "none") { resetBellInline(el); return; }
     var r = el.getBoundingClientRect();
+    if (!r.width) return;
+    resetBellInline(el);
     var vw = window.innerWidth;
-    if (r.right > vw - 6) {
-      el.style.transform = "translateX(-" + Math.ceil(r.right - (vw - 6)) + "px)";
-    }
+    // 手机端尺寸由 CSS media query 统一控制，这里不再写 inline，保证每次打开都是同一尺寸
+    if (vw <= 620) return;
+    if (r.right > vw - 4) { el.style.right = "0px"; el.style.left = "auto"; }
   }
-  window.fixBellPos = fixBellPos;
   var _origToggle = window.toggleBellPanel;
   window.toggleBellPanel = function () {
+    var panel = document.getElementById("bellPanel");
+    resetBellInline(panel);
     var r = (typeof _origToggle === "function") ? _origToggle.apply(this, arguments) : undefined;
     setTimeout(fixBellPos, 30);
     return r;

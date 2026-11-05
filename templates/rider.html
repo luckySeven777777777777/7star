@@ -1002,6 +1002,12 @@ async function bindOrder() {
     // 绑定成功即进入「进行中」状态：Get New Orders 立即锁定，完成/取消后才解锁
     window.__activeOrderNo = orderNo;
     if (window.updateGetNewOrderState) window.updateGetNewOrderState();
+    // 绑定/创建成功：先用骑手输入的数量本地刷新顶部剩余卡片（Order/Status/两个数量），避免成功后长时间空白
+    if (window.applyRemainLocal) {
+      window.applyRemainLocal(orderNo, state.status || "ပို့ဆောင်နေသည်", baoziTotal, shopTotal);
+    }
+    // 再异步向服务端校正真实剩余量（失败也不影响本地已显示的值）
+    if (window.loadRemain) window.loadRemain(phone, orderNo);
     // 显示骑手端地图：商家位置 + 骑手自身位置 + 绿色路线
     showRiderMap();
     if (j.shop_lat !== null && j.shop_lat !== undefined) {
@@ -1929,8 +1935,39 @@ checkLogin();
     window.__remain.orderNo = j.order_no || "";
     window.__remain.status = j.status || "";
     d.style.display = "block";
-    validateCountInputs();
+    if (window.validateCountInputs) window.validateCountInputs();
   }
+
+  // 绑定成功后的本地即时刷新：先用骑手输入的数量占位显示，随后由 loadRemain 异步校正真实值
+  function applyRemainLocal(orderNo, status, baozi, shop) {
+    var d = ensureRemainCard();
+    function g(id) { return document.getElementById(id); }
+    var b = parseInt(baozi, 10);
+    var s = parseInt(shop, 10);
+    var bTxt = isNaN(b) ? "-" : String(b);
+    var sTxt = isNaN(s) ? "-" : String(s);
+    if (g("rtOrder")) g("rtOrder").textContent = orderNo || "-";
+    if (g("rtStatus")) {
+      var stTxt = "-";
+      if (status) stTxt = window.statusEn ? window.statusEn(status) : status;
+      g("rtStatus").textContent = stTxt;
+    }
+    if (g("rtBaozi")) g("rtBaozi").textContent = bTxt + " / " + bTxt;
+    if (g("rtShop")) g("rtShop").textContent = sTxt + " / " + sTxt;
+    if (g("rtTime")) {
+      var now = new Date();
+      g("rtTime").textContent = now.getHours() + ":" +
+        String(now.getMinutes()).padStart(2, "0") + ":" + String(now.getSeconds()).padStart(2, "0");
+    }
+    window.__remain.baozi = isNaN(b) ? null : b;
+    window.__remain.shop = isNaN(s) ? null : s;
+    window.__remain.orderNo = orderNo || "";
+    window.__remain.status = status || "";
+    d.style.display = "block";
+    if (window.validateCountInputs) window.validateCountInputs();
+  }
+  window.applyRemainLocal = applyRemainLocal;
+
   function loadRemain(phone, orderNo) {
     if (!phone && !orderNo) return;
     var q = [];
@@ -2057,16 +2094,24 @@ checkLogin();
     }
     var bEl = document.getElementById("baoziCount");
     var sEl = document.getElementById("shopCount");
-    var bt = bEl ? parseInt(bEl.value, 10) : 0;
-    var st = sEl ? parseInt(sEl.value, 10) : 0;
-    if (isNaN(bt)) bt = 0;
-    if (isNaN(st)) st = 0;
+    var pEl = document.getElementById("riderPhone");
+    var bRaw = bEl ? String(bEl.value || "").trim() : "";
+    var sRaw = sEl ? String(sEl.value || "").trim() : "";
+    var pRaw = pEl ? String(pEl.value || "").trim() : "";
+    var bt = bRaw === "" ? NaN : parseInt(bRaw, 10);
+    var st = sRaw === "" ? NaN : parseInt(sRaw, 10);
     var rb = window.__remain ? window.__remain.baozi : null;
     var rs = window.__remain ? window.__remain.shop : null;
-    var mismatch = false;
-    if (rb !== null && rb !== undefined && bt !== rb) mismatch = true;
-    if (rs !== null && rs !== undefined && st !== rs) mismatch = true;
-    if (mismatch) {
+    var hasRemain = rb !== null && rb !== undefined && rs !== null && rs !== undefined &&
+      !isNaN(Number(rb)) && !isNaN(Number(rs));
+    // 剩余量缺失（新订单首次绑定）时不做一致性校验，仅要求手机号与两个数量已填且 > 0
+    if (pRaw === "" || isNaN(bt) || bt <= 0 || isNaN(st) || st <= 0) {
+      bind.disabled = true;
+      bind.textContent = "Order ချိတ်ဆက်၍ ပို့ဆောင်စမည်";
+      return;
+    }
+    // 仅有有效剩余量时才校验「输入数量必须等于剩余数量」
+    if (hasRemain && (bt !== Number(rb) || st !== Number(rs))) {
       bind.disabled = true;
       bind.textContent = "အရေအတွက် မကိုက်ညီပါ (Count mismatch — must equal remaining)";
       return;
@@ -2254,18 +2299,25 @@ checkLogin();
     }
     var bEl = document.getElementById("baoziCount");
     var sEl = document.getElementById("shopCount");
+    var pEl = document.getElementById("riderPhone");
     var bRaw = bEl ? String(bEl.value || "").trim() : "";
     var sRaw = sEl ? String(sEl.value || "").trim() : "";
+    var pRaw = pEl ? String(pEl.value || "").trim() : "";
     var rb = window.__remain ? window.__remain.baozi : null;
     var rs = window.__remain ? window.__remain.shop : null;
-    if (rb === null || rb === undefined || rs === null || rs === undefined) {
-      bind.disabled = true;
-      bind.textContent = "ကျန်ရှိအရေအတွက် မရယူရသေးပါ (Loading remaining…)";
-      return;
-    }
+    var hasRemain = rb !== null && rb !== undefined && rs !== null && rs !== undefined &&
+      !isNaN(Number(rb)) && !isNaN(Number(rs));
     var bt = bRaw === "" ? NaN : parseInt(bRaw, 10);
     var st = sRaw === "" ? NaN : parseInt(sRaw, 10);
-    if (isNaN(bt) || isNaN(st) || bt !== Number(rb) || st !== Number(rs)) {
+    // 剩余量缺失（新订单首次绑定本来就没有剩余量可参照）：绝不改文案、绝不因剩余量缺失而禁用，
+    // 只需手机号与两个数量输入框已填且 > 0 即可点击
+    if (pRaw === "" || isNaN(bt) || bt <= 0 || isNaN(st) || st <= 0) {
+      bind.disabled = true;
+      bind.textContent = "Order ချိတ်ဆက်၍ ပို့ဆောင်စမည်";
+      return;
+    }
+    // 仅当剩余量存在有效数字时，才启用「输入数量必须与剩余数量一致」的校验
+    if (hasRemain && (bt !== Number(rb) || st !== Number(rs))) {
       bind.disabled = true;
       bind.textContent = "အရေအတွက် မကိုက်ညီပါ (" + (bRaw || "0") + "/" + rb + " · " + (sRaw || "0") + "/" + rs + ")";
       return;

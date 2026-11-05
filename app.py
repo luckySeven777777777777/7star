@@ -1138,6 +1138,10 @@ def rider_confirm():
     order_dict = _row_to_dict(cur, order)
     new_baozi = (order_dict.get("baozi_received", 0) or 0) + confirm_baozi
     new_shop = (order_dict.get("shop_received", 0) or 0) + 1  # 每确认一个商家地址 +1
+    # 分母固定为原始总量，剩余量随确认即时扣减，供前端立即回显（无需再等下一次轮询）
+    _bo_orig, _, _so_orig, _ = order_counts(order_dict)
+    _bo_remain = max(0, _bo_orig - new_baozi)
+    _so_remain = max(0, _so_orig - new_shop)
     cur.execute(
         _q("UPDATE orders SET baozi_received=?, shop_received=?, delivery_address=?, payment_method=?, amount=?, status='လက်ခံပြီးပါပြီ', completed_at=? WHERE order_no=?"),
         (new_baozi, new_shop, address, payment_method, amount, now_str(), order_no),
@@ -1185,7 +1189,10 @@ def rider_confirm():
     if not tg_ok and text_sent:
         tg_ok, tg_msg = True, "text sent"
     conn.close()
-    return jsonify({"ok": True, "msg": "လက်ခံပြီးပါပြီ", "status": "လက်ခံပြီးပါပြီ", "completed_at": now_str(), "baozi_received": new_baozi, "shop_received": new_shop, "payment_method": payment_method, "amount": amount, "telegram": tg_ok, "telegram_msg": tg_msg})
+    return jsonify({"ok": True, "msg": "လက်ခံပြီးပါပြီ", "status": "လက်ခံပြီးပါပြီ", "completed_at": now_str(), "baozi_received": new_baozi, "shop_received": new_shop,
+                    "baozi_total_orig": _bo_orig, "shop_total_orig": _so_orig,
+                    "baozi_remaining": _bo_remain, "shop_remaining": _so_remain,
+                    "payment_method": payment_method, "amount": amount, "telegram": tg_ok, "telegram_msg": tg_msg})
 
 
 @app.route("/api/rider/cancel", methods=["POST"])
@@ -1210,6 +1217,13 @@ def rider_cancel():
         if not cur.fetchone():
             conn.close()
             return jsonify({"ok": False, "msg": "ဤဖုန်းနံပါတ်သည် ဤအမှာစာနှင့် ချိတ်ဆက်မထားပါ"}), 403
+    # 取消不扣减任何数量；但回传当前剩余量，供骑手端 / 商家端立即刷新显示
+    cur.execute(_q("SELECT * FROM orders WHERE order_no=?"), (order_no,))
+    _od_row = cur.fetchone()
+    _od = _row_to_dict(cur, _od_row) if _od_row else {}
+    _c_bo, _c_br, _c_so, _c_sr = order_counts(_od)
+    _c_bo_remain = max(0, _c_bo - _c_br)
+    _c_so_remain = max(0, _c_so - _c_sr)
     cur.execute(_q("UPDATE orders SET status='ပယ်ဖျက်ထားသည်', completed_at=? WHERE order_no=?"), (now_str(), order_no))
     cur.execute(_q("UPDATE riders SET order_no='', rider_name='' WHERE phone=? AND order_no=?"), (phone, order_no))
     # 保留订单历史：存在则更新骑手名与绑定时间，不存在则补记一条
@@ -1228,7 +1242,9 @@ def rider_cancel():
                 (order_no, phone, "cancel", "订单已取消：" + order_no + "（骑手 " + (rider_name or phone) + "）", utc_iso_now()))
     conn.commit()
     conn.close()
-    return jsonify({"ok": True, "msg": "အော်ဒါ ပယ်ဖျက်ပြီးပါပြီ", "status": "ပယ်ဖျက်ထားသည်"})
+    return jsonify({"ok": True, "msg": "အော်ဒါ ပယ်ဖျက်ပြီးပါပြီ", "status": "ပယ်ဖျက်ထားသည်",
+                    "baozi_total_orig": _c_bo, "shop_total_orig": _c_so,
+                    "baozi_remaining": _c_bo_remain, "shop_remaining": _c_so_remain})
 
 
 @app.route("/api/rider/info", methods=["GET"])

@@ -156,6 +156,13 @@
   .multi-card { background:#fff; border:1.5px solid #d8d8d8; border-left:5px solid #2e7d32; border-radius:10px; padding:10px 12px; box-shadow:0 1px 4px rgba(0,0,0,0.08); line-height:1.9; color:#333; word-break:break-word; min-height:60px; overflow:hidden; }
   .multi-card.bad { border-left:4px solid #d32f2f; color:#d32f2f; }
   .multi-card b { color:#e07b00; }
+/* 手机兼容全屏（不依赖 Fullscreen API，手机浏览器普遍不支持对 div 调 requestFullscreen） */
+.map-fs { position:fixed !important; left:0; top:0; right:0; bottom:0; width:100vw; height:100vh; height:100dvh; margin:0 !important; padding:0 !important; background:#fff; border-radius:0 !important; z-index:99999; overflow:hidden; }
+.map-fs .map-holder { height:100% !important; }
+.map-fs #map { height:100% !important; border-radius:0 !important; }
+.map-fs .row2 { position:absolute; top:10px; left:10px; right:10px; z-index:100000; margin:0 !important; }
+.map-fs .row2 .btn { background:rgba(255,255,255,0.94); box-shadow:0 2px 8px rgba(0,0,0,0.25); }
+body.map-fs-lock { overflow:hidden !important; }
 </style>
 </head>
 <body>
@@ -387,26 +394,49 @@ function padReset() {
   map.eachLayer(function (l) { if (l instanceof L.Marker) pts.push(l.getLatLng()); });
   if (pts.length) { map.fitBounds(L.latLngBounds(pts), { padding: [50, 50] }); }
 }
-function toggleMapFullscreen() {
+// 地图全屏（手机兼容：CSS 伪全屏为主，原生 Fullscreen API 仅作增强）
+function isMapFullscreen() {
+  var wrap = document.getElementById("mapWrap");
+  return !!(wrap && wrap.classList.contains("map-fs"));
+}
+function _setMapFsBtn(on) {
+  var b = document.getElementById("mapFullscreenBtn");
+  if (b) b.textContent = on ? "✕ Exit Fullscreen" : "⛶ Fullscreen Map";
+}
+function enterMapFullscreen() {
   var wrap = document.getElementById("mapWrap");
   if (!wrap) return;
-  if (document.fullscreenElement || document.webkitFullscreenElement) {
-    if (document.exitFullscreen) document.exitFullscreen();
+  wrap.classList.add("map-fs");
+  document.body.classList.add("map-fs-lock");
+  _setMapFsBtn(true);
+  try {
+    var fn = wrap.requestFullscreen || wrap.webkitRequestFullscreen || wrap.mozRequestFullScreen || wrap.msRequestFullscreen;
+    if (fn) { var p = fn.call(wrap); if (p && p.catch) p.catch(function () {}); }
+  } catch (e) {}
+  setTimeout(function () { if (map) map.invalidateSize(); }, 250);
+}
+function exitMapFullscreen() {
+  var wrap = document.getElementById("mapWrap");
+  if (wrap) wrap.classList.remove("map-fs");
+  document.body.classList.remove("map-fs-lock");
+  _setMapFsBtn(false);
+  try {
+    if (document.exitFullscreen) { var q = document.exitFullscreen(); if (q && q.catch) q.catch(function () {}); }
     else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
-  } else {
-    if (wrap.requestFullscreen) wrap.requestFullscreen();
-    else if (wrap.webkitRequestFullscreen) wrap.webkitRequestFullscreen();
-  }
+  } catch (e) {}
+  setTimeout(function () { if (map) map.invalidateSize(); }, 250);
+}
+function toggleMapFullscreen() {
+  if (isMapFullscreen()) exitMapFullscreen();
+  else enterMapFullscreen();
 }
 document.addEventListener("fullscreenchange", function () {
-  var mapEl = document.getElementById("map");
-  if (!mapEl) return;
-  if (document.fullscreenElement || document.webkitFullscreenElement) {
-    mapEl.style.height = "calc(100vh - 70px)";
-  } else {
-    mapEl.style.height = "420px";
-  }
-  if (map) setTimeout(function () { map.invalidateSize(); }, 200);
+  var fsEl = document.fullscreenElement || document.webkitFullscreenElement;
+  if (!fsEl && isMapFullscreen()) exitMapFullscreen();
+  setTimeout(function () { if (map) map.invalidateSize(); }, 200);
+});
+window.addEventListener("orientationchange", function () {
+  setTimeout(function () { if (map) map.invalidateSize(); }, 400);
 });
 var refreshTimer = null;
 var currentOrderNo = "";
@@ -1538,9 +1568,32 @@ function ensureAudio() {
   return _audioCtx;
 }
 // 浏览器要求用户有交互后才能放声音：页面任意点击/触摸即解锁音频
-document.addEventListener("click", function () { ensureAudio(); }, true);
-document.addEventListener("touchstart", function () { ensureAudio(); }, true);
-document.addEventListener("keydown", function () { ensureAudio(); }, true);
+// 手机浏览器还要求语音合成(speechSynthesis)在用户手势内首次触发，否则静默无声
+var _speechUnlocked = false;
+function unlockSpeech() {
+  if (_speechUnlocked) return;
+  _speechUnlocked = true;
+  try {
+    if (!window.speechSynthesis || !window.SpeechSynthesisUtterance) return;
+    var u = new SpeechSynthesisUtterance(" ");
+    u.volume = 0; u.lang = "zh-CN";
+    speechSynthesis.speak(u);
+    // 预热语音列表（部分安卓机首次 getVoices() 为空）
+    try { speechSynthesis.getVoices(); } catch (e) {}
+  } catch (e) {}
+}
+document.addEventListener("click", function () { ensureAudio(); unlockSpeech(); }, true);
+document.addEventListener("touchstart", function () { ensureAudio(); unlockSpeech(); }, true);
+document.addEventListener("keydown", function () { ensureAudio(); unlockSpeech(); }, true);
+
+// 手机切后台会把 5 秒轮询节流/暂停，回到前台立即刷新一次，避免"确认后一直不更新"
+document.addEventListener("visibilitychange", function () {
+  if (document.visibilityState !== "visible") return;
+  try { if (typeof loadBell === "function") loadBell(); } catch (e) {}
+  try { if (typeof search === "function") search(); } catch (e) {}
+  try { if (typeof searchMulti === "function") searchMulti(true); } catch (e) {}
+  if (typeof map !== "undefined" && map) setTimeout(function () { map.invalidateSize(); }, 200);
+});
 
 function ringBell() {
   if (!bellState.sound) return;

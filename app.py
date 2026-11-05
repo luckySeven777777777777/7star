@@ -1240,15 +1240,14 @@ def today_cancelled():
     conn = get_db()
     cur = conn.cursor()
     if phone:
-        # 不再按天过滤：取消标记永久保留（凌晨12点不清零）
         cur.execute(_q("SELECT o.order_no, o.shop_lat, o.shop_lng, o.completed_at, h.rider_name "
                        "FROM orders o JOIN order_history h ON h.order_no=o.order_no "
-                       "WHERE h.rider_phone=? AND o.status='ပယ်ဖျက်ထားသည်' "
-                       "ORDER BY o.completed_at DESC LIMIT 300"), (phone,))
+                       "WHERE h.rider_phone=? AND o.status='ပယ်ဖျက်ထားသည်' AND o.completed_at LIKE ? "
+                       "ORDER BY o.completed_at DESC LIMIT 50"), (phone, day + "%"))
     else:
         cur.execute(_q("SELECT o.order_no, o.shop_lat, o.shop_lng, o.completed_at, '' AS rider_name FROM orders o "
-                       "WHERE o.status='ပယ်ဖျက်ထားသည်' "
-                       "ORDER BY o.completed_at DESC LIMIT 300"))
+                       "WHERE o.status='ပယ်ဖျက်ထားသည်' AND o.completed_at LIKE ? "
+                       "ORDER BY o.completed_at DESC LIMIT 50"), (day + "%",))
     rows = [_row_to_dict(cur, r) for r in cur.fetchall()]
     out = []
     for o in rows:
@@ -1277,9 +1276,9 @@ def today_completed():
     conn = get_db()
     cur = conn.cursor()
     cur.execute(_q("SELECT o.order_no, o.shop_lat, o.shop_lng, o.completed_at FROM orders o "
-                   "WHERE o.status='လက်ခံပြီးပါပြီ' "
-                   "AND o.order_no IN (SELECT order_no FROM order_history WHERE rider_phone=?) "
-                   "ORDER BY o.completed_at DESC LIMIT 300"), (phone,))
+                   "WHERE o.status='လက်ခံပြီးပါပြီ' AND o.completed_at LIKE ? "
+                   "AND o.order_no IN (SELECT order_no FROM order_history WHERE rider_phone=?)"),
+                (day + "%", phone))
     rows = [_row_to_dict(cur, r) for r in cur.fetchall()]
     out = []
     for o in rows:
@@ -1413,8 +1412,7 @@ def login_api():
     if page == "track" and not is_admin_acc:
         conn.close()
         return jsonify({"ok": False, "msg": "This page is for administrator accounts only. Please login with an administrator account."}), 403
-    # 同一账号多设备（手机 + 电脑）共用同一 token：后登录不再覆盖旧 token，避免互相踢下线/串号
-    token = (ud.get("token") or "").strip() or uuid.uuid4().hex
+    token = uuid.uuid4().hex
     cur.execute(_q("UPDATE users SET token=? WHERE id=?"), (token, ud["id"]))
     conn.commit()
     conn.close()
@@ -1679,7 +1677,7 @@ def admin_set_status_all():
 
 # ================= 手机 / 电脑 功能一致性补丁 =================
 # 说明：全局禁用缓存（手机端不会读到旧页面/旧接口），并补充“剩余数量”“今日已完成/已取消标记”接口
-APP_VERSION = "20261106-v3"
+APP_VERSION = "20261105-v1"
 
 
 @app.after_request
@@ -1716,18 +1714,6 @@ def _patch_rider_remaining():
         if r:
             od = _row_to_dict(cur, r)
     if od is None and phone:
-        # 优先取该骑手当前绑定的活跃订单（riders.order_no），避免显示上一单的旧数量
-        cur.execute(_q("SELECT o.* FROM riders rd JOIN orders o ON o.order_no=rd.order_no WHERE rd.phone=? AND rd.order_no<>'' LIMIT 1"), (phone,))
-        r = cur.fetchone()
-        if r:
-            od = _row_to_dict(cur, r)
-    if od is None and phone:
-        # 其次取该骑手最近一张未完成/未取消的订单，最后才回落到最近一单
-        cur.execute(_q("SELECT o.* FROM orders o JOIN order_history h ON h.order_no=o.order_no WHERE h.rider_phone=? AND (o.status IS NULL OR o.status='' OR (o.status!='လက်ခံပြီးပါပြီ' AND o.status!='ပယ်ဖျက်ထားသည်')) ORDER BY h.id DESC LIMIT 1"), (phone,))
-        r = cur.fetchone()
-        if r:
-            od = _row_to_dict(cur, r)
-    if od is None and phone:
         cur.execute(_q("SELECT o.* FROM orders o JOIN order_history h ON h.order_no=o.order_no WHERE h.rider_phone=? ORDER BY h.id DESC LIMIT 1"), (phone,))
         r = cur.fetchone()
         if r:
@@ -1736,39 +1722,35 @@ def _patch_rider_remaining():
     if not od:
         return jsonify({"ok": False, "msg": "no order"}), 404
     bt, br, st, sr = order_counts(od)
-    # 每日凌晨12点（缅甸时间）清零：上一张订单若是往日且已完结/已取消，则当日剩余从 0 开始
-    _day = now_str()[:10]
-    _created = (od.get("created_at") or "")[:10]
-    _done = (od.get("status") in ("လက်ခံပြီးပါပြီ", "ပယ်ဖျက်ထားသည်"))
-    if _created and _created != _day and _done:
-        bt, br, st, sr = 0, 0, 0, 0
+    # 每日口径：只统计「当天」已收数量，跨天（凌晨 0 点后）自动归零，
+    # 分母永远取骑手最初输入量（ba_*_total_orig），所以显示回到 500 / 500
+    today = now_str()[:10]
+    done_day = (od.get("completed_at") or "")[:10]
+    if done_day and done_day != today:
+        br_day, sr_day = 0, 0
+    else:
+        br_day, sr_day = br, sr
     return jsonify({
         "ok": True,
+        "day": today,
         "order_no": od.get("order_no") or "",
         "status": od.get("status") or "",
         "completed_at": od.get("completed_at") or "",
-        "baozi_total_orig": bt, "baozi_received": br, "baozi_remaining": max(bt - br, 0),
-        "shop_total_orig": st, "shop_received": sr, "shop_remaining": max(st - sr, 0),
+        "baozi_total_orig": bt, "baozi_received": br_day, "baozi_remaining": max(bt - br_day, 0),
+        "shop_total_orig": st, "shop_received": sr_day, "shop_remaining": max(st - sr_day, 0),
         "server_time": now_str(),
     })
 
 
 @app.route("/api/today-marks", methods=["GET"])
 def _patch_today_marks():
-    """✅ 已完成 / ❌ 已取消 全量标记（管理员页与骑手端地图保持一致；默认不限日期、凌晨清零不再发生）
-    传 scope=today 时才只取当天。"""
-    scope = (request.args.get("scope") or "all").strip()
+    """今日已完成 ✅ / 已取消 ❌ 全量标记（管理员页与骑手端地图保持一致；取消不隐藏已完成店）"""
     day = (request.args.get("day") or "").strip() or now_str()[:10]
     conn = get_db()
     cur = conn.cursor()
-    if scope == "today":
-        cur.execute(_q("SELECT order_no, shop_lat, shop_lng, status, completed_at FROM orders "
-                       "WHERE completed_at LIKE ? AND status IN ('လက်ခံပြီးပါပြီ','ပယ်ဖျက်ထားသည်') "
-                       "ORDER BY completed_at DESC LIMIT 300"), (day + "%",))
-    else:
-        cur.execute(_q("SELECT order_no, shop_lat, shop_lng, status, completed_at FROM orders "
-                       "WHERE status IN ('လက်ခံပြီးပါပြီ','ပယ်ဖျက်ထားသည်') "
-                       "ORDER BY completed_at DESC LIMIT 300"))
+    cur.execute(_q("SELECT order_no, shop_lat, shop_lng, status, completed_at FROM orders "
+                   "WHERE completed_at LIKE ? AND status IN ('လက်ခံပြီးပါပြီ','ပယ်ဖျက်ထားသည်') "
+                   "ORDER BY completed_at DESC LIMIT 300"), (day + "%",))
     rows = [_row_to_dict(cur, r) for r in cur.fetchall()]
     done, cancelled = [], []
     for o in rows:

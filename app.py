@@ -485,14 +485,10 @@ def rider_counts_ensure(cur, order_no, phone, baozi_total=0, shop_total=0, reset
                 "baozi_received": 0, "shop_received": 0, "day": today}
     rec = _row_to_dict(cur, r)
     same_day = (rec.get("day") or "") == today
-    if reset_total_on_new_day and not same_day:
-        # 跨天（缅甸凌晨）重置：分母改为骑手当天首次输入的量，已收清零；
-        # 若本次输入为空（0）则沿用原分母，避免把分母清成 0
-        nbt = bt if bt > 0 else _to_int(rec.get("baozi_total"))
-        nst = st if st > 0 else _to_int(rec.get("shop_total"))
-    else:
-        nbt = max(_to_int(rec.get("baozi_total")), bt)
-        nst = max(_to_int(rec.get("shop_total")), st)
+    # 分母铁律：只增不减。跨天（缅甸凌晨）只把已收清零，分母绝不因为本次输入更小而被改小，
+    # 永远保持该骑手首次输入的数量（防止出现「200 变 180」这类后台自动减数）
+    nbt = max(_to_int(rec.get("baozi_total")), bt)
+    nst = max(_to_int(rec.get("shop_total")), st)
     if same_day:
         br = _to_int(rec.get("baozi_received"))
         sr = _to_int(rec.get("shop_received"))
@@ -1133,20 +1129,37 @@ def rider_confirm():
     cur.execute(_q("SELECT * FROM orders WHERE order_no=?"), (order_no,))
     order = cur.fetchone()
     order_dict = _row_to_dict(cur, order)
+    # 幂等保护：订单已终结（已完成/已取消）时重复点击 Confirm 只返回结果，
+    # 绝不重复累加数量、绝不重复写通知/发 Telegram
+    if (order_dict.get("status") or "") in ("လက်ခံပြီးပါပြီ", "ပယ်ဖျက်ထားသည်"):
+        conn.close()
+        return jsonify({"ok": True, "duplicated": True, "msg": "လက်ခံပြီးပါပြီ",
+                        "status": order_dict.get("status"),
+                        "completed_at": order_dict.get("completed_at") or now_str()})
     new_baozi = (order_dict.get("baozi_received", 0) or 0) + confirm_baozi
     new_shop = (order_dict.get("shop_received", 0) or 0) + 1  # 每确认一个商家地址 +1
     # 每个骑手独立计数：只累加本骑手 (order_no, phone) 自己的数量，分母为本人当天首次输入量
     _o_bt, _o_st = orig_counts(order_dict)
-    _rc = rider_counts_ensure(cur, order_no, phone, 0, 0)  # 确认时不传订单级总量，避免抬高本骑手分母
+    # 该骑手尚无记录（老订单/换设备）时，用订单级原始量初始化分母，避免分母落成 0 被显示成 0/0；
+    # 已有记录则保持本人首次输入量，绝不抬高也绝不降低
+    if rider_counts_get(order_no, phone):
+        _rc = rider_counts_ensure(cur, order_no, phone, 0, 0)
+    else:
+        _rc = rider_counts_ensure(cur, order_no, phone, _o_bt, _o_st)
     _rc_bt = _to_int(_rc.get("baozi_total"))
     _rc_st = _to_int(_rc.get("shop_total"))
     _rc_br = _to_int(_rc.get("baozi_received")) + confirm_baozi
     _rc_sr = _to_int(_rc.get("shop_received")) + 1
     rider_counts_save(cur, order_no, phone, _rc_bt, _rc_st, _rc_br, _rc_sr)
     cur.execute(
-        _q("UPDATE orders SET baozi_received=?, shop_received=?, delivery_address=?, payment_method=?, amount=?, status='လက်ခံပြီးပါပြီ', completed_at=? WHERE order_no=?"),
+        _q("UPDATE orders SET baozi_received=?, shop_received=?, delivery_address=?, payment_method=?, amount=?, status='လက်ခံပြီးပါပြီ', completed_at=? WHERE order_no=? AND (status IS NULL OR status NOT IN ('လက်ခံပြီးပါပြီ','ပယ်ဖျက်ထားသည်'))"),
         (new_baozi, new_shop, address, payment_method, amount, now_str(), order_no),
     )
+    # 连点/并发保护：条件更新未命中 = 已被另一次点击处理，整笔回滚（含数量累加）并直接返回，保证只生效一次
+    if getattr(cur, "rowcount", 1) == 0:
+        conn.rollback()
+        conn.close()
+        return jsonify({"ok": True, "duplicated": True, "msg": "လက်ခံပြီးပါပြီ", "status": "လက်ခံပြီးပါပြီ", "completed_at": now_str()})
     conn.commit()
     # 通知 + Telegram：无论是否有照片都发文字通知，有照片再发照片（双保险，避免静默失败）
     cur.execute(_q("SELECT rider_name FROM order_history WHERE order_no=? AND rider_phone=? ORDER BY id DESC LIMIT 1"),
@@ -1219,7 +1232,18 @@ def rider_cancel():
         if not cur.fetchone():
             conn.close()
             return jsonify({"ok": False, "msg": "ဤဖုန်းနံပါတ်သည် ဤအမှာစာနှင့် ချိတ်ဆက်မထားပါ"}), 403
-    cur.execute(_q("UPDATE orders SET status='ပယ်ဖျက်ထားသည်', completed_at=? WHERE order_no=?"), (now_str(), order_no))
+    # 终态保护：订单已被另一台设备确认完成时禁止再取消，避免「手机已确认、电脑又取消」互相覆盖卡死
+    cur.execute(_q("SELECT status FROM orders WHERE order_no=?"), (order_no,))
+    _orow = cur.fetchone()
+    _ostat = (_row_to_dict(cur, _orow).get("status") or "") if _orow else ""
+    if _ostat == "လက်ခံပြီးပါပြီ":
+        conn.close()
+        return jsonify({"ok": True, "duplicated": True, "msg": "လက်ခံပြီးပါပြီ", "status": _ostat, "completed_at": now_str()})
+    cur.execute(_q("UPDATE orders SET status='ပယ်ဖျက်ထားသည်', completed_at=? WHERE order_no=? AND (status IS NULL OR status != 'လက်ခံပြီးပါပြီ')"), (now_str(), order_no))
+    if getattr(cur, "rowcount", 1) == 0:
+        conn.rollback(); conn.close()
+        return jsonify({"ok": True, "duplicated": True, "msg": "လက်ခံပြီးပါပြီ", "status": _ostat})
+
     cur.execute(_q("UPDATE riders SET order_no='', rider_name='' WHERE phone=? AND order_no=?"), (phone, order_no))
     # 保留订单历史：存在则更新骑手名与绑定时间，不存在则补记一条
     cur.execute(_q("SELECT id FROM order_history WHERE order_no=? AND rider_phone=?"), (order_no, phone))
@@ -1962,17 +1986,36 @@ def _patch_rider_remaining():
     today = now_str()[:10]
     rec = rider_counts_get(od.get("order_no") or "", phone)
     if rec:
-        # 该骑手自己的记录：分母只增不减，已收按缅甸日期清零
+        # 该骑手自己的记录：分母 = 本人首次输入量，只增不减，且永远不小于本人已收数量
         bt = max(_to_int(rec.get("baozi_total")), 0)
         st = max(_to_int(rec.get("shop_total")), 0)
         if (rec.get("day") or "") == today:
             br_day = _to_int(rec.get("baozi_received"))
             sr_day = _to_int(rec.get("shop_received"))
         else:
+            # 缅甸时间凌晨 0 点自动清零：已收归零，剩余恢复为本人首次输入的全额
             br_day, sr_day = 0, 0
+        # 自愈：历史脏数据把分母写小过 → 抬回「分母 >= 已收」，并回写数据库，之后永不再变小
+        _fix_bt = max(bt, br_day)
+        _fix_st = max(st, sr_day)
+        if (_fix_bt != bt) or (_fix_st != st) or (rec.get("day") or "") != today:
+            try:
+                conn2 = get_db(); cur2 = conn2.cursor()
+                cur2.execute(_q("UPDATE rider_counts SET baozi_total=?, shop_total=?, baozi_received=?, shop_received=?, day=?, updated_at=? WHERE order_no=? AND phone=?"),
+                             (_fix_bt, _fix_st, br_day, sr_day, today, now_str(), od.get("order_no") or "", phone))
+                conn2.commit(); conn2.close()
+            except Exception:
+                pass
+        bt, st = _fix_bt, _fix_st
     else:
-        # 无独立记录：回退 orders 旧数据（兼容老订单/老骑手）
+        # 无独立记录：先用 orders 原始量初始化「本骑手自己的记录」，此后口径固定不再漂移
         bt, br, st, sr = order_counts(od)
+        try:
+            conn3 = get_db(); cur3 = conn3.cursor()
+            rider_counts_ensure(cur3, od.get("order_no") or "", phone, bt, st)
+            conn3.commit(); conn3.close()
+        except Exception:
+            pass
         done_day = (od.get("completed_at") or "")[:10]
         if done_day and done_day != today:
             br_day, sr_day = 0, 0

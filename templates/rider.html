@@ -85,8 +85,6 @@
   .status-box button.active { border-color:#fda085; background:#fff3e9; color:#e07b00; font-weight:bold; }
   .dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:#fda085; margin-right:6px; }
   .modal-overlay { position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.45); display:flex; align-items:center; justify-content:center; z-index:99; }
-/* 全屏按钮必须始终可点：GPS/提示弹窗遮罩(z=99)出现时也不能挡住它 */
-#mapFullscreenBtn { position:relative; z-index:1000; }
   .modal-box { background:#fff; border-radius:12px; padding:20px; width:90%; max-width:360px; position:relative; box-shadow:0 4px 20px rgba(0,0,0,0.25); }
   .modal-close { position:absolute; top:6px; right:10px; background:none; border:none; font-size:24px; line-height:1; cursor:pointer; color:#888; }
   .modal-box h3 { margin:0 0 6px; color:#333; font-size:17px; }
@@ -833,13 +831,10 @@ function addTodayDone(order_no, lat, lng) {
 }
 
 // ===== 全屏地图：优先原生 Fullscreen API；iOS Safari / 微信等不支持时自动降级为 CSS 全屏 =====
-// 全屏地图：统一使用 CSS 全屏 + DOM 提升到 body。
-// 不调用原生 requestFullscreen —— 手机微信/安卓 WebView 里原生全屏常导致 Leaflet 容器尺寸为 0（白屏）。
-var _fsSavedParent = null, _fsSavedNext = null, _fsSavedDisplay = null;
-var _fsSavedModals = [], _fsSavedMapH = "", _fsSavedHolderH = "";
 function isMapFullscreen() {
   var wrap = document.getElementById("riderMapWrap");
-  return !!(wrap && wrap.classList.contains("map-css-full"));
+  return !!(document.fullscreenElement || document.webkitFullscreenElement ||
+    (wrap && wrap.classList.contains("map-css-full")));
 }
 function setMapFullscreenBtn(on) {
   var b = document.getElementById("mapFullscreenBtn");
@@ -852,132 +847,71 @@ function resizeRiderMapNow() {
   if (!riderMap) return;
   try { riderMap.invalidateSize(); } catch (e) {}
 }
+// 全屏切换后连续多次重算尺寸：手机上浏览器布局是异步完成的，只调一次常常仍是 0 高度 → 地图空白
 function burstResizeRiderMap() {
   resizeRiderMapNow();
-  [80, 200, 400, 800, 1200].forEach(function (ms) { setTimeout(resizeRiderMapNow, ms); });
+  [100, 300, 600, 1000].forEach(function (ms) { setTimeout(resizeRiderMapNow, ms); });
 }
 window.burstResizeRiderMap = burstResizeRiderMap;
-// 全屏时用真实像素高度铺满视口，地图容器绝不依赖 flex 计算（flex 塌陷是白屏主因）
-function _fsApplySize() {
-  var wrap = document.getElementById("riderMapWrap");
-  if (!wrap || !wrap.classList.contains("map-css-full")) return;
-  // 手机浏览器/微信内置浏览器：优先用 visualViewport 的真实可视高度，避免地址栏占位导致高度算错变白屏
-  var vv = window.visualViewport || null;
-  var vh = (vv && vv.height) ? Math.round(vv.height) : (window.innerHeight || document.documentElement.clientHeight || 600);
-  var vw = (vv && vv.width) ? Math.round(vv.width) : (window.innerWidth || document.documentElement.clientWidth || 360);
-  if (!vh || vh < 200) vh = window.innerHeight || 600;
-  if (!vw || vw < 200) vw = window.innerWidth || 360;
-  wrap.style.setProperty("position", "fixed", "important");
-  wrap.style.setProperty("left", "0", "important");
-  wrap.style.setProperty("top", "0", "important");
-  wrap.style.setProperty("right", "0", "important");
-  wrap.style.setProperty("bottom", "0", "important");
-  wrap.style.setProperty("width", vw + "px", "important");
-  wrap.style.setProperty("height", vh + "px", "important");
-  wrap.style.setProperty("max-width", "none", "important");
-  wrap.style.setProperty("margin", "0", "important");
-  wrap.style.setProperty("padding", "6px", "important");
-  wrap.style.setProperty("z-index", "2147483000", "important");
-  wrap.style.setProperty("background", "#fff", "important");
-  wrap.style.setProperty("display", "flex", "important");
-  wrap.style.setProperty("flex-direction", "column", "important");
-  wrap.style.setProperty("overflow", "hidden", "important");
-  var holder = wrap.querySelector(".map-holder");
-  var mapEl = document.getElementById("riderMap");
-  var used = 0;
-  for (var i = 0; i < wrap.children.length; i++) {
-    var c = wrap.children[i];
-    if (c === holder) continue;
-    var cs = window.getComputedStyle(c);
-    if (cs.display === "none") continue;
-    used += c.offsetHeight + (parseInt(cs.marginTop, 10) || 0) + (parseInt(cs.marginBottom, 10) || 0);
-  }
-  var mapH = Math.max(vh - used - 18, 180);
-  if (holder) {
-    holder.style.setProperty("display", "block", "important");
-    holder.style.setProperty("position", "relative", "important");
-    holder.style.setProperty("height", mapH + "px", "important");
-    holder.style.setProperty("min-height", mapH + "px", "important");
-    holder.style.setProperty("flex", "0 0 auto", "important");
-  }
-  if (mapEl) {
-    mapEl.style.setProperty("width", "100%", "important");
-    mapEl.style.setProperty("height", mapH + "px", "important");
-    mapEl.style.setProperty("border-radius", "0", "important");
-  }
-  resizeRiderMapNow();
-    try { if (riderMap && riderMap.getCenter()) riderMap.panBy([0, 0]); } catch (e) {}
-}
 function enterCssMapFull() {
   var wrap = document.getElementById("riderMapWrap");
   if (!wrap || wrap.classList.contains("map-css-full")) return;
-  _fsSavedParent = wrap.parentNode;
-  _fsSavedNext = wrap.nextSibling;
-  _fsSavedDisplay = wrap.style.display;
-  // 全屏时先收起已弹出的提示弹窗（如 GPS 权限提示遮罩），否则遮罩会盖住全屏按钮与地图
-  _fsSavedModals = [];
-  ["stateConfirmModal", "confirmModal", "cancelOrderModal", "infoModal", "historyModal"].forEach(function (id) {
-    var el = document.getElementById(id);
-    if (el && el.style.display && el.style.display !== "none") {
-      _fsSavedModals.push({ el: el, d: el.style.display });
-      el.style.display = "none";
-    }
-  });
-  var _fsM = document.getElementById("riderMap"), _fsH = wrap.querySelector(".map-holder");
-  _fsSavedMapH = _fsM ? (_fsM.style.height || "") : "";
-  _fsSavedHolderH = _fsH ? (_fsH.style.height || "") : "";
-  if (document.body && wrap.parentNode !== document.body) document.body.appendChild(wrap);
-  document.body.classList.add("map-full-lock");
   wrap.classList.add("map-css-full");
+  document.body.classList.add("map-full-lock");
   setMapFullscreenBtn(true);
-  _fsApplySize();
+  setTimeout(resizeRiderMapNow, 60);
+  setTimeout(resizeRiderMapNow, 320);
   burstResizeRiderMap();
-  setTimeout(_fsApplySize, 120);
-  setTimeout(_fsApplySize, 380);
 }
 function exitCssMapFull() {
   var wrap = document.getElementById("riderMapWrap");
   if (!wrap) return;
   wrap.classList.remove("map-css-full");
   document.body.classList.remove("map-full-lock");
-  ["position","left","top","right","bottom","width","height","max-width","margin","padding","z-index","background","flex-direction","overflow"].forEach(function (k) {
-    wrap.style.removeProperty(k);
-  });
-  wrap.style.display = (_fsSavedDisplay === null || _fsSavedDisplay === undefined) ? "" : _fsSavedDisplay;
-  var holder = wrap.querySelector(".map-holder");
-  if (holder) {
-    ["display","position","height","min-height","flex"].forEach(function (k) { holder.style.removeProperty(k); });
-    if (_fsSavedHolderH) holder.style.setProperty("height", _fsSavedHolderH);
-  }
-  var mapEl = document.getElementById("riderMap");
-  if (mapEl) {
-    mapEl.style.removeProperty("border-radius");
-    mapEl.style.removeProperty("width");
-    mapEl.style.removeProperty("min-height");
-    mapEl.style.removeProperty("height");
-    if (_fsSavedMapH) mapEl.style.setProperty("height", _fsSavedMapH);
-  }
-  // 还原全屏前被收起的提示弹窗
-  for (var _mi = 0; _mi < _fsSavedModals.length; _mi++) {
-    try { _fsSavedModals[_mi].el.style.display = _fsSavedModals[_mi].d; } catch (e) {}
-  }
-  _fsSavedModals = []; _fsSavedMapH = ""; _fsSavedHolderH = "";
-  if (_fsSavedParent) {
-    try { _fsSavedParent.insertBefore(wrap, _fsSavedNext); } catch (e) { try { _fsSavedParent.appendChild(wrap); } catch (e2) {} }
-  }
-  _fsSavedParent = null; _fsSavedNext = null; _fsSavedDisplay = null;
   setMapFullscreenBtn(false);
   setTimeout(resizeRiderMapNow, 60);
   burstResizeRiderMap();
 }
 function toggleMapFullscreen() {
-  if (isMapFullscreen()) exitCssMapFull(); else enterCssMapFull();
+  var wrap = document.getElementById("riderMapWrap");
+  if (!wrap) return;
+  if (document.fullscreenElement || document.webkitFullscreenElement) {
+    if (document.exitFullscreen) document.exitFullscreen();
+    else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
+    else if (document.webkitCancelFullScreen) document.webkitCancelFullScreen();
+    return;
+  }
+  if (wrap.classList.contains("map-css-full")) { exitCssMapFull(); return; }
+  var started = false;
+  try {
+    if (wrap.requestFullscreen) {
+      var p = wrap.requestFullscreen();
+      started = true;
+      if (p && p.catch) p.catch(function () { enterCssMapFull(); });
+    } else if (wrap.webkitRequestFullscreen) { wrap.webkitRequestFullscreen(); started = true; }
+    else if (wrap.webkitRequestFullScreen) { wrap.webkitRequestFullScreen(); started = true; }
+    else if (wrap.msRequestFullscreen) { wrap.msRequestFullscreen(); started = true; }
+  } catch (e) { started = false; }
+  // 不支持或被浏览器拒绝：直接走 CSS 全屏，保证手机端点了一定有反应
+  if (!started) enterCssMapFull();
+  else setTimeout(function () { if (!isMapFullscreen()) enterCssMapFull(); }, 350);
 }
 window.toggleMapFullscreen = toggleMapFullscreen;
-window.enterCssMapFull = enterCssMapFull;
-window.exitCssMapFull = exitCssMapFull;
-window.addEventListener("resize", function () { if (isMapFullscreen()) _fsApplySize(); else resizeRiderMapNow(); });
-window.addEventListener("orientationchange", function () { setTimeout(function () { if (isMapFullscreen()) _fsApplySize(); }, 260); });
+function onMapFullscreenChange() {
+  var mapEl = document.getElementById("riderMap");
+  var wrap = document.getElementById("riderMapWrap");
+  var cssOn = !!(wrap && wrap.classList.contains("map-css-full"));
+  var on = !!(document.fullscreenElement || document.webkitFullscreenElement) || cssOn;
+  setMapFullscreenBtn(on);
+  // 全屏（原生或 CSS 兜底）时高度交给 CSS（.map-holder flex:1 + #riderMap height:100%），
+  // 不要再写死 calc(100vh-70px)，否则父容器无 flex 高度会让地图算成 0 → 全屏空白
+  if (mapEl) mapEl.style.height = on ? "" : "320px";
+  resizeRiderMapNow();
+  setTimeout(resizeRiderMapNow, 220);
+  burstResizeRiderMap();
+}
+document.addEventListener("fullscreenchange", onMapFullscreenChange);
+document.addEventListener("webkitfullscreenchange", onMapFullscreenChange);
 function setShop(lat, lng, linkText) {
   shopLat = lat; shopLng = lng;
   if (!riderMap) showRiderMap();
@@ -1496,9 +1430,7 @@ function uploadProof(ev) {
 function clearProof() {
   resetProof();
 }
-var _confirmSubmitting = false;
 async function doConfirmDelivered() {
-  if (_confirmSubmitting) return;   // 连点保护：请求进行中直接忽略后续点击
   if (!proofUploaded) { showInfo("Please upload / take photo first"); return; }
   var baozi = parseInt(document.getElementById("confirmBaozi").value) || 0;
   var address = document.getElementById("confirmAddress").value.trim();
@@ -1506,10 +1438,6 @@ async function doConfirmDelivered() {
   var amount = document.getElementById("confirmAmount").value.trim();
   if (baozi <= 0 && !address) { showInfo("အရေအတွက် သို့မဟုတ် လိပ်စာ ထည့်ပါ"); return; }
   if (!paymentMethod) { showInfo("Please select payment method"); return; }
-  _confirmSubmitting = true;                       // 立刻上锁：连点不会重复提交
-  var _cb = document.getElementById("confirmOkBtn");
-  if (_cb) { _cb.disabled = true; _cb.setAttribute("data-orig-text", _cb.textContent); _cb.textContent = "Confirm ⏳"; }
-  var _confirmedDone = false;
   try {
     var r = await fetch("/api/rider/confirm", {
       method: "POST",
@@ -1522,7 +1450,6 @@ async function doConfirmDelivered() {
     addTodayDone(state.orderNo,
       (shopLat === null || shopLat === undefined) ? state.curLat : shopLat,
       (shopLat === null || shopLat === undefined) ? state.curLng : shopLng);
-    _confirmedDone = true;
     state.status = "လက်ခံပြီးပါပြီ";
     state.statusLocked = true;
     if (!state.confirmedStatuses) state.confirmedStatuses = [];
@@ -1540,13 +1467,6 @@ async function doConfirmDelivered() {
     refreshRiderInfo();
   } catch (e) {
     showInfo("ဆာဗာနှင့် ချိတ်ဆက်၍ မရပါ။ ဝန်ဆောင်မှု စတင်ထားခြင်း ရှိမရှိ စစ်ဆေးပါ");
-  } finally {
-    _confirmSubmitting = false;
-    var _cb2 = document.getElementById("confirmOkBtn");
-    if (_cb2) {
-      if (_confirmedDone) { _cb2.disabled = true; _cb2.textContent = "Confirm ✅"; }
-      else { _cb2.disabled = false; var _ot = _cb2.getAttribute("data-orig-text"); if (_ot) _cb2.textContent = _ot; }
-    }
   }
 }
 
@@ -1800,37 +1720,16 @@ async function refreshRiderInfo() {
     }
     // 状态同步：仅当快递员已确认锁定状态后才同步后端状态显示；
     // 未选择前保持 "-"，不显示配送中
-    // 跨设备同步：服务端已是终态（已完成/已取消）时，无论本机是否操作过都强制同步，
-    // 避免「手机确认了、电脑还卡在 Waiting for food」；非终态才遵循本机是否已锁定。
-    var _TERMINAL = ["လက်ခံပြီးပါပြီ", "ပယ်ဖျက်ထားသည်"];
-    var _srvStatus = j.status || "";
-    if (_srvStatus && (state.statusLocked || _TERMINAL.indexOf(_srvStatus) >= 0)) {
-      var _changed = (state.status !== _srvStatus);
-      state.status = _srvStatus;
-      document.getElementById("curStatus").textContent = _srvStatus;
+    if (j.status && state.statusLocked) {
+      state.status = j.status;
+      document.getElementById("curStatus").textContent = j.status;
       document.querySelectorAll("#statusBox button").forEach(function(btn) {
         btn.classList.remove("active");
       });
-      if (_srvStatus === "လက်ခံပြီးပါပြီ") {
+      if (j.status === "လက်ခံပြီးပါပြီ") {
         document.getElementById("curStatus").style.color = "#2e7d32";
-      } else if (_srvStatus === "ပယ်ဖျက်ထားသည်") {
-        document.getElementById("curStatus").style.color = "#c62828";
       } else {
         document.getElementById("curStatus").style.color = "";
-      }
-      if (_TERMINAL.indexOf(_srvStatus) >= 0) {
-        state.statusLocked = true;
-        if (typeof lockStatusButtons === "function") { try { lockStatusButtons(); } catch (e) {} }
-        // 服务端已终结（已完成/已取消）时彻底封死确认入口，避免两端出现可重复点击的确认按钮
-        (function () {
-          var _cb = document.getElementById("confirmDeliveredBtn");
-          if (_cb) { _cb.disabled = true; _cb.classList.remove("btn-green"); _cb.classList.add("btn-gray"); }
-        })();
-        try { saveLockLocal(); } catch (e) {}
-        if (_changed) {
-          // 另一端完成/取消后，立即刷新剩余数量，避免数量与状态显示脱节
-          if (window.loadRemain && state.phone) setTimeout(function () { window.loadRemain(state.phone, state.orderNo); }, 300);
-        }
       }
     }
     // 商家位置同步到骑手端地图（刷新/恢复后重新绘制商家 marker）
@@ -2210,20 +2109,17 @@ checkLogin();
     if (g("rtOrder")) g("rtOrder").textContent = j.order_no || "-";
     if (g("rtStatus")) g("rtStatus").textContent = statusEn(j.status || "");
     // 分母恒为骑手第一次输入的数量（lockDenom 只增不减），刷新 / 重获订单都不会变小
-    // 分母 = 本骑手当天第一次输入的数量：只增不减，且绝不小于「已收数量」，跨缅甸 0 点自动换键清零
-    var _phone = (window.state && state.phone) || j.phone || "";
-    var _bBase = Math.max(_denomNum(j.baozi_total_orig !== undefined ? j.baozi_total_orig : j.baozi_total), _denomNum(j.baozi_received));
-    var _sBase = Math.max(_denomNum(j.shop_total_orig !== undefined ? j.shop_total_orig : j.shop_total), _denomNum(j.shop_received));
-    var _lkR = lockDenom(j.order_no || (window.state && state.orderNo) || "", _bBase, _sBase, _phone);
-    var _bRem = (j.baozi_remaining !== undefined && j.baozi_remaining !== null) ? parseInt(j.baozi_remaining, 10) : (_lkR.baozi - _denomNum(j.baozi_received));
-    var _sRem = (j.shop_remaining !== undefined && j.shop_remaining !== null) ? parseInt(j.shop_remaining, 10) : (_lkR.shop - _denomNum(j.shop_received));
-    if (isNaN(_bRem)) _bRem = Math.max(_lkR.baozi - _denomNum(j.baozi_received), 0);
-    if (isNaN(_sRem)) _sRem = Math.max(_lkR.shop - _denomNum(j.shop_received), 0);
-    if (g("rtBaozi")) g("rtBaozi").textContent = _bRem + " / " + _lkR.baozi;
-    if (g("rtShop")) g("rtShop").textContent = _sRem + " / " + _lkR.shop;
+    var _lkR = lockDenom(j.order_no || (window.state && state.orderNo) || "",
+      (j.baozi_total_orig !== undefined ? j.baozi_total_orig : j.baozi_total),
+      (j.shop_total_orig !== undefined ? j.shop_total_orig : j.shop_total));
+    if (g("rtBaozi")) g("rtBaozi").textContent = ((j.baozi_remaining !== undefined && j.baozi_remaining !== null) ? j.baozi_remaining : "-") +
+      " / " + (_lkR.baozi || "-");
+    if (g("rtShop")) g("rtShop").textContent = ((j.shop_remaining !== undefined && j.shop_remaining !== null) ? j.shop_remaining : "-") +
+      " / " + (_lkR.shop || "-");
     if (g("rtTime")) {
       var now = new Date();
-      g("rtTime").textContent = now.getHours() + ":" + String(now.getMinutes()).padStart(2, "0") + ":" + String(now.getSeconds()).padStart(2, "0");
+      g("rtTime").textContent = now.getHours() + ":" +
+        String(now.getMinutes()).padStart(2, "0") + ":" + String(now.getSeconds()).padStart(2, "0");
     }
     window.__remain.baozi = (j.baozi_remaining !== undefined && j.baozi_remaining !== null) ? parseInt(j.baozi_remaining, 10) : null;
     window.__remain.shop = (j.shop_remaining !== undefined && j.shop_remaining !== null) ? parseInt(j.shop_remaining, 10) : null;

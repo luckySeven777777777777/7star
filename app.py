@@ -332,33 +332,6 @@ def init_db():
                 created_at TEXT
             );
         """)
-    # 骑手独立数量表：每个骑手在 (order_no, phone) 下独立计数，多人共享同一订单号互不影响
-    if is_pg():
-        cur.execute(_q("""CREATE TABLE IF NOT EXISTS rider_counts (
-            id SERIAL PRIMARY KEY,
-            order_no TEXT NOT NULL,
-            phone TEXT NOT NULL,
-            baozi_total INTEGER DEFAULT 0,
-            shop_total INTEGER DEFAULT 0,
-            baozi_received INTEGER DEFAULT 0,
-            shop_received INTEGER DEFAULT 0,
-            day TEXT DEFAULT '',
-            updated_at TEXT,
-            UNIQUE(order_no, phone)
-        )"""))
-    else:
-        cur.execute(_q("""CREATE TABLE IF NOT EXISTS rider_counts (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            order_no TEXT NOT NULL,
-            phone TEXT NOT NULL,
-            baozi_total INTEGER DEFAULT 0,
-            shop_total INTEGER DEFAULT 0,
-            baozi_received INTEGER DEFAULT 0,
-            shop_received INTEGER DEFAULT 0,
-            day TEXT DEFAULT '',
-            updated_at TEXT,
-            UNIQUE(order_no, phone)
-        )"""))
     conn.commit()
     conn.close()
 
@@ -451,110 +424,13 @@ def orig_counts(od):
     return bo, so
 
 
-# ==================== 骑手独立数量（按 order_no + phone） ====================
-def rider_counts_get(order_no, phone):
-    """只读：取该骑手在 (order_no, phone) 下自己的数量记录；无记录返回 None"""
-    if not order_no or not phone:
-        return None
-    try:
-        conn = get_db()
-        cur = conn.cursor()
-        cur.execute(_q("SELECT * FROM rider_counts WHERE order_no=? AND phone=?"), (order_no, phone))
-        r = cur.fetchone()
-        rec = _row_to_dict(cur, r) if r else None
-        conn.close()
-        return rec
-    except Exception:
-        return None
-
-
-def rider_counts_ensure(cur, order_no, phone, baozi_total=0, shop_total=0, reset_total_on_new_day=False):
-    """绑定/确认前调用：取该骑手自己的记录，不存在则创建。
-    分母（总量）只增不减；跨缅甸日期（凌晨）自动把已收数量清零。"""
-    today = now_str()[:10]
-    bt = max(_to_int(baozi_total), 0)
-    st = max(_to_int(shop_total), 0)
-    cur.execute(_q("SELECT * FROM rider_counts WHERE order_no=? AND phone=?"), (order_no, phone))
-    r = cur.fetchone()
-    if not r:
-        cur.execute(
-            _q("INSERT INTO rider_counts (order_no, phone, baozi_total, shop_total, baozi_received, shop_received, day, updated_at) VALUES (?,?,?,?,?,?,?,?)"),
-            (order_no, phone, bt, st, 0, 0, today, now_str()),
-        )
-        return {"order_no": order_no, "phone": phone, "baozi_total": bt, "shop_total": st,
-                "baozi_received": 0, "shop_received": 0, "day": today}
-    rec = _row_to_dict(cur, r)
-    same_day = (rec.get("day") or "") == today
-    if reset_total_on_new_day and not same_day:
-        # 跨天（缅甸凌晨）重置：分母改为骑手当天首次输入的量，已收清零；
-        # 若本次输入为空（0）则沿用原分母，避免把分母清成 0
-        nbt = bt if bt > 0 else _to_int(rec.get("baozi_total"))
-        nst = st if st > 0 else _to_int(rec.get("shop_total"))
-    else:
-        nbt = max(_to_int(rec.get("baozi_total")), bt)
-        nst = max(_to_int(rec.get("shop_total")), st)
-    if same_day:
-        br = _to_int(rec.get("baozi_received"))
-        sr = _to_int(rec.get("shop_received"))
-    else:
-        br, sr = 0, 0
-    cur.execute(
-        _q("UPDATE rider_counts SET baozi_total=?, shop_total=?, baozi_received=?, shop_received=?, day=?, updated_at=? WHERE order_no=? AND phone=?"),
-        (nbt, nst, br, sr, today, now_str(), order_no, phone),
-    )
-    return {"order_no": order_no, "phone": phone, "baozi_total": nbt, "shop_total": nst,
-            "baozi_received": br, "shop_received": sr, "day": today}
-
-
-def rider_counts_save(cur, order_no, phone, baozi_total, shop_total, baozi_received, shop_received):
-    """写回该骑手自己的数量（分母只增不减，已收只增不减）"""
-    today = now_str()[:10]
-    cur.execute(
-        _q("UPDATE rider_counts SET baozi_total=?, shop_total=?, baozi_received=?, shop_received=?, day=?, updated_at=? WHERE order_no=? AND phone=?"),
-        (max(_to_int(baozi_total), 0), max(_to_int(shop_total), 0),
-         max(_to_int(baozi_received), 0), max(_to_int(shop_received), 0),
-         today, now_str(), order_no, phone),
-    )
-
-
-def rider_counts_values(od, phone):
-    """以 rider_counts 为准的数量口径：返回 (baozi_total, baozi_received, shop_total, shop_received)。
-    无该骑手记录时回退 orders 旧数据（保证老数据兼容）。"""
-    bt, br, st, sr = order_counts(od)
-    rec = rider_counts_get((od or {}).get("order_no") or "", phone or "")
-    if rec:
-        # 每个骑手独立：分母只取本骑手自己的记录，绝不被订单级总量或其他骑手的值抬高
-        rbt = _to_int(rec.get("baozi_total")) or bt
-        rst = _to_int(rec.get("shop_total")) or st
-        if (rec.get("day") or "") == now_str()[:10]:
-            return rbt, _to_int(rec.get("baozi_received")), rst, _to_int(rec.get("shop_received"))
-        return rbt, 0, rst, 0
-    return bt, br, st, sr
-
-
-def valid_geo(lat, lng):
-    """坐标有效性校验：拒绝 0,0（未定位/解析失败会让地图显示世界地图）与超出经纬度范围的值"""
-    try:
-        la = float(lat)
-        ln = float(lng)
-    except (TypeError, ValueError):
-        return None
-    if la != la or ln != ln:
-        return None
-    if la < -90.0 or la > 90.0 or ln < -180.0 or ln > 180.0:
-        return None
-    if abs(la) < 1e-6 and abs(ln) < 1e-6:
-        return None
-    return (la, ln)
-
-
 def parse_coords_text(text):
     """从用户输入文本提取 纬度,经度（支持英文逗号/缅甸逗号分隔）"""
     if not text:
         return None
-    m = re.search(r"(-?\d{1,3}(?:\.\d+)?)\s*[,،]\s*(-?\d{1,3}(?:\.\d+)?)", str(text))
+    m = re.search(r"(-?\d{1,2}(?:\.\d+)?)\s*[,،]\s*(-?\d{1,3}(?:\.\d+)?)", str(text))
     if m:
-        return valid_geo(m.group(1), m.group(2))
+        return (float(m.group(1)), float(m.group(2)))
     return None
 
 
@@ -567,24 +443,15 @@ def parse_link_coords(text):
     except Exception:
         pass
     patterns = [
-        # !8m2!3d..!4d..：手机分享链接里最可靠的坐标对
-        r"!8m2!3d(-?\d{1,3}\.\d+)!4d(-?\d{1,3}\.\d+)",
         r"!3d(-?\d{1,3}\.\d+)!4d(-?\d{1,3}\.\d+)",
-        # ?api=1&query=lat,lng / ?q= / ?ll= / sll= / destination= / center= / viewpoint=
-        r"[?&](?:q|query|ll|sll|daddr|destination|center|viewpoint)=(-?\d{1,3}\.\d+)\s*(?:,|%2C)\s*(-?\d{1,3}\.\d+)",
-        r"/maps/search/(-?\d{1,3}\.\d+)\s*,\s*(-?\d{1,3}\.\d+)",
-        r"/dir/[^\s]*?/(-?\d{1,3}\.\d+),(-?\d{1,3}\.\d+)",
+        r"[?&](?:q|query|ll|daddr|destination|center)=(-?\d{1,3}\.\d+)\s*,\s*(-?\d{1,3}\.\d+)",
         r"/place/(-?\d{1,3}\.\d+),(-?\d{1,3}\.\d+)",
         r"@(-?\d{1,3}\.\d+),(-?\d{1,3}\.\d+)",
-        # 纯文本坐标（分享内容里直接带 16.8409,96.1735）
-        r"(?<![\d.])(-?\d{1,2}\.\d{3,})\s*,\s*(-?\d{1,3}\.\d{3,})(?![\d.])",
     ]
     for pat in patterns:
         m = re.search(pat, s)
         if m:
-            g = valid_geo(m.group(1), m.group(2))
-            if g:
-                return g
+            return (float(m.group(1)), float(m.group(2)))
     return None
 
 
@@ -610,30 +477,9 @@ def normalize_maps_link(raw):
     return s
 
 
-def _extract_coords_from_body(body):
-    """从 Google 地图页面 HTML/JS 里抠坐标（短链展开后的兜底）"""
-    if not body:
-        return None
-    pats = [
-        r"!3d(-?\d{1,3}\.\d+)!4d(-?\d{1,3}\.\d+)",
-        # APP_INITIALIZATION_STATE 里的 [null,null,lat,lng]
-        r"\[\s*(?:null\s*,\s*){1,3}(-?\d{1,2}\.\d{4,})\s*,\s*(-?\d{1,3}\.\d{4,})\s*\]",
-        r"(?:center|query|q)=(-?\d{1,3}\.\d+)%(?:2C|2c)(-?\d{1,3}\.\d+)",
-        r"@(-?\d{1,3}\.\d+),(-?\d{1,3}\.\d+)",
-        r"\[(-?\d{1,2}\.\d{4,}),(-?\d{1,3}\.\d{4,})\]",
-    ]
-    for pat in pats:
-        m = re.search(pat, body)
-        if m:
-            g = valid_geo(m.group(1), m.group(2))
-            if g:
-                return g
-    return None
-
-
 def resolve_shop_location(link, coords_text):
-    """解析商家坐标：优先手填坐标 → 链接内坐标 → 展开短链取最终地址/页面内坐标。
-    任何一步拿到的坐标都经过 valid_geo 校验，拒绝 0,0 与超范围值，绝不返回 (0,0)。"""
+    """骑手输入的商家位置解析：优先坐标文本，其次链接正则，最后展开短链（多 UA，含重定向链与页面正文）。
+    返回 (lat, lng, link)；解析失败时 lat/lng 为 None。"""
     c = parse_coords_text(coords_text)
     if c:
         return c[0], c[1], (link or "").strip()
@@ -648,22 +494,23 @@ def resolve_shop_location(link, coords_text):
     for ua in _MAPS_UA_LIST:
         try:
             req = urllib.request.Request(url, headers={"User-Agent": ua, "Accept-Language": "en-US,en;q=0.9"})
-            with urllib.request.urlopen(req, timeout=10) as resp:
+            with urllib.request.urlopen(req, timeout=8) as resp:
                 final_url = resp.geturl()
                 try:
-                    body = resp.read(400000).decode("utf-8", "ignore")
+                    body = resp.read(300000).decode("utf-8", "ignore")
                 except Exception:
                     body = ""
             c = parse_link_coords(final_url)
             if c:
                 return c[0], c[1], url
             if body:
-                c = parse_link_coords(body) or _extract_coords_from_body(body)
+                c = parse_link_coords(body)
                 if c:
                     return c[0], c[1], url
         except Exception:
             continue
     return None, None, url
+
 
 def now_str():
     """统一返回缅甸仰光时间（UTC+6:30）文本，与服务器所在时区无关。
@@ -907,10 +754,6 @@ def rider_bind():
     shop_location_link = (data.get("shop_location_link") or "").strip()
     shop_location_coords = (data.get("shop_location_coords") or "").strip()
     shop_lat, shop_lng, shop_link = resolve_shop_location(shop_location_link, shop_location_coords)
-    # 明确拒绝：提供了链接/坐标却解析不出有效坐标（0,0 / 超范围 / 短链打不开）时直接报错，
-    # 绝不把 0,0 写进库，避免手机端地图跳到国外（世界地图）
-    if (shop_location_link or shop_location_coords) and (shop_lat is None or shop_lng is None):
-        return jsonify({"ok": False, "msg": "ဆိုင်တည်နေရာ လင့်ခ်ကို ဖတ်၍မရပါ။ Google Maps တွင် ဆိုင်ကို နှိပ်၍ Share လုပ်ထားသော လင့်ခ် သို့မဟုတ် 16.8409,96.1735 ကဲ့သို့ ကိုဩဒိနိတ် ထည့်ပါ (0,0 လက်မခံပါ)"}), 400
     if not phone or not order_no:
         return jsonify({"ok": False, "msg": "ဖုန်းနံပါတ်နှင့် အမှာစာနံပါတ် နှစ်ခုလုံး ထည့်သွင်းပါ"}), 400
     conn = get_db()
@@ -928,11 +771,6 @@ def rider_bind():
     # 数量口径：分母 = 骑手最初输入的原始总量，写入 *_total_orig 后永久固定；
     # 之后任何提交（包括剩余量回填）都不得覆盖它，只有「已收数量」参与扣减
     old = _row_to_dict(cur, order)
-    # 本次未成功解析出坐标时，沿用订单已有坐标，避免被清空或写成 0,0
-    _old_geo = valid_geo(old.get("shop_lat"), old.get("shop_lng"))
-    if _old_geo and (shop_lat is None or shop_lng is None):
-        shop_lat, shop_lng = _old_geo
-        shop_link = shop_link or (old.get("shop_link") or "")
     old_bt = int(old.get("baozi_total") or 0)
     old_br = int(old.get("baozi_received") or 0)
     old_st = int(old.get("shop_total") or 0)
@@ -947,15 +785,12 @@ def rider_bind():
         baozi_orig = baozi_total
     if shop_total > shop_orig:
         shop_orig = shop_total
-    _in_bt, _in_st = baozi_total, shop_total   # 骑手本次输入量（跨天时作为新分母）
     baozi_total = baozi_orig
     shop_total = shop_orig
     cur.execute(
         _q("UPDATE orders SET delivery_address=?, baozi_total=?, shop_total=?, baozi_total_orig=?, shop_total_orig=?, city=?, gps_enabled=1, shop_lat=?, shop_lng=?, shop_link=? WHERE order_no=?"),
         (delivery_address, baozi_total, shop_total, baozi_orig, shop_orig, city, shop_lat, shop_lng, shop_link, order_no),
     )
-    # 每个骑手独立计数：只写本骑手 (order_no, phone) 的记录，分母为本人首次输入量
-    rider_counts_ensure(cur, order_no, phone, (_in_bt or baozi_orig), (_in_st or shop_orig), reset_total_on_new_day=True)
     # 永久订单历史：每次绑定订单都记入 order_history（不因刷新/重绑丢失）
     cur.execute(_q("SELECT id FROM order_history WHERE order_no=? AND rider_phone=?"), (order_no, phone))
     if cur.fetchone():
@@ -1003,13 +838,8 @@ def report_location():
         (order_no, phone, lat, lng, status, is_sim, now_str()),
     )
     # 仅当快递员已选择并确认状态时才更新订单状态（未选择前保持待取餐，不显示配送中）
-    # 终态保护：订单已完成/已取消后，GPS 上报不得把状态回退成配送中（否则确认后会被反复冲回旧状态）
     if status:
-        cur.execute(_q("SELECT status FROM orders WHERE order_no=?"), (order_no,))
-        _st_row = _row_to_dict(cur, cur.fetchone()) or {}
-        _st_cur = _st_row.get("status") or ""
-        if _st_cur not in ("လက်ခံပြီးပါပြီ", "ပယ်ဖျက်ထားသည်"):
-            cur.execute(_q("UPDATE orders SET status=? WHERE order_no=?"), (status, order_no))
+        cur.execute(_q("UPDATE orders SET status=? WHERE order_no=?"), (status, order_no))
     conn.commit()
     conn.close()
     return jsonify({"ok": True, "msg": "တည်နေရာ တင်ပြီးပါပြီ"})
@@ -1080,28 +910,14 @@ def rider_active():
         conn.close()
         return jsonify({"ok": True, "active": None})
     od = _row_to_dict(cur, row)
-    # 状态自愈：本骑手已有确认记录、但订单状态被 GPS 上报回退成"配送中"时，以确认记录为准纠正为已完成
-    try:
-        _rec = rider_counts_get(od.get("order_no") or "", phone)
-        if _rec and (_to_int(_rec.get("baozi_received")) > 0 or _to_int(_rec.get("shop_received")) > 0):
-            if (od.get("status") or "") not in ("လက်ခံပြီးပါပြီ", "ပယ်ဖျက်ထားသည်"):
-                cur.execute(_q("UPDATE orders SET status=?, completed_at=? WHERE order_no=?"),
-                            ("လက်ခံပြီးပါပြီ", now_str(), od.get("order_no")))
-                conn.commit()
-                conn.close()
-                return jsonify({"ok": True, "active": None})
-    except Exception:
-        pass
     conn.close()
-    # 每个骑手独立计数：优先返回本骑手自己的数量（分母 = 本人当天首次输入量，永不递减）
-    _a_bt, _a_br, _a_st, _a_sr = rider_counts_values(od, phone)
     return jsonify({"ok": True, "active": {
         "order_no": od.get("order_no"), "rider_name": od.get("rider_name", "") or "",
         "status": od.get("status", "") or "", "city": od.get("city", "") or "",
         "shop_lat": od.get("shop_lat"), "shop_lng": od.get("shop_lng"),
         "shop_link": od.get("shop_link", "") or "", "gps_enabled": od.get("gps_enabled", 1),
-        "baozi_total": _a_bt, "baozi_received": _a_br,
-        "shop_total": _a_st, "shop_received": _a_sr,
+        "baozi_total": od.get("baozi_total", 0) or 0, "baozi_received": od.get("baozi_received", 0) or 0,
+        "shop_total": od.get("shop_total", 0) or 0, "shop_received": od.get("shop_received", 0) or 0,
         "amount": od.get("amount", "") or "", "payment_method": od.get("payment_method", "") or "",
         "delivery_address": od.get("delivery_address", "") or od.get("address", "") or ""
     }})
@@ -1135,14 +951,6 @@ def rider_confirm():
     order_dict = _row_to_dict(cur, order)
     new_baozi = (order_dict.get("baozi_received", 0) or 0) + confirm_baozi
     new_shop = (order_dict.get("shop_received", 0) or 0) + 1  # 每确认一个商家地址 +1
-    # 每个骑手独立计数：只累加本骑手 (order_no, phone) 自己的数量，分母为本人当天首次输入量
-    _o_bt, _o_st = orig_counts(order_dict)
-    _rc = rider_counts_ensure(cur, order_no, phone, 0, 0)  # 确认时不传订单级总量，避免抬高本骑手分母
-    _rc_bt = _to_int(_rc.get("baozi_total"))
-    _rc_st = _to_int(_rc.get("shop_total"))
-    _rc_br = _to_int(_rc.get("baozi_received")) + confirm_baozi
-    _rc_sr = _to_int(_rc.get("shop_received")) + 1
-    rider_counts_save(cur, order_no, phone, _rc_bt, _rc_st, _rc_br, _rc_sr)
     cur.execute(
         _q("UPDATE orders SET baozi_received=?, shop_received=?, delivery_address=?, payment_method=?, amount=?, status='လက်ခံပြီးပါပြီ', completed_at=? WHERE order_no=?"),
         (new_baozi, new_shop, address, payment_method, amount, now_str(), order_no),
@@ -1190,11 +998,10 @@ def rider_confirm():
     if not tg_ok and text_sent:
         tg_ok, tg_msg = True, "text sent"
     conn.close()
-    # 返回本骑手自己的剩余量（分母 = 本骑手当天首次输入量，永不递减）
     _rem_bt_all, _, _rem_st_all, _ = order_counts(order_dict)
-    _rem_bt = max(_rc_bt - _rc_br, 0)
-    _rem_st = max(_rc_st - _rc_sr, 0)
-    return jsonify({"ok": True, "msg": "လက်ခံပြီးပါပြီ", "status": "လက်ခံပြီးပါပြီ", "completed_at": now_str(), "baozi_received": _rc_br, "baozi_remaining": _rem_bt, "baozi_total_orig": _rc_bt, "shop_remaining": _rem_st, "shop_total_orig": _rc_st, "shop_received": _rc_sr, "payment_method": payment_method, "amount": amount, "telegram": tg_ok, "telegram_msg": tg_msg})
+    _rem_bt = max(_rem_bt_all - new_baozi, 0)
+    _rem_st = max(_rem_st_all - new_shop, 0)
+    return jsonify({"ok": True, "msg": "လက်ခံပြီးပါပြီ", "status": "လက်ခံပြီးပါပြီ", "completed_at": now_str(), "baozi_received": new_baozi, "baozi_remaining": _rem_bt, "baozi_total_orig": _rem_bt_all, "shop_remaining": _rem_st, "shop_total_orig": _rem_st_all, "shop_received": new_shop, "payment_method": payment_method, "amount": amount, "telegram": tg_ok, "telegram_msg": tg_msg})
 
 
 @app.route("/api/rider/cancel", methods=["POST"])
@@ -1266,7 +1073,7 @@ def rider_info():
     conn.close()
     if latest:
         latest["address"] = reverse_geocode(latest["lat"], latest["lng"])
-    _s_bt, _s_br, _s_st, _s_sr = rider_counts_values(order_dict, phone)
+    _s_bt, _s_br, _s_st, _s_sr = order_counts(order_dict)
     return jsonify(
         {
             "ok": True,
@@ -1321,7 +1128,7 @@ def order_history_api():
         latest = _row_to_dict(cur, latest_row) if latest_row else None
         if latest:
             latest["address"] = reverse_geocode(latest["lat"], latest["lng"])
-        _h_bt, _h_br, _h_st, _h_sr = rider_counts_values(od, phone)
+        _h_bt, _h_br, _h_st, _h_sr = order_counts(od)
         history.append(
             {
                 "order_no": order_no,
@@ -1412,7 +1219,7 @@ def track():
     conn.close()
     if latest:
         latest["address"] = reverse_geocode(latest["lat"], latest["lng"])
-    _d_bt, _d_br, _d_st, _d_sr = rider_counts_values(order_dict, phone)
+    _d_bt, _d_br, _d_st, _d_sr = order_counts(order_dict)
     return jsonify(
         {
             "ok": True,
@@ -1577,7 +1384,7 @@ def track_multi():
         track_list = _rows_to_dicts(cur, points)
         latest = track_list[-1] if track_list else None
         # 批量接口不串行调用逆地理编码（10-20 个骑手时避免阻塞），前端以坐标兜底显示
-        _m_bt, _m_br, _m_st, _m_sr = rider_counts_values(order_dict, phone)
+        _m_bt, _m_br, _m_st, _m_sr = order_counts(order_dict)
         results.append(
             {
                 "ok": True,
@@ -1934,8 +1741,7 @@ def _patch_version():
 
 @app.route("/api/rider/remaining", methods=["GET"])
 def _patch_rider_remaining():
-    """骑手端剩余数量：每个骑手按 (order_no, phone) 独立读取自己的数量。
-    分母 = 该骑手当天首次输入量（只增不减、刷新/重获订单都不变），分子随送货递减，跨缅甸日期凌晨清零。"""
+    """返回某骑手最新一单 / 指定订单的原始总量与剩余数量（分母永不扣减）"""
     phone = (request.args.get("phone") or "").strip()
     order_no = (request.args.get("order_no") or "").strip()
     if not phone and not order_no:
@@ -1949,48 +1755,33 @@ def _patch_rider_remaining():
         if r:
             od = _row_to_dict(cur, r)
     if od is None and phone:
-        if order_no:
-            cur.execute(_q("SELECT o.* FROM orders o JOIN order_history h ON h.order_no=o.order_no WHERE h.rider_phone=? AND o.order_no=? ORDER BY h.id DESC LIMIT 1"), (phone, order_no))
-        else:
-            cur.execute(_q("SELECT o.* FROM orders o JOIN order_history h ON h.order_no=o.order_no WHERE h.rider_phone=? ORDER BY h.id DESC LIMIT 1"), (phone,))
+        cur.execute(_q("SELECT o.* FROM orders o JOIN order_history h ON h.order_no=o.order_no WHERE h.rider_phone=? ORDER BY h.id DESC LIMIT 1"), (phone,))
         r = cur.fetchone()
         if r:
             od = _row_to_dict(cur, r)
     conn.close()
     if not od:
         return jsonify({"ok": False, "msg": "no order"}), 404
+    bt, br, st, sr = order_counts(od)
+    # 每日口径：只统计「当天」已收数量，跨天（凌晨 0 点后）自动归零，
+    # 分母永远取骑手最初输入量（ba_*_total_orig），所以显示回到 500 / 500
     today = now_str()[:10]
-    rec = rider_counts_get(od.get("order_no") or "", phone)
-    if rec:
-        # 该骑手自己的记录：分母只增不减，已收按缅甸日期清零
-        bt = max(_to_int(rec.get("baozi_total")), 0)
-        st = max(_to_int(rec.get("shop_total")), 0)
-        if (rec.get("day") or "") == today:
-            br_day = _to_int(rec.get("baozi_received"))
-            sr_day = _to_int(rec.get("shop_received"))
-        else:
-            br_day, sr_day = 0, 0
+    done_day = (od.get("completed_at") or "")[:10]
+    if done_day and done_day != today:
+        br_day, sr_day = 0, 0
     else:
-        # 无独立记录：回退 orders 旧数据（兼容老订单/老骑手）
-        bt, br, st, sr = order_counts(od)
-        done_day = (od.get("completed_at") or "")[:10]
-        if done_day and done_day != today:
-            br_day, sr_day = 0, 0
-        else:
-            br_day, sr_day = br, sr
-    br_day = min(br_day, bt)
-    sr_day = min(sr_day, st)
+        br_day, sr_day = br, sr
     return jsonify({
         "ok": True,
         "day": today,
         "order_no": od.get("order_no") or "",
-        "phone": phone,
         "status": od.get("status") or "",
         "completed_at": od.get("completed_at") or "",
         "baozi_total_orig": bt, "baozi_received": br_day, "baozi_remaining": max(bt - br_day, 0),
         "shop_total_orig": st, "shop_received": sr_day, "shop_remaining": max(st - sr_day, 0),
         "server_time": now_str(),
     })
+
 
 @app.route("/api/today-marks", methods=["GET"])
 def _patch_today_marks():

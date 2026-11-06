@@ -728,6 +728,12 @@ def rider_qty_view(cur, phone, order_dict=None, order_no=None):
             so = _to_int(rec.get("shop_orig"))
             br = _to_int(rec.get("baozi_received"))
             sr = _to_int(rec.get("shop_received"))
+            # 历史脏数据兜底：分母没记下（=0）而已经有送出量时，分母就用他自己送出的量，
+            # 绝不回退成订单总量（否则骑手输入 600 会显示 600/1500）
+            if bo <= 0 and br > 0:
+                bo = br
+            if so <= 0 and sr > 0:
+                so = sr
             return {"scope": "rider_order", "day": day, "order_no": order_no,
                     "baozi_total": bo, "baozi_received": br, "baozi_remaining": max(bo - br, 0),
                     "shop_total": so, "shop_received": sr, "shop_remaining": max(so - sr, 0)}
@@ -1743,14 +1749,16 @@ def rider_confirm():
     rider_qty_add(cur, phone, order_no, confirm_baozi, 1)
     conn.commit()
     _rvC = rider_qty_view(cur, phone, order_dict, order_no)
+    # 该骑手这一单还没有有效分母（首次就直接确认、没填过总量）：分母取他本人本次提交的数量，
+    # 绝对不能拿订单总量当分母 —— 否则骑手输入 600 会显示 600/1500、店铺 20 显示 20/30
+    if (_rvC["scope"] != "rider_order" or _to_int(_rvC["baozi_total"]) <= 0
+            or _to_int(_rvC["shop_total"]) <= 0):
+        rider_qty_lock(cur, phone, order_no,
+                       _to_int(confirm_baozi) or _to_int(new_baozi),
+                       _to_int(new_shop))
+        conn.commit()
+        _rvC = rider_qty_view(cur, phone, order_dict, order_no)
     conn.close()
-    # 兜底：若该骑手该单还没有记录（没填过数量），按订单口径返回，保证前端不会显示 0
-    if _rvC["scope"] != "rider_order":
-        _bt_all, _, _st_all, _ = order_counts(order_dict)
-        _rvC.update({
-            "baozi_total": _bt_all, "baozi_received": new_baozi, "baozi_remaining": max(_bt_all - new_baozi, 0),
-            "shop_total": _st_all, "shop_received": new_shop, "shop_remaining": max(_st_all - new_shop, 0),
-        })
     return jsonify({"ok": True, "msg": "လက်ခံပြီးပါပြီ", "status": "လက်ခံပြီးပါပြီ", "completed_at": now_str(),
                     "baozi_received": _rvC["baozi_received"], "baozi_remaining": _rvC["baozi_remaining"],
                     "baozi_total_orig": _rvC["baozi_total"],

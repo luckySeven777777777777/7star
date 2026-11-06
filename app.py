@@ -1003,8 +1003,13 @@ def report_location():
         (order_no, phone, lat, lng, status, is_sim, now_str()),
     )
     # 仅当快递员已选择并确认状态时才更新订单状态（未选择前保持待取餐，不显示配送中）
+    # 终态保护：订单已完成/已取消后，GPS 上报不得把状态回退成配送中（否则确认后会被反复冲回旧状态）
     if status:
-        cur.execute(_q("UPDATE orders SET status=? WHERE order_no=?"), (status, order_no))
+        cur.execute(_q("SELECT status FROM orders WHERE order_no=?"), (order_no,))
+        _st_row = _row_to_dict(cur, cur.fetchone()) or {}
+        _st_cur = _st_row.get("status") or ""
+        if _st_cur not in ("လက်ခံပြီးပါပြီ", "ပယ်ဖျက်ထားသည်"):
+            cur.execute(_q("UPDATE orders SET status=? WHERE order_no=?"), (status, order_no))
     conn.commit()
     conn.close()
     return jsonify({"ok": True, "msg": "တည်နေရာ တင်ပြီးပါပြီ"})
@@ -1075,6 +1080,18 @@ def rider_active():
         conn.close()
         return jsonify({"ok": True, "active": None})
     od = _row_to_dict(cur, row)
+    # 状态自愈：本骑手已有确认记录、但订单状态被 GPS 上报回退成"配送中"时，以确认记录为准纠正为已完成
+    try:
+        _rec = rider_counts_get(od.get("order_no") or "", phone)
+        if _rec and (_to_int(_rec.get("baozi_received")) > 0 or _to_int(_rec.get("shop_received")) > 0):
+            if (od.get("status") or "") not in ("လက်ခံပြီးပါပြီ", "ပယ်ဖျက်ထားသည်"):
+                cur.execute(_q("UPDATE orders SET status=?, completed_at=? WHERE order_no=?"),
+                            ("လက်ခံပြီးပါပြီ", now_str(), od.get("order_no")))
+                conn.commit()
+                conn.close()
+                return jsonify({"ok": True, "active": None})
+    except Exception:
+        pass
     conn.close()
     # 每个骑手独立计数：优先返回本骑手自己的数量（分母 = 本人当天首次输入量，永不递减）
     _a_bt, _a_br, _a_st, _a_sr = rider_counts_values(od, phone)

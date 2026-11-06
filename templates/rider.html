@@ -2586,7 +2586,8 @@ checkLogin();
     var rb = window.__remain ? window.__remain.baozi : null;
     var rs = window.__remain ? window.__remain.shop : null;
     var hasRemain = rb !== null && rb !== undefined && rs !== null && rs !== undefined &&
-      !isNaN(Number(rb)) && !isNaN(Number(rs));
+      !isNaN(Number(rb)) && !isNaN(Number(rs)) &&
+      (Number(rb) > 0 || Number(rs) > 0); // 0/0 = 该骑手本单今日尚无数量记录，按「首次输入」放行，避免按钮永久置灰
     // 剩余量缺失（新订单首次绑定）时不做一致性校验，仅要求手机号与两个数量已填且 > 0
     if (pRaw === "" || isNaN(bt) || bt <= 0 || isNaN(st) || st <= 0) {
       bind.disabled = true;
@@ -2808,7 +2809,8 @@ checkLogin();
     var rb = window.__remain ? window.__remain.baozi : null;
     var rs = window.__remain ? window.__remain.shop : null;
     var hasRemain = rb !== null && rb !== undefined && rs !== null && rs !== undefined &&
-      !isNaN(Number(rb)) && !isNaN(Number(rs));
+      !isNaN(Number(rb)) && !isNaN(Number(rs)) &&
+      (Number(rb) > 0 || Number(rs) > 0); // 0/0 = 该骑手本单今日尚无数量记录，按「首次输入」放行，避免按钮永久置灰
     var bt = bRaw === "" ? NaN : parseInt(bRaw, 10);
     var st = sRaw === "" ? NaN : parseInt(sRaw, 10);
     // 剩余量缺失（新订单首次绑定本来就没有剩余量可参照）：绝不改文案、绝不因剩余量缺失而禁用，

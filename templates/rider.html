@@ -671,18 +671,16 @@ function _denomToday() {
 function _denomKey(phone, orderNo) {
   var p = String(phone || "").trim();
   var o = String(orderNo || "").trim();
-  var d = _denomToday();
-  // 分母严格按「骑手 + 该订单」独立：不同订单、不同骑手之间绝不互相顶替。
-  // 否则骑手当天下过一单 1500 后，再下 600 的单会被抬成 1500。
-  if (p && o) return "rider:" + p + "|order:" + o + "|day:" + d;
-  if (p) return "rider:" + p + "|day:" + d;
-  if (o) return "order:" + o + "|day:" + d;
+  // 分母按「骑手 + 订单 + 当天」锁定：每个骑手每一单各自一份，互不混合、跨订单也不互相抬高
+  if (p && o) return "rider:" + p + "|order:" + o + "|day:" + _denomToday();
+  if (p) return "rider:" + p + "|day:" + _denomToday();
+  if (o) return "order:" + o + "|day:" + _denomToday();
   return "";
 }
 // 返回该骑手当天的分母（= 该骑手当天第一次输入的数量）
 // 规则：同一骑手同一天内，无论重新下单、换订单号、改输入，分母都保持首次输入量，
 //       绝不会被 500 覆盖掉 600；缅甸时间凌晨 0 点自动清零，新一天重新锁。
-function lockDenom(phone, orderNo, baoziTotal, shopTotal, authoritative) {
+function lockDenom(phone, orderNo, baoziTotal, shopTotal) {
   var b = _denomNum(baoziTotal), s = _denomNum(shopTotal);
   var key = _denomKey(phone, orderNo);
   var day = _denomToday();
@@ -691,18 +689,9 @@ function lockDenom(phone, orderNo, baoziTotal, shopTotal, authoritative) {
   var rec = all[key];
   // 跨天（凌晨 0 点后）自动清零：丢弃前一天的锁
   if (rec && rec.day && rec.day !== day) rec = null;
-  if (rec) {
-    if (authoritative) {
-      // 服务端返回的是「该骑手本人这一单」的真实分母：以它为准，
-      // 纠正历史上被订单总量（如 1500）污染的本地锁
-      if (b <= 0) b = _denomNum(rec.baozi);
-      if (s <= 0) s = _denomNum(rec.shop);
-    } else {
-      // 只升不降：已锁定的分母优先，但旧版本误锁成 500 的记录会被本次的 600 纠正回来，
-      // 首次输入量永不被后续数字（剩余量/改单量）覆盖
-      b = Math.max(_denomNum(rec.baozi), b);
-      s = Math.max(_denomNum(rec.shop), s);
-    }
+  if (rec && (_denomNum(rec.baozi) > 0 || _denomNum(rec.shop) > 0)) {
+    // 已锁定：原样返回，后面再输入多少次都不改动（600 永远显示 600，不会被 1500/500 替换）
+    return { baozi: _denomNum(rec.baozi), shop: _denomNum(rec.shop) };
   }
   if (b > 0 || s > 0) {
     all[key] = { baozi: b, shop: s, day: day };
@@ -1827,12 +1816,9 @@ async function loadRemaining(phone) {
   try {
     var r0 = await fetch("/api/rider/remaining?phone=" + encodeURIComponent(phone), { cache: "no-store" });
     var j0 = await r0.json();
-    if (j0 && j0.ok && (j0.baozi_total_orig > 0 || j0.baozi_remaining > 0)) {
-      // 输入框自动显示「剩余数量」（与绿色框ပေါက်စီကျန်ရှိအလုံးရေ/ဆိုင်ကျန်ရှိအရေအတွက်完全一致），下单数量必须与之一致
-      var _rb = (j0.baozi_remaining !== undefined && j0.baozi_remaining !== null) ? j0.baozi_remaining : j0.baozi_total_orig;
-      var _rs = (j0.shop_remaining !== undefined && j0.shop_remaining !== null) ? j0.shop_remaining : j0.shop_total_orig;
-      document.getElementById("baoziCount").value = _rb;
-      if (_rs !== undefined && _rs !== null && _rs !== "") document.getElementById("shopCount").value = _rs;
+    if (j0 && j0.ok && j0.baozi_total_orig > 0) {
+      document.getElementById("baoziCount").value = j0.baozi_total_orig;
+      document.getElementById("shopCount").value = (j0.shop_total_orig !== undefined && j0.shop_total_orig !== null) ? j0.shop_total_orig : document.getElementById("shopCount").value;
       return;
     }
   } catch (e) {}
@@ -1841,11 +1827,9 @@ async function loadRemaining(phone) {
     var j = await r.json();
     if (!j.ok || !j.history || j.history.length === 0) return;
     var h = j.history[0];
-    // 输入框自动回填「剩余数量」：骑手每次下单填的数必须与绿色框的剩余量一致，数量不符无法下单
-    var bt = (h.baozi_remaining !== undefined && h.baozi_remaining !== null && h.baozi_remaining !== "") ? h.baozi_remaining : h.baozi_total;
-    var st = (h.shop_remaining !== undefined && h.shop_remaining !== null && h.shop_remaining !== "") ? h.shop_remaining : h.shop_total;
-    if (bt === 0) bt = (h.baozi_total !== undefined && h.baozi_total !== null) ? h.baozi_total : "";
-    if (st === 0) st = (h.shop_total !== undefined && h.shop_total !== null) ? h.shop_total : "";
+    // 输入框提交的是「原始总量」，必须回填 total；绝不能用扣减后的 remaining 覆盖，否则分母会被越扣越小
+    var bt = (h.baozi_total !== undefined && h.baozi_total !== null && h.baozi_total !== "") ? h.baozi_total : h.baozi_remaining;
+    var st = (h.shop_total !== undefined && h.shop_total !== null && h.shop_total !== "") ? h.shop_total : h.shop_remaining;
     if (bt !== undefined && bt !== null && bt !== "") {
       document.getElementById("baoziCount").value = bt;
     }
@@ -1915,17 +1899,12 @@ async function openHistory() {
 // 商家位置统一链接：有区域内坐标时一律用坐标链接（手机/电脑打开都落到同一个点，不会跑到国外）
 function mapsUrlFor(x) {
   if (!x) return "";
-  if (typeof x === "string") return x;
   var la = parseFloat(x.shop_lat), ln = parseFloat(x.shop_lng);
   if (!isNaN(la) && !isNaN(ln) && inRegion(la, ln)) {
+    // 手机端优先用坐标 + geo 兜底：坐标链接在 Google Maps App / 浏览器里都会落到同一个点
     return "https://www.google.com/maps/search/?api=1&query=" + la.toFixed(6) + "," + ln.toFixed(6);
   }
-  // 恢复原逻辑：没有区域内坐标时，直接用商家填写的原始链接（手机/电脑一致，不被改动）
-  var lk = (x.shop_link || "").trim();
-  if (lk) return lk;
-  if (!isNaN(la) && !isNaN(ln)) {
-    return "https://www.google.com/maps/search/?api=1&query=" + la.toFixed(6) + "," + ln.toFixed(6);
-  }
+  // 没有区域内坐标时绝不回退原始短链：短链在手机上会被 Google 定向到国外，骑手直接找不到位置
   return "";
 }
 function locDisplay(x) {
@@ -1959,8 +1938,8 @@ function renderHistory() {
       + 'လက်ရှိအခြေအနေ：' + stTagHtml((h.status && h.status !== "待取餐") ? h.status : "-") + '<br>'
       + 'လက်ရှိနေရာ：<b>' + loc + '</b><br>'
       + 'ပို့ရမည့်ဆိုင်လိပ်စာ：<b>' + (h.delivery_address || "-") + '</b><br>'
-      + 'ကျန်ရှိသောပေါက်စီအလုံးအရေတွက်：<b>' + h.baozi_remaining + ' / ' + (h.baozi_total_orig || h.baozi_total || "-") + '</b><br>'
-      + 'ကျန်ရှိသောဆိုင်အရေတွက်：<b>' + h.shop_remaining + ' / ' + (h.shop_total_orig || h.shop_total || "-") + '</b><br>'
+      + 'ကျန်ရှိသောပေါက်စီအလုံးအရေတွက်：<b>' + h.baozi_remaining + ' / ' + (lockDenom(h.rider_phone || "", h.order_no || "", (h.baozi_total_orig || h.baozi_total), (h.shop_total_orig || h.shop_total)).baozi || "-") + '</b><br>'
+      + 'ကျန်ရှိသောဆိုင်အရေတွက်：<b>' + h.shop_remaining + ' / ' + (lockDenom(h.rider_phone || "", h.order_no || "", (h.baozi_total_orig || h.baozi_total), (h.shop_total_orig || h.shop_total)).shop || "-") + '</b><br>'
       + 'ငွေပေးချေမှုနည်းလမ်း：<b>' + (h.payment_method || "-") + '</b><br>'
       + 'Amount (MMK)：<b>' + (h.amount || "-") + '</b><br>'
       + '📍 Location / Geographic Location：<b>' + locDisplay(h) + '</b><br>'
@@ -2060,10 +2039,9 @@ async function refreshRiderInfo() {
     // 位置显示地名（反向地理编码），失败时回退经纬度
     document.getElementById("curLocation").textContent = j.latest ? (j.latest.address || (j.latest.lat.toFixed(6) + ", " + j.latest.lng.toFixed(6))) : "-";
     document.getElementById("curCity").textContent = (j.city && j.city !== "") ? j.city : "-";
-    // 分母锁定：分母取「这个骑手这一单第一次输入的量」，以服务端 rider+订单 口径为准
+    // 分母锁定：分母永远取「这个骑手今天第一次输入的量」，只增不减（重新下单也不会变成 500）
     var _lk0 = lockDenom(state.phone || j.phone || "", j.order_no || (window.state && state.orderNo) || "",
-      (j.baozi_total_orig || j.baozi_total || 0), (j.shop_total_orig || j.shop_total || 0),
-      j.scope === "rider_order");
+      (j.baozi_total_orig || j.baozi_total || 0), (j.shop_total_orig || j.shop_total || 0));
     var _obt = _lk0.baozi, _ost = _lk0.shop;
     document.getElementById("curBaozi").textContent = Math.max(_obt - (j.baozi_received || 0), 0) + " / " + _obt;
     document.getElementById("curShop").textContent = Math.max(_ost - (j.shop_received || 0), 0) + " / " + _ost;
@@ -2414,12 +2392,10 @@ checkLogin();
     function g(id) { return document.getElementById(id); }
     if (g("rtOrder")) g("rtOrder").textContent = j.order_no || "-";
     if (g("rtStatus")) g("rtStatus").textContent = statusEn(j.status || "");
-    // 分母恒为「该骑手这一单第一次输入的数量」：服务端已按骑手+订单给出 scope，
-    // scope=rider_order 时以服务端值为准（可纠正历史被订单总量污染的本地锁）
+    // 分母恒为「该骑手今天第一次输入的数量」（lockDenom 只增不减），刷新 / 重新下单都不会变小
     var _lkR = lockDenom((window.state && state.phone) || "", j.order_no || (window.state && state.orderNo) || "",
       (j.baozi_total_orig !== undefined ? j.baozi_total_orig : j.baozi_total),
-      (j.shop_total_orig !== undefined ? j.shop_total_orig : j.shop_total),
-      j.scope === "rider_order");
+      (j.shop_total_orig !== undefined ? j.shop_total_orig : j.shop_total));
     if (g("rtBaozi")) g("rtBaozi").textContent = ((j.baozi_remaining !== undefined && j.baozi_remaining !== null) ? j.baozi_remaining : "-") +
       " / " + (_lkR.baozi || "-");
     if (g("rtShop")) g("rtShop").textContent = ((j.shop_remaining !== undefined && j.shop_remaining !== null) ? j.shop_remaining : "-") +
@@ -2456,7 +2432,7 @@ checkLogin();
       if (status) stTxt = window.statusEn ? window.statusEn(status) : status;
       g("rtStatus").textContent = stTxt;
     }
-    var _lkL = lockDenom((window.state && state.phone) || "", orderNo || "", b, s, true);
+    var _lkL = lockDenom((window.state && state.phone) || "", orderNo || "", b, s);
     if (g("rtBaozi")) g("rtBaozi").textContent = bTxt + " / " + (isNaN(b) ? "-" : (_lkL.baozi || "-"));
     if (g("rtShop")) g("rtShop").textContent = sTxt + " / " + (isNaN(s) ? "-" : (_lkL.shop || "-"));
     if (g("rtTime")) {
@@ -2617,19 +2593,21 @@ checkLogin();
       bind.textContent = "Order ချိတ်ဆက်၍ ပို့ဆောင်စမည်";
       return;
     }
-    // 有剩余量时一律严格校验：数量必须等于绿色框显示的剩余量，不一致无法下单（防作弊）
+    // 仅有有效剩余量时才校验：允许「首次输入量（分母）」或「当前剩余量」两者之一，
+    // 这样第一次 600、送 100 剩 500 时重新下单填 600 依旧可通过，分母不会被强制压成 500。
     if (hasRemain) {
-        // 严格校验：输入数量必须等于页面上显示的剩余数量，数量不一致无法下单（防作弊）
-        var bOk = (bt === Number(rb));
-        var sOk = (st === Number(rs));
-        // 上一批已全部送完（剩余 0）时，允许重新输入新一批数量
-        if (Number(rb) === 0 && bt > 0) bOk = true;
-        if (Number(rs) === 0 && st > 0) sOk = true;
-        if (!bOk || !sOk) {
-            bind.disabled = true;
-            bind.textContent = "အရေအတွက် မကိုက်ညီပါ (Count must equal remaining)";
-            return;
-        }
+      var db = window.__remain ? Number(window.__remain.baoziOrig) : NaN;
+      var ds = window.__remain ? Number(window.__remain.shopOrig) : NaN;
+      var bOk = (bt === Number(rb)) || (!isNaN(db) && db > 0 && bt === db);
+      var sOk = (st === Number(rs)) || (!isNaN(ds) && ds > 0 && st === ds);
+      // 超出首次输入量（超送）一律拒绝
+      if (!isNaN(db) && db > 0 && bt > db) bOk = false;
+      if (!isNaN(ds) && ds > 0 && st > ds) sOk = false;
+      if (!bOk || !sOk) {
+        bind.disabled = true;
+        bind.textContent = "အရေအတွက် မကိုက်ညီပါ (Count must equal remaining or first input)";
+        return;
+      }
     }
     bind.disabled = false;
     bind.textContent = "Order ချိတ်ဆက်၍ ပို့ဆောင်စမည်";
@@ -2847,9 +2825,6 @@ checkLogin();
       var ds = window.__remain ? Number(window.__remain.shopOrig) : NaN;
       var bOk = (bt === Number(rb)) || (!isNaN(db) && db > 0 && bt === db);
       var sOk = (st === Number(rs)) || (!isNaN(ds) && ds > 0 && st === ds);
-      // 这个骑手在这一单还没有任何数量（剩余 0 且无锁定分母）：允许自己输入新一批，各管各的
-      if (Number(rb) === 0 && !(db > 0) && bt > 0) bOk = true;
-      if (Number(rs) === 0 && !(ds > 0) && st > 0) sOk = true;
       if (!isNaN(db) && db > 0 && bt > db) bOk = false;
       if (!isNaN(ds) && ds > 0 && st > ds) sOk = false;
       if (!bOk || !sOk) {

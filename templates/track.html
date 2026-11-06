@@ -627,8 +627,13 @@ function trackShopIcon() {
 }
 function locDisplay(x) {
   if (!x) return "-";
-  var v = x.shop_link || "";
-  if (v) return v;
+  // 有区域内坐标时统一用坐标链接：手机/电脑打开都落到同一个点，不会跑到国外
+  var la = parseFloat(x.shop_lat), ln = parseFloat(x.shop_lng);
+  if (!isNaN(la) && !isNaN(ln) && la >= 5.0 && la <= 30.0 && ln >= 88.0 && ln <= 108.0) {
+    var u = "https://www.google.com/maps/search/?api=1&query=" + la.toFixed(6) + "," + ln.toFixed(6);
+    return '<a href="' + u + '" target="_blank" rel="noopener" style="color:#1565c0;word-break:break-all;">' + u + '</a>';
+  }
+  // 与骑手端完全一致：没有区域内坐标时绝不回退原始短链（短链在手机上会被 Google 定向到国外）
   if (x.shop_lat !== null && x.shop_lat !== undefined && x.shop_lng !== null && x.shop_lng !== undefined) {
     return Number(x.shop_lat).toFixed(6) + ", " + Number(x.shop_lng).toFixed(6);
   }

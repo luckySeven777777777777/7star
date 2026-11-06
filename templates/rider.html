@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ပို့ဆောင်သူ - တည်နေရာတင်ခြင်း</title>
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<link rel="stylesheet" href="{{ url_for('static', filename='leaflet/leaflet.css') }}" onerror="this.onerror=null;this.href='https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';" />
 <style>
   * { margin:0; padding:0; box-sizing:border-box; }
   body {
@@ -30,8 +30,24 @@
   input:focus { border-color:#fda085; }
   #citySelect {
     width:100%; padding:10px; border:1px solid #ddd; border-radius:8px;
-    font-size:15px; outline:none; background:#fff; color:#333;
+    font-size:15px; outline:none; background:#fff; color:#111;
+    /* 强制浅色渲染：否则手机深色模式下原生下拉列表白底白字 / 黑底黑字，展开就是一片白板 */
+    color-scheme: light;
+    -webkit-appearance: menulist; appearance: menulist;
   }
+  /* 展开后的选项必须强制可见：显式写死背景与文字颜色（部分 Android WebView / 微信内置浏览器会继承系统主题） */
+  #citySelect option, #citySelect optgroup,
+  .history-head select option, .history-head select optgroup {
+    background-color:#ffffff !important;
+    color:#111111 !important;
+    font-size:15px;
+  }
+  #citySelect option:checked,
+  .history-head select option:checked {
+    background-color:#ffe0b2 !important;
+    color:#111111 !important;
+  }
+  .history-head select { color-scheme: light; }
   .btn {
     display:block; width:100%; padding:12px; border:none; border-radius:10px;
     font-size:16px; cursor:pointer; margin-top:14px; color:#fff;
@@ -152,19 +168,27 @@
   .pay-option img.pay-logo { width:30px; height:30px; object-fit:contain; border-radius:6px; }
   /* 地图四方向平移控制盘（Google 地图式上下左右查看） */
   .map-holder { position:relative; }
-  /* 全屏地图（手机端 CSS 全屏兜底：iOS Safari / 微信不支持原生 Fullscreen 时使用） */
+  /* ===== 全屏地图（纯 CSS 实现，桌面 / 手机 / 微信 WebView 表现完全一致）=====
+     绝不再使用原生 Fullscreen API：原生全屏会让 Leaflet 容器尺寸算成 0 → 瓦片不渲染 → 白屏。
+     高度由 JS 用 visualViewport 真实可视高度写死成 px，不依赖 100vh / flex 塌陷。*/
   #riderMapWrap.map-css-full {
-    position:fixed !important; left:0 !important; top:0 !important; right:0 !important; bottom:0 !important;
-    width:100vw !important; height:100vh !important; height:100dvh !important;
-    max-width:none !important; margin:0 !important; padding:6px !important; box-sizing:border-box;
-    background:#fff; z-index:99999; display:flex !important; flex-direction:column; overflow:hidden;
+    position:fixed !important; left:0 !important; top:0 !important;
+    width:100% !important; max-width:none !important; margin:0 !important;
+    padding:8px !important; box-sizing:border-box;
+    background:#fff; z-index:2147483000; display:flex !important;
+    flex-direction:column; overflow:hidden;
   }
-  #riderMapWrap.map-css-full .row2 { flex:0 0 auto; margin-bottom:6px !important; }
-  #riderMapWrap.map-css-full .map-holder { flex:1 1 auto; min-height:0; }
-  #riderMapWrap.map-css-full #riderMap { height:100% !important; min-height:0 !important; border-radius:0 !important; }
+  #riderMapWrap.map-css-full .row2 {
+    flex:0 0 auto !important; margin:0 0 6px 0 !important; position:relative; z-index:5;
+  }
+  #riderMapWrap.map-css-full .map-holder {
+    flex:1 1 auto !important; min-height:0 !important; height:auto !important;
+    overflow:hidden; position:relative;
+  }
+  #riderMapWrap.map-css-full #riderMap {
+    width:100% !important; min-height:0 !important; border-radius:0 !important; margin:0 !important;
+  }
   body.map-full-lock { overflow:hidden !important; }
-  #riderMapWrap:fullscreen, #riderMapWrap:-webkit-full-screen { height:100vh; background:#fff; padding:6px; box-sizing:border-box; display:flex; flex-direction:column; }
-  #riderMapWrap:fullscreen #riderMap, #riderMapWrap:-webkit-full-screen #riderMap { height:100% !important; }
   .map-pad { position:absolute; right:10px; bottom:24px; z-index:25; display:grid; grid-template-columns:repeat(3, 38px); grid-template-rows:repeat(3, 38px); gap:4px; user-select:none; }
   .map-pad button { width:38px; height:38px; margin:0; padding:0; border:none; border-radius:10px; background:rgba(255,255,255,0.94); color:#e07b00; font-size:16px; line-height:1; font-weight:bold; cursor:pointer; box-shadow:0 2px 8px rgba(0,0,0,0.22); display:flex; align-items:center; justify-content:center; }
   .map-pad button:active { background:#ffe0b2; transform:scale(0.95); }
@@ -432,10 +456,40 @@ var todayDoneItems = [];   // 今日已完成订单 [{order_no, lat, lng}]（缅
 var todayDoneDay = "";
 var cancelledItems = [];   // 今日已取消订单 [{order_no, lat, lng}]，地图显示红圈 ❌（凌晨12点自动清零）
 
+function _validLatLng(la, ln) {
+  if (isNaN(la) || isNaN(ln)) return null;
+  if (la < -90 || la > 90 || ln < -180 || ln > 180) return null;
+  return [la, ln];
+}
+function _dmsToDec(deg, min, sec, hemi) {
+  var v = Math.abs(parseFloat(deg || 0)) + (parseFloat(min || 0) / 60) + (parseFloat(sec || 0) / 3600);
+  if (hemi && /[SW]/i.test(hemi)) v = -v;
+  return v;
+}
+// 手机复制来的坐标格式五花八门：兼容 十进制度 / 中英文逗号 / geo: / 度分秒 / 空格分隔，
+// 与后端 parse_coords_text 保持同一套识别能力，避免手机端填了却定位不到。
 function parseCoordsText(text) {
   if (!text) return null;
-  var m = String(text).match(/(-?\d{1,2}(?:\.\d+)?)\s*[,،]\s*(-?\d{1,3}(?:\.\d+)?)/);
-  return m ? [parseFloat(m[1]), parseFloat(m[2])] : null;
+  var s = String(text).trim();
+  if (!s) return null;
+  var m, r;
+  // 1) 十进制度：16.8661, 96.1951（逗号可为 , ، ， ; ；）
+  m = s.match(/(-?\d{1,3}(?:\.\d+)?)\s*[,،，;；、]\s*(-?\d{1,3}(?:\.\d+)?)/);
+  if (m) { r = _validLatLng(parseFloat(m[1]), parseFloat(m[2])); if (r) return r; }
+  // 2) geo:16.86,96.19 / ?q= / ?ll= / @lat,lng
+  m = s.match(/(?:geo:|[?&](?:q|query|ll|center)=|@)\s*(-?\d{1,3}(?:\.\d+)?)\s*,\s*(-?\d{1,3}(?:\.\d+)?)/i);
+  if (m) { r = _validLatLng(parseFloat(m[1]), parseFloat(m[2])); if (r) return r; }
+  // 3) 度分秒：16°51'58.0"N 96°11'42.4"E
+  var dLat = s.match(/(\d{1,3})\s*°\s*(\d{1,2}(?:\.\d+)?)?\s*['′]?\s*(\d{1,2}(?:\.\d+)?)?\s*["″]?\s*([NS])/i);
+  var dLng = s.match(/(\d{1,3})\s*°\s*(\d{1,2}(?:\.\d+)?)?\s*['′]?\s*(\d{1,2}(?:\.\d+)?)?\s*["″]?\s*([EW])/i);
+  if (dLat && dLng) {
+    r = _validLatLng(_dmsToDec(dLat[1], dLat[2], dLat[3], dLat[4]), _dmsToDec(dLng[1], dLng[2], dLng[3], dLng[4]));
+    if (r) return r;
+  }
+  // 4) 纯空格分隔：16.8661 96.1951
+  m = s.match(/^(-?\d{1,3}\.\d+)\s+(-?\d{1,3}\.\d+)$/);
+  if (m) { r = _validLatLng(parseFloat(m[1]), parseFloat(m[2])); if (r) return r; }
+  return null;
 }
 function parseLinkCoords(text) {
   if (!text) return null;
@@ -516,18 +570,34 @@ function saveDenomLock(all) {
   try { localStorage.setItem(DENOM_LOCK_KEY, JSON.stringify(all)); } catch (e) {}
 }
 function _denomNum(v) { var n = parseInt(v, 10); return isNaN(n) ? 0 : n; }
-// 返回该订单被锁定的分母（首次输入量）；只增不减
+function _denomToday() {
+  try { if (typeof yangonDateStr === "function") return yangonDateStr(); } catch (e) {}
+  return new Date().toISOString().slice(0, 10);
+}
+// 返回该订单被锁定的分母（= 骑手第一次输入的数量）
+// 规则：第一次输入后永久固定，第二次/第三次输入的任何数量都不会改动它；
+//       缅甸时间凌晨 0 点自动清零，新一天的第一次输入重新成为分母。
 function lockDenom(orderNo, baoziTotal, shopTotal) {
   var b = _denomNum(baoziTotal), s = _denomNum(shopTotal);
   if (!orderNo) return { baozi: b, shop: s };
+  var day = _denomToday();
   var all = loadDenomLock();
   var rec = all[orderNo];
+  // 跨天（凌晨 0 点后）自动清零：丢弃前一天的锁
+  if (rec && rec.day && rec.day !== day) rec = null;
   if (rec) {
-    b = Math.max(_denomNum(rec.baozi), b);
-    s = Math.max(_denomNum(rec.shop), s);
+    var rb = _denomNum(rec.baozi), rs = _denomNum(rec.shop);
+    if (rb > 0) b = rb;   // 严格固定：绝不被后输入的数量覆盖
+    if (rs > 0) s = rs;
   }
-  all[orderNo] = { baozi: b, shop: s };
-  saveDenomLock(all);
+  if (b > 0 || s > 0) {
+    all[orderNo] = { baozi: b, shop: s, day: day };
+    // 顺手清理其它日期 / 其它订单的过期记录，避免 localStorage 无限增长
+    Object.keys(all).forEach(function (k) {
+      if (k !== orderNo && all[k] && all[k].day && all[k].day !== day) delete all[k];
+    });
+    saveDenomLock(all);
+  }
   return { baozi: b, shop: s };
 }
 window.lockDenom = lockDenom;
@@ -567,7 +637,7 @@ async function updateShopLocation() {
     var r = await fetch("/api/rider/update-shop", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ order_no: state.orderNo, phone: state.phone, shop_location_link: link, shop_location_coords: coords })
+      body: JSON.stringify({ order_no: state.orderNo, phone: state.phone, shop_location_link: link, shop_location_coords: coords, shop_location_plus_code: plus })
     });
     var j = await r.json();
     if (!j.ok) { showInfo(j.msg || "Update failed"); return; }
@@ -661,7 +731,18 @@ function riderPadReset() {
 }
 function showRiderMap() {
   var wrap = document.getElementById("riderMapWrap");
+  if (!wrap) return;
   wrap.style.display = "block";
+  // Leaflet 未加载成功（网络/CDN 异常）时给出可见提示，不再留一块无声白板
+  if (typeof L === "undefined") {
+    var box = document.getElementById("riderMap");
+    if (box) {
+      box.style.height = "180px";
+      box.innerHTML = '<div style="padding:16px;background:#fff3e0;border:1px solid #ffb74d;border-radius:10px;color:#e65100;font-size:14px;line-height:1.6">' +
+        '地图组件未加载成功，请检查网络后下拉刷新页面。<br>Map library failed to load. Please refresh this page.</div>';
+    }
+    return;
+  }
   if (!riderMap) {
     riderMap = L.map("riderMap", { dragging: true, touchZoom: true, scrollWheelZoom: true, doubleClickZoom: true, tap: true, zoomControl: true }).setView([16.8661, 96.1951], 13);
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
@@ -787,11 +868,10 @@ function addTodayDone(order_no, lat, lng) {
   drawTodayDone();
 }
 
-// ===== 全屏地图：优先原生 Fullscreen API；iOS Safari / 微信等不支持时自动降级为 CSS 全屏 =====
+// ===== 全屏地图：一律走 CSS 全屏（不使用原生 Fullscreen API，杜绝 Leaflet 尺寸归零白屏） =====
 function isMapFullscreen() {
   var wrap = document.getElementById("riderMapWrap");
-  return !!(document.fullscreenElement || document.webkitFullscreenElement ||
-    (wrap && wrap.classList.contains("map-css-full")));
+  return !!(wrap && wrap.classList.contains("map-css-full"));
 }
 function setMapFullscreenBtn(on) {
   var b = document.getElementById("mapFullscreenBtn");
@@ -803,60 +883,107 @@ function setMapFullscreenBtn(on) {
 function resizeRiderMapNow() {
   if (riderMap) { try { riderMap.invalidateSize(); } catch (e) {} }
 }
+// 真实可视区域（手机地址栏 / 微信 WebView / 横竖屏都能拿到正确像素）
+function _mapViewportPx() {
+  var vv = window.visualViewport;
+  var w = (vv && vv.width) ? vv.width : (window.innerWidth || document.documentElement.clientWidth || 0);
+  var h = (vv && vv.height) ? vv.height : (window.innerHeight || document.documentElement.clientHeight || 0);
+  return { w: Math.round(w), h: Math.round(h) };
+}
+// 全屏状态下用 px 把容器和地图像素高度写死，彻底绕开 flex / vh 在移动端的塌陷问题
+function applyFullMapSize() {
+  var wrap = document.getElementById("riderMapWrap");
+  if (!wrap || !wrap.classList.contains("map-css-full")) return;
+  var mapEl = document.getElementById("riderMap");
+  var vp = _mapViewportPx();
+  if (vp.h < 120) vp.h = 120;
+  wrap.style.setProperty("height", vp.h + "px", "important");
+  wrap.style.setProperty("width", vp.w + "px", "important");
+  var row = wrap.querySelector(".row2");
+  var rowH = row ? row.offsetHeight : 0;
+  if (mapEl) {
+    var mh = Math.max(vp.h - rowH - 22, 140); // 上下 padding 8*2 + row 下间距 6
+    mapEl.style.setProperty("height", mh + "px", "important");
+    mapEl.style.setProperty("min-height", mh + "px", "important");
+    mapEl.style.setProperty("width", "100%", "important");
+  }
+  var holder = wrap.querySelector(".map-holder");
+  if (holder && mapEl) holder.style.setProperty("height", mapEl.style.height, "important");
+}
+function _fullBurstResize() {
+  applyFullMapSize();
+  [60, 180, 320, 620, 1000].forEach(function (t) {
+    setTimeout(function () { applyFullMapSize(); resizeRiderMapNow(); }, t);
+  });
+}
 function enterCssMapFull() {
   var wrap = document.getElementById("riderMapWrap");
   if (!wrap || wrap.classList.contains("map-css-full")) return;
+  // 关键：把地图容器 DOM 直接提升到 body 下。
+  // fixed 定位在有 transform / filter / overflow 的祖先容器内会失效（只占祖先那一小块），
+  // 提升到 body 后手机与电脑行为完全一致，不再出现全屏后地图区变白。
+  if (!wrap.__homeParent) {
+    wrap.__homeParent = wrap.parentNode;
+    wrap.__homeNext = wrap.nextSibling;
+  }
+  if (wrap.parentNode !== document.body) {
+    document.body.appendChild(wrap);
+  }
   wrap.classList.add("map-css-full");
   document.body.classList.add("map-full-lock");
   setMapFullscreenBtn(true);
-  setTimeout(resizeRiderMapNow, 60);
-  setTimeout(resizeRiderMapNow, 320);
+  if (riderMap) { try { riderMap.invalidateSize(); } catch (e) {} }
+  _fullBurstResize();
 }
 function exitCssMapFull() {
   var wrap = document.getElementById("riderMapWrap");
   if (!wrap) return;
   wrap.classList.remove("map-css-full");
   document.body.classList.remove("map-full-lock");
+  // 还原 DOM 位置，避免地图容器长期挂在 body 下影响后续布局
+  if (wrap.__homeParent && wrap.parentNode !== wrap.__homeParent) {
+    var anchor = (wrap.__homeNext && wrap.__homeNext.parentNode === wrap.__homeParent) ? wrap.__homeNext : null;
+    wrap.__homeParent.insertBefore(wrap, anchor);
+  }
+  wrap.style.removeProperty("height");
+  wrap.style.removeProperty("width");
+  var mapEl = document.getElementById("riderMap");
+  var holder = wrap.querySelector(".map-holder");
+  if (holder) { holder.style.removeProperty("height"); }
+  if (mapEl) {
+    mapEl.style.removeProperty("height");
+    mapEl.style.removeProperty("min-height");
+    mapEl.style.removeProperty("width");
+  }
   setMapFullscreenBtn(false);
   setTimeout(resizeRiderMapNow, 60);
+  setTimeout(resizeRiderMapNow, 320);
 }
 function toggleMapFullscreen() {
   var wrap = document.getElementById("riderMapWrap");
   if (!wrap) return;
-  if (document.fullscreenElement || document.webkitFullscreenElement) {
-    if (document.exitFullscreen) document.exitFullscreen();
-    else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
-    else if (document.webkitCancelFullScreen) document.webkitCancelFullScreen();
-    return;
+  // 地图还没创建（未绑定订单 / 刚进页面）就点全屏时，先把地图建出来，避免全屏后是一块白板
+  if (!riderMap && typeof L !== "undefined") {
+    wrap.style.display = "block";
+    showRiderMap();
   }
-  if (wrap.classList.contains("map-css-full")) { exitCssMapFull(); return; }
-  var started = false;
-  try {
-    if (wrap.requestFullscreen) {
-      var p = wrap.requestFullscreen();
-      started = true;
-      if (p && p.catch) p.catch(function () { enterCssMapFull(); });
-    } else if (wrap.webkitRequestFullscreen) { wrap.webkitRequestFullscreen(); started = true; }
-    else if (wrap.webkitRequestFullScreen) { wrap.webkitRequestFullScreen(); started = true; }
-    else if (wrap.msRequestFullscreen) { wrap.msRequestFullscreen(); started = true; }
-  } catch (e) { started = false; }
-  // 不支持或被浏览器拒绝：直接走 CSS 全屏，保证手机端点了一定有反应
-  if (!started) enterCssMapFull();
-  else setTimeout(function () { if (!isMapFullscreen()) enterCssMapFull(); }, 350);
+  if (wrap.classList.contains("map-css-full")) exitCssMapFull();
+  else enterCssMapFull();
 }
 window.toggleMapFullscreen = toggleMapFullscreen;
 function onMapFullscreenChange() {
-  var mapEl = document.getElementById("riderMap");
-  var wrap = document.getElementById("riderMapWrap");
-  var cssOn = !!(wrap && wrap.classList.contains("map-css-full"));
-  var on = !!(document.fullscreenElement || document.webkitFullscreenElement) || cssOn;
+  var on = isMapFullscreen();
   setMapFullscreenBtn(on);
-  if (mapEl) mapEl.style.height = cssOn ? "" : (on ? "calc(100vh - 70px)" : "320px");
+  if (on) applyFullMapSize();
   resizeRiderMapNow();
   setTimeout(resizeRiderMapNow, 220);
 }
+window.addEventListener("resize", function () { if (isMapFullscreen()) _fullBurstResize(); });
+window.addEventListener("orientationchange", function () { if (isMapFullscreen()) _fullBurstResize(); });
+if (window.visualViewport) {
+  window.visualViewport.addEventListener("resize", function () { if (isMapFullscreen()) applyFullMapSize(); });
+}
 document.addEventListener("fullscreenchange", onMapFullscreenChange);
-document.addEventListener("webkitfullscreenchange", onMapFullscreenChange);
 function setShop(lat, lng, linkText) {
   shopLat = lat; shopLng = lng;
   if (!riderMap) showRiderMap();
@@ -1080,10 +1207,8 @@ async function bindOrder() {
     var shopLocationLink = document.getElementById("shopLocationLink").value.trim();
     var shopLocationCoords = document.getElementById("shopLocationCoords").value.trim();
     var shopLocationPlusCode = document.getElementById("shopLocationPlusCode").value.trim();
-    if (!shopLocationCoords) {
-      var pc = decodePlusCode(shopLocationPlusCode);
-      if (pc) { shopLocationCoords = pc[0].toFixed(6) + ", " + pc[1].toFixed(6); }
-    }
+    // Plus Code 不在前端强行转坐标：统一交给服务端权威解析，
+    // 保证手机端与电脑端用同一套算法，定位结果完全一致（前端仅在服务端解析失败时兜底）
     var r = await fetch("/api/rider/bind", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
@@ -1091,7 +1216,8 @@ async function bindOrder() {
         name: name, phone: phone, order_no: orderNo,
         rider_name: name, baozi_total: baoziTotal || 0,
         shop_total: shopTotal || 0, delivery_address: deliveryAddress,
-        city: city, shop_location_link: shopLocationLink, shop_location_coords: shopLocationCoords
+        city: city, shop_location_link: shopLocationLink, shop_location_coords: shopLocationCoords,
+        shop_location_plus_code: shopLocationPlusCode
       })
     });
     var j = await r.json();
@@ -1106,6 +1232,7 @@ async function bindOrder() {
     state.statusLocked = false;
     state.pendingStatus = "";
     state.confirmedStatuses = [];
+    state.__finalSynced = "";
     document.querySelectorAll("#statusBox button").forEach(function(btn) { btn.disabled = false; });
     document.getElementById("confirmDeliveredBtn").disabled = false;
     document.getElementById("reportPanel").style.display = "block";
@@ -1218,6 +1345,8 @@ function formatEnglishDate(input) {
 // ---------- တည်နေရာ တင်ခြင်း ----------
 async function reportLocation(lat, lng, status, isSim) {
   if (!state.orderNo || !state.phone) return;
+  // 终态（已完成 / 已取消）后不再上报，避免把状态写回「配送中」造成手机电脑显示不一致
+  if (state.status === "လက်ခံပြီးပါပြီ" || state.status === "ပယ်ဖျက်ထားသည်") return;
   status = status || state.status;
   isSim = isSim ? 1 : 0;
   try {
@@ -1290,6 +1419,12 @@ function stopSim() {
 
 // ---------- ဆိုင်မှ လက်ခံရရှိကြောင်း အတည်ပြုခြင်း ----------
 function confirmDelivered() {
+  // 已完成的订单不允许再打开确认框（防止重复确认导致数量/通知翻倍）
+  if (state.orderNo && _confirmDoneOrders[state.orderNo]) {
+    showInfo("ဤအမှာစာ လက်ခံပြီးသားဖြစ်ပါသည်（该订单已确认完成）");
+    return;
+  }
+  if (_confirmBusy) return;
   document.getElementById("confirmModal").style.display = "flex";
   document.getElementById("confirmBaozi").value = "";
   document.getElementById("confirmAddress").value = "";
@@ -1373,7 +1508,12 @@ function uploadProof(ev) {
 function clearProof() {
   resetProof();
 }
+var _confirmBusy = false;
+var _confirmDoneOrders = {};
 async function doConfirmDelivered() {
+  // 全局防重入：Confirm ✅ 只允许点击生效一次（连点 / 抖动 / 双端同时点都不会双倍数量与双倍通知）
+  if (_confirmBusy) return;
+  if (state.orderNo && _confirmDoneOrders[state.orderNo]) return;
   if (!proofUploaded) { showInfo("Please upload / take photo first"); return; }
   var baozi = parseInt(document.getElementById("confirmBaozi").value) || 0;
   var address = document.getElementById("confirmAddress").value.trim();
@@ -1381,6 +1521,10 @@ async function doConfirmDelivered() {
   var amount = document.getElementById("confirmAmount").value.trim();
   if (baozi <= 0 && !address) { showInfo("အရေအတွက် သို့မဟုတ် လိပ်စာ ထည့်ပါ"); return; }
   if (!paymentMethod) { showInfo("Please select payment method"); return; }
+  _confirmBusy = true;
+  var _btn = document.getElementById("confirmOkBtn");
+  var _btnTxt = _btn ? _btn.textContent : "";
+  if (_btn) { _btn.disabled = true; _btn.textContent = "Processing..."; }
   try {
     var r = await fetch("/api/rider/confirm", {
       method: "POST",
@@ -1388,7 +1532,16 @@ async function doConfirmDelivered() {
       body: JSON.stringify({ order_no: state.orderNo, phone: state.phone, confirm_baozi: baozi, address: address, payment_method: paymentMethod, amount: amount, proof_url: proofUrl })
     });
     var j = await r.json();
-    if (!j.ok) { showInfo(j.msg); return; }
+    if (!j.ok) {
+      showInfo(j.msg || "Confirm failed");
+      _confirmBusy = false;
+      if (_btn) { _btn.textContent = _btnTxt; }
+      // 服务端已取消的订单不允许再确认
+      if ((j.msg || "").indexOf("ပယ်ဖျက်") >= 0 && _btn) _btn.disabled = true;
+      else if (_btn) _btn.disabled = false;
+      return;
+    }
+    if (state.orderNo) _confirmDoneOrders[state.orderNo] = true;
     closeConfirmModal();
     addTodayDone(state.orderNo,
       (shopLat === null || shopLat === undefined) ? state.curLat : shopLat,
@@ -1401,7 +1554,9 @@ async function doConfirmDelivered() {
     document.getElementById("curStatus").style.color = "#2e7d32";
     lockStatusButtons();
     saveLockLocal();
-    showInfo("လက်ခံပြီးပါပြီ။ ဤအမှာစာ ပြီးဆုံးပါပြီ။ အမှာစာအသစ် ချိတ်ဆက်/ဖန်တီးနိုင်ပါပြီ");
+    showInfo(j.already
+      ? "ဤအမှာစာ လက်ခံပြီးသားဖြစ်ပါသည်"
+      : "လက်ခံပြီးပါပြီ။ ဤအမှာစာ ပြီးဆုံးပါပြီ။ အမှာစာအသစ် ချိတ်ဆက်/ဖန်တီးနိုင်ပါပြီ");
     // 订单完成后重置本端状态，允许重新ချိတ်ဆက် 新订单
     resetAfterCompletion();
     window.__activeOrderNo = "";
@@ -1410,6 +1565,10 @@ async function doConfirmDelivered() {
     refreshRiderInfo();
   } catch (e) {
     showInfo("ဆာဗာနှင့် ချိတ်ဆက်၍ မရပါ။ ဝန်ဆောင်မှု စတင်ထားခြင်း ရှိမရှိ စစ်ဆေးပါ");
+    if (_btn) { _btn.textContent = _btnTxt; _btn.disabled = false; }
+  } finally {
+    _confirmBusy = false;
+    if (_btn && _btn.textContent === "Processing...") { _btn.textContent = _btnTxt; _btn.disabled = true; }
   }
 }
 
@@ -1662,18 +1821,48 @@ async function refreshRiderInfo() {
       return;
     }
     // 状态同步：仅当快递员已确认锁定状态后才同步后端状态显示；
-    // 未选择前保持 "-"，不显示配送中
-    if (j.status && state.statusLocked) {
-      state.status = j.status;
-      document.getElementById("curStatus").textContent = j.status;
+    // 未选择前保持 "-"，不显示配送中。终态（完成/取消）一律强制同步，确保手机与电脑一致
+    var _st = (j.status || "").trim();
+    var _isFinal = (_st === "လက်ခံပြီးပါပြီ" || _st === "ပယ်ဖျက်ထားသည်");
+    if (_st && (state.statusLocked || _isFinal)) {
+      state.status = _st;
+      document.getElementById("curStatus").textContent = _st;
       document.querySelectorAll("#statusBox button").forEach(function(btn) {
         btn.classList.remove("active");
       });
-      if (j.status === "လက်ခံပြီးပါပြီ") {
+      if (_st === "လက်ခံပြီးပါပြီ") {
         document.getElementById("curStatus").style.color = "#2e7d32";
+      } else if (_st === "ပယ်ဖျက်ထားသည်") {
+        document.getElementById("curStatus").style.color = "#c62828";
       } else {
         document.getElementById("curStatus").style.color = "";
       }
+    }
+    // 跨设备终态同步：另一台设备（电脑/另一部手机）已完成或已取消，本端必须立刻跟上，
+    // 不能停留在旧状态继续上报位置，否则商家端会一直显示「配送中」。
+    if (_isFinal && state.__finalSynced !== ((j.order_no || "") + "|" + _st)) {
+      state.__finalSynced = (j.order_no || "") + "|" + _st;
+      state.statusLocked = true;
+      if (j.order_no) _confirmDoneOrders[j.order_no] = true;
+      try {
+        if (state.gpsWatchId !== null) { navigator.geolocation.clearWatch(state.gpsWatchId); state.gpsWatchId = null; }
+        if (state.gpsTimer) { clearInterval(state.gpsTimer); state.gpsTimer = null; }
+        stopSim();
+      } catch (e) {}
+      lockStatusButtons();
+      saveLockLocal();
+      document.getElementById("gpsBtn").disabled = true;
+      document.getElementById("gpsBtn").textContent = "GPS ပိတ်ထားသည်";
+      if (_st === "လက်ခံပြီးပါပြီ") {
+        document.getElementById("confirmDeliveredBtn").disabled = true;
+        showInfo("ဤအမှာစာကို အခြားတစ်နေရာမှ လက်ခံပြီးပါပြီ。状态已同步完成");
+      } else {
+        showInfo("ဤအမှာစာကို ပယ်ဖျက်ပြီးပါပြီ。状态已同步取消");
+      }
+      if (window.loadRemain) window.loadRemain(state.phone, j.order_no || state.orderNo);
+      // 终态后允许接新订单，避免骑手端死锁
+      var _bb = document.getElementById("bindBtn");
+      if (_bb) { _bb.disabled = false; _bb.textContent = "ချိတ်ဆက်မည်"; }
     }
     // 商家位置同步到骑手端地图（刷新/恢复后重新绘制商家 marker）
     if (j.shop_lat !== null && j.shop_lat !== undefined && (shopLat !== j.shop_lat || shopLng !== j.shop_lng)) {
@@ -2035,6 +2224,11 @@ checkLogin();
     return d;
   }
   function paintRemain(j) {
+    // 订单隔离：卡片刻意只显示「当前绑定的这一个订单」的数量。
+    // 同一手机号可能先后绑过多个订单，若返回的是别的订单，直接丢弃，避免不同骑手/不同订单数量混在一起。
+    var _cur = (window.state && state.orderNo) || "";
+    var _ret = j.order_no || "";
+    if (_cur && _ret && _cur !== _ret) return;
     var d = ensureRemainCard();
     function g(id) { return document.getElementById(id); }
     if (g("rtOrder")) g("rtOrder").textContent = j.order_no || "-";
@@ -2338,7 +2532,7 @@ checkLogin();
     setInterval(function () {
       var p = "";
       try { p = (document.getElementById("riderPhone").value || "").trim() || (localStorage.getItem("riderPhoneSaved") || "").trim(); } catch (e) {}
-      if (p) loadRemain(p, "");
+      if (p) loadRemain(p, (window.state && state.orderNo) || "");
       window.updateGetNewOrderState();
     }, 15000);
   }
@@ -2496,6 +2690,90 @@ checkLogin();
     if (window.validateCountInputs) window.validateCountInputs();
   }, 1500);
 })();
+})();
+</script>
+
+<!-- ===== မြို့ 下拉：自定义面板（不使用系统原生弹层，手机深色模式/微信 WebView 下也不会出现白屏） ===== -->
+<style>
+  #cityPickerOverlay { position:fixed; inset:0; background:rgba(0,0,0,0.45); z-index:2147483600; display:none; align-items:flex-end; justify-content:center; }
+  #cityPickerOverlay.open { display:flex; }
+  #cityPickerCard { width:100%; max-width:520px; max-height:70vh; background:#fff; border-radius:16px 16px 0 0; box-shadow:0 -4px 24px rgba(0,0,0,0.28); display:flex; flex-direction:column; overflow:hidden; }
+  #cityPickerTitle { padding:14px 16px; font-size:16px; font-weight:bold; color:#111; background:#fff7ed; border-bottom:1px solid #f0e0d0; }
+  #cityPickerList { overflow-y:auto; -webkit-overflow-scrolling:touch; background:#fff; }
+  #cityPickerList .cp-item { padding:15px 18px; font-size:17px; color:#111; background:#fff; border-bottom:1px solid #eee; cursor:pointer; }
+  #cityPickerList .cp-item:active { background:#ffe0b2; }
+  #cityPickerList .cp-item.cp-sel { background:#fff3e0; color:#b45309; font-weight:bold; }
+  #cityPickerCancel { padding:15px; font-size:16px; color:#b71c1c; background:#fff; border:none; border-top:8px solid #f2f2f2; cursor:pointer; }
+</style>
+<div id="cityPickerOverlay">
+  <div id="cityPickerCard">
+    <div id="cityPickerTitle">မြို့ ရွေးချယ်ပါ / Select City</div>
+    <div id="cityPickerList"></div>
+    <button id="cityPickerCancel" type="button">ပိတ်မည် / Cancel</button>
+  </div>
+</div>
+<script>
+(function () {
+  var sel = document.getElementById("citySelect");
+  var overlay = document.getElementById("cityPickerOverlay");
+  var list = document.getElementById("cityPickerList");
+  if (!sel || !overlay || !list) return;
+
+  function closePicker() { overlay.classList.remove("open"); }
+
+  function renderList() {
+    list.innerHTML = "";
+    Array.prototype.forEach.call(sel.options, function (op) {
+      var row = document.createElement("div");
+      row.className = "cp-item" + (op.value && op.value === sel.value ? " cp-sel" : "");
+      row.textContent = (op.textContent || "").trim() || "-";
+      row.addEventListener("click", function () {
+        sel.value = op.value;
+        try { sel.dispatchEvent(new Event("change", { bubbles: true })); } catch (e) {}
+        closePicker();
+      });
+      list.appendChild(row);
+    });
+  }
+
+  function openPicker(ev) {
+    if (ev) { ev.preventDefault(); ev.stopPropagation(); }
+    renderList();
+    overlay.classList.add("open");
+    setTimeout(function () { try { sel.blur(); } catch (e) {} }, 0);
+  }
+
+  // 阻止系统原生下拉弹层（原生弹层在部分手机/深色模式下白底白字，看起来就是一片白屏）
+  var _lastOpen = 0;
+  function openOnce(ev) {
+    if (ev) { ev.preventDefault(); ev.stopPropagation(); }
+    var t = Date.now();
+    if (t - _lastOpen < 400) return;   // 手机上一次操作会同时触发 touchstart + mousedown，只认第一次
+    _lastOpen = t;
+    openPicker();
+  }
+  sel.addEventListener("mousedown", openOnce, { passive: false });
+  sel.addEventListener("touchstart", openOnce, { passive: false });
+  sel.addEventListener("keydown", function (ev) {
+    if (ev.key === "Enter" || ev.key === " " || ev.key === "ArrowDown") { ev.preventDefault(); openPicker(); }
+  });
+
+  overlay.addEventListener("click", function (ev) { if (ev.target === overlay) closePicker(); });
+  document.getElementById("cityPickerCancel").addEventListener("click", closePicker);
+  document.addEventListener("keydown", function (ev) { if (ev.key === "Escape") closePicker(); });
+  window.openCityPicker = openPicker;
+
+  // ===== 手机/电脑切回前台立即同步一次，避免后台被浏览器节流后状态卡住 =====
+  function syncNow() {
+    try { if (typeof refreshRiderInfo === "function") refreshRiderInfo(); } catch (e) {}
+    try { if (window.loadRemain && state.phone) loadRemain(state.phone, state.orderNo || ""); } catch (e) {}
+    try { if (window.reloadTodayMarks) reloadTodayMarks(); } catch (e) {}
+  }
+  document.addEventListener("visibilitychange", function () {
+    if (document.visibilityState === "visible") syncNow();
+  });
+  window.addEventListener("pageshow", function () { syncNow(); });
+  window.addEventListener("focus", function () { syncNow(); });
 })();
 </script>
 

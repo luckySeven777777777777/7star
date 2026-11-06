@@ -330,7 +330,8 @@
     <div id="routeInfo" style="margin-top:8px; padding:8px 12px; background:#f1f8e9; border:1px solid #c8e6c9; border-radius:8px; font-size:14px; color:#2e7d32;">Arrival: - · Time left: -</div>
   </div>
 
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="{{ url_for('static', filename='leaflet/leaflet.js') }}"></script>
+<script>if (!window.L) { document.write('<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"><\/script>'); }</script>
 <script>
 // ---------- 商家端请求统一注入 userToken：与骑手端登录态完全隔离，互不覆盖 ----------
 (function () {
@@ -1926,6 +1927,22 @@ startBellPolling();
   window.addEventListener("load", function () {
     setTimeout(function () { if (window.drawTodayMarks) window.drawTodayMarks(); }, 2500);
   });
+})();
+</script>
+
+<script>
+/* 电脑端/手机端切回前台立即同步一次订单状态，避免后台标签被浏览器节流后状态卡在旧值 */
+(function () {
+  function syncNow() {
+    try { if (typeof search === "function") search(true); } catch (e) {}
+    try { if (typeof searchMulti === "function") searchMulti(true); } catch (e) {}
+    try { if (window.drawTodayMarks) window.drawTodayMarks(); } catch (e) {}
+  }
+  document.addEventListener("visibilitychange", function () {
+    if (document.visibilityState === "visible") syncNow();
+  });
+  window.addEventListener("focus", syncNow);
+  window.addEventListener("pageshow", syncNow);
 })();
 </script>
 

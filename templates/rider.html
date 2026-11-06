@@ -1906,12 +1906,17 @@ async function openHistory() {
 // 商家位置统一链接：有区域内坐标时一律用坐标链接（手机/电脑打开都落到同一个点，不会跑到国外）
 function mapsUrlFor(x) {
   if (!x) return "";
+  if (typeof x === "string") return x;
   var la = parseFloat(x.shop_lat), ln = parseFloat(x.shop_lng);
   if (!isNaN(la) && !isNaN(ln) && inRegion(la, ln)) {
-    // 手机端优先用坐标 + geo 兜底：坐标链接在 Google Maps App / 浏览器里都会落到同一个点
     return "https://www.google.com/maps/search/?api=1&query=" + la.toFixed(6) + "," + ln.toFixed(6);
   }
-  // 没有区域内坐标时绝不回退原始短链：短链在手机上会被 Google 定向到国外，骑手直接找不到位置
+  // 恢复原逻辑：没有区域内坐标时，直接用商家填写的原始链接（手机/电脑一致，不被改动）
+  var lk = (x.shop_link || "").trim();
+  if (lk) return lk;
+  if (!isNaN(la) && !isNaN(ln)) {
+    return "https://www.google.com/maps/search/?api=1&query=" + la.toFixed(6) + "," + ln.toFixed(6);
+  }
   return "";
 }
 function locDisplay(x) {
@@ -2830,6 +2835,9 @@ checkLogin();
       var ds = window.__remain ? Number(window.__remain.shopOrig) : NaN;
       var bOk = (bt === Number(rb)) || (!isNaN(db) && db > 0 && bt === db);
       var sOk = (st === Number(rs)) || (!isNaN(ds) && ds > 0 && st === ds);
+      // 这个骑手在这一单还没有任何数量（剩余 0 且无锁定分母）：允许自己输入新一批，各管各的
+      if (Number(rb) === 0 && !(db > 0) && bt > 0) bOk = true;
+      if (Number(rs) === 0 && !(ds > 0) && st > 0) sOk = true;
       if (!isNaN(db) && db > 0 && bt > db) bOk = false;
       if (!isNaN(ds) && ds > 0 && st > ds) sOk = false;
       if (!bOk || !sOk) {

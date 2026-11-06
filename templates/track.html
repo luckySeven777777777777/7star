@@ -438,7 +438,7 @@ async function search() {
   clearErr();
   document.getElementById("searchBtn").disabled = true;
   document.getElementById("searchBtn").textContent = "ရှာဖွေနေသည်...";
-  var r = await fetch("/api/track?order_no=" + encodeURIComponent(orderNo) + "&phone=" + encodeURIComponent(phone) + "&name=" + encodeURIComponent(riderName));
+  var r = await fetch("/api/track?order_no=" + encodeURIComponent(orderNo) + "&phone=" + encodeURIComponent(phone) + "&name=" + encodeURIComponent(riderName) + "&_t=" + Date.now(), { cache: "no-store" });
   var j = await r.json();
   document.getElementById("searchBtn").disabled = false;
   document.getElementById("searchBtn").textContent = "တည်နေရာ ရှာမည်";
@@ -450,7 +450,7 @@ async function search() {
   currentOrderNo = orderNo;
   currentPhone = phone;
   if (refreshTimer) clearInterval(refreshTimer);
-  refreshTimer = setInterval(search, 5000);
+  refreshTimer = setInterval(search, 3000);
   if (window._multiRefreshTimer) { clearInterval(window._multiRefreshTimer); window._multiRefreshTimer = null; }
   if (multiGroup) { try { map.removeLayer(multiGroup); } catch (e) {} multiGroup = null; }
   Object.keys(multiMarkers).forEach(function (k) { try { map.removeLayer(multiMarkers[k]); } catch (e) {} });
@@ -868,9 +868,10 @@ async function searchMulti(silent) {
     btn.textContent = "ရှာဖွေနေသည်...";
   }
   try {
-    var r = await fetch("/api/track/multi", {
+    var r = await fetch("/api/track/multi?_t=" + Date.now(), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      cache: "no-store",
+      headers: { "Content-Type": "application/json", "Cache-Control": "no-cache" },
       body: JSON.stringify({ riders: riders })
     });
     var j = await r.json();
@@ -881,7 +882,7 @@ async function searchMulti(silent) {
     if (!j.ok) { if (!silent) showInfo(j.msg); return; }
     renderMulti(j.results || [], silent);
     if (window._multiRefreshTimer) clearInterval(window._multiRefreshTimer);
-    window._multiRefreshTimer = setInterval(function () { searchMulti(true); }, 5000);
+    window._multiRefreshTimer = setInterval(function () { searchMulti(true); }, 3000);
   } catch (e) {
     if (!silent) {
       btn.disabled = false;
@@ -1091,14 +1092,18 @@ var _historyAll = [];
 var _historyDate = "";
 var _historyVisible = 10;
 
-async function openHistory() {
+async function openHistory(silent) {
   var phone = document.getElementById("phone").value.trim();
-  if (!phone) { showInfo("ပို့ဆောင်သူ ဖုန်းနံပါတ် ထည့်သွင်းပါ"); return; }
-  document.getElementById("historyList").innerHTML = '<div class="history-empty">Loading...</div>';
-  document.getElementById("historyMoreWrap").style.display = "none";
+  var keepDate = _historyDate, keepVisible = _historyVisible;
+  if (!phone) { if (!silent) showInfo("ပို့ဆောင်သူ ဖုန်းနံပါတ် ထည့်သွင်းပါ"); return; }
+  if (!silent) {
+    document.getElementById("historyList").innerHTML = '<div class="history-empty">Loading...</div>';
+    document.getElementById("historyMoreWrap").style.display = "none";
+  }
   document.getElementById("historyModal").style.display = "flex";
   try {
-    var r = await fetch("/api/order/history?phone=" + encodeURIComponent(phone));
+    // no-store + 时间戳：手机端一旦确认/取消，电脑端订单记录必须立刻看到最新状态
+    var r = await fetch("/api/order/history?phone=" + encodeURIComponent(phone) + "&_t=" + Date.now(), { cache: "no-store" });
     var j = await r.json();
     if (!j.ok || !j.history || j.history.length === 0) {
       document.getElementById("historyList").innerHTML = '<div class="history-empty">No order history yet.</div>';
@@ -1124,14 +1129,36 @@ async function openHistory() {
       opt.textContent = formatEnglishDate(d);
       sel.appendChild(opt);
     });
-    _historyDate = dates[0];
+    // 静默刷新时保留管理员当前选择的日期与已展开条数，避免列表跳回顶部
+    if (silent && keepDate && dates.indexOf(keepDate) >= 0) {
+      _historyDate = keepDate;
+      _historyVisible = keepVisible || 10;
+    } else {
+      _historyDate = dates[0];
+      _historyVisible = 10;
+    }
     sel.value = _historyDate;
-    _historyVisible = 10;
     renderHistory();
+    if (!silent) startHistoryAutoRefresh();
   } catch (e) {
     document.getElementById("historyList").innerHTML = '<div class="history-empty">Failed to load history.</div>';
   }
 }
+
+// 订单记录弹窗打开期间短周期静默刷新：手机端每次状态变更都即时同步到电脑端
+function startHistoryAutoRefresh() {
+  stopHistoryAutoRefresh();
+  window._historyRefreshTimer = setInterval(function () {
+    var m = document.getElementById("historyModal");
+    if (!m || m.style.display !== "flex") { stopHistoryAutoRefresh(); return; }
+    openHistory(true);
+  }, 3000);
+}
+function stopHistoryAutoRefresh() {
+  if (window._historyRefreshTimer) { clearInterval(window._historyRefreshTimer); window._historyRefreshTimer = null; }
+}
+window.startHistoryAutoRefresh = startHistoryAutoRefresh;
+window.stopHistoryAutoRefresh = stopHistoryAutoRefresh;
 
 function renderHistory() {
   var sel = document.getElementById("historyDateFilter");
@@ -1858,7 +1885,7 @@ startBellPolling();
   setInterval(function () {
     if (!window.map) return;
     drawTodayMarks();
-  }, 5000);
+  }, 3000);
   setTimeout(drawTodayMarks, 1200);
 
   /* ---------------- 通知面板：手机上不出屏 ---------------- */

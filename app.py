@@ -375,6 +375,8 @@ def ensure_order_columns():
         # 骑手最初输入的原始总量：只写一次，之后永不参与扣减，显示分母永远用它
         "baozi_total_orig": "INTEGER DEFAULT 0",
         "shop_total_orig": "INTEGER DEFAULT 0",
+        # 分母锁定的日期（仰光时区 YYYY-MM-DD）：同日只认第一次输入，跨天自动清零重设
+        "qty_lock_day": "TEXT DEFAULT ''",
     }
     for col, ddl in cols.items():
         try:
@@ -395,6 +397,83 @@ def ensure_order_columns():
 
 
 ensure_order_columns()
+
+
+def ensure_rider_qty_table():
+    """骑手独立数量表：每个骑手（手机号）按天单独管理自己的数量。
+    分母 = 该骑手当天的第一次输入（之后重新下单/改单都不会被改写）；
+    送出的数量只累加到该骑手自己名下，绝不与其他骑手混合计算。
+    跨天（仰光时间 0 点）自动新建一行，等于自动清零。"""
+    conn = get_db()
+    cur = conn.cursor()
+    if is_pg():
+        cur.execute(_q("""
+            CREATE TABLE IF NOT EXISTS rider_daily_qty (
+                id SERIAL PRIMARY KEY,
+                phone TEXT NOT NULL,
+                day TEXT NOT NULL,
+                baozi_orig INTEGER DEFAULT 0,
+                shop_orig INTEGER DEFAULT 0,
+                baozi_received INTEGER DEFAULT 0,
+                shop_received INTEGER DEFAULT 0,
+                updated_at TEXT,
+                UNIQUE(phone, day)
+            )
+        """))
+    else:
+        cur.execute(_q("""
+            CREATE TABLE IF NOT EXISTS rider_daily_qty (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                phone TEXT NOT NULL,
+                day TEXT NOT NULL,
+                baozi_orig INTEGER DEFAULT 0,
+                shop_orig INTEGER DEFAULT 0,
+                baozi_received INTEGER DEFAULT 0,
+                shop_received INTEGER DEFAULT 0,
+                updated_at TEXT,
+                UNIQUE(phone, day)
+            )
+        """))
+    # 骑手 × 订单 独立数量表：每个骑手对每一单各自一份数量，同一天不同订单互不影响，
+    # 不同骑手之间更不会混算。分母 = 该骑手在该单第一次输入的数量，重新下单也不会变。
+    if is_pg():
+        cur.execute(_q("""
+            CREATE TABLE IF NOT EXISTS rider_order_qty (
+                id SERIAL PRIMARY KEY,
+                phone TEXT NOT NULL,
+                order_no TEXT NOT NULL,
+                day TEXT,
+                baozi_orig INTEGER DEFAULT 0,
+                shop_orig INTEGER DEFAULT 0,
+                baozi_received INTEGER DEFAULT 0,
+                shop_received INTEGER DEFAULT 0,
+                updated_at TEXT,
+                UNIQUE(phone, order_no)
+            )
+        """))
+    else:
+        cur.execute(_q("""
+            CREATE TABLE IF NOT EXISTS rider_order_qty (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                phone TEXT NOT NULL,
+                order_no TEXT NOT NULL,
+                day TEXT,
+                baozi_orig INTEGER DEFAULT 0,
+                shop_orig INTEGER DEFAULT 0,
+                baozi_received INTEGER DEFAULT 0,
+                shop_received INTEGER DEFAULT 0,
+                updated_at TEXT,
+                UNIQUE(phone, order_no)
+            )
+        """))
+    conn.commit()
+    conn.close()
+
+
+try:
+    ensure_rider_qty_table()
+except Exception:
+    pass
 
 
 def _to_int(v):
@@ -424,35 +503,492 @@ def orig_counts(od):
     return bo, so
 
 
-def parse_coords_text(text):
-    """从用户输入文本提取 纬度,经度（支持英文逗号/缅甸逗号分隔）"""
+# ==================== 骑手独立数量（按 手机号 + 订单号 隔离，每个骑手每单各管一份） ====================
+_QTY_TABLE_READY = False
+
+
+def norm_phone(phone):
+    """手机号统一规范：去掉空格/横线/括号/+95 与 0 前缀差异。
+    同一骑手用 09xxx / +959xxx / 959xxx 输入时必须被认成同一个人，
+    否则会被当成不同骑手，导致数量互相串台（看起来像“混在一起算”）。"""
+    s = re.sub(r"[^0-9+]", "", str(phone or ""))
+    s = s.replace("+", "")
+    if s.startswith("0095"):
+        s = s[4:]
+    elif s.startswith("95") and len(s) >= 11:
+        s = s[2:]
+    if s.startswith("0") and len(s) >= 9:
+        s = s[1:]
+    return s
+
+
+def _ensure_qty_table(cur):
+    """惰性建表兜底：无论启动迁移是否成功（线上库/新库/迁移被跳过），
+    第一次读写骑手数量前都保证 rider_order_qty 存在，避免 INSERT 静默失败后
+    整体退回“订单口径”，看起来就是所有骑手数量混在一起、分母变成剩余量。"""
+    global _QTY_TABLE_READY
+    if _QTY_TABLE_READY:
+        return True
+    try:
+        if is_pg():
+            cur.execute(_q("""CREATE TABLE IF NOT EXISTS rider_order_qty (
+                id SERIAL PRIMARY KEY, phone TEXT NOT NULL, order_no TEXT NOT NULL, day TEXT,
+                baozi_orig INTEGER DEFAULT 0, shop_orig INTEGER DEFAULT 0,
+                baozi_received INTEGER DEFAULT 0, shop_received INTEGER DEFAULT 0,
+                updated_at TEXT, UNIQUE(phone, order_no))"""))
+        else:
+            cur.execute(_q("""CREATE TABLE IF NOT EXISTS rider_order_qty (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, phone TEXT NOT NULL, order_no TEXT NOT NULL, day TEXT,
+                baozi_orig INTEGER DEFAULT 0, shop_orig INTEGER DEFAULT 0,
+                baozi_received INTEGER DEFAULT 0, shop_received INTEGER DEFAULT 0,
+                updated_at TEXT, UNIQUE(phone, order_no))"""))
+        _QTY_TABLE_READY = True
+        return True
+    except Exception as e:
+        print("[rider_order_qty] ensure table failed: %s" % e)
+        return False
+
+
+
+def rider_row_by_phone(cur, phone, order_no):
+    """按「订单号 + 手机号」取该骑手自己的绑定记录，兼容历史脏数据：
+    09xxxxxxxxx / +959xxxxxxxx / 959xxxxxxxx / 带空格横线 等写法都会认成同一个人。
+    先精确查，查不到再按订单取出后用 norm_phone 逐一比对，
+    避免格式不同被当成“没有绑定”或串到别的骑手身上导致数量混算。"""
+    order_no = (order_no or "").strip()
+    phone = (phone or "").strip()
+    if not order_no:
+        return None
+    try:
+        if phone:
+            cur.execute(_q("SELECT * FROM riders WHERE phone=? AND order_no=?"), (phone, order_no))
+            r = cur.fetchone()
+            if r:
+                return r
+        target = norm_phone(phone)
+        cur.execute(_q("SELECT * FROM riders WHERE order_no=?"), (order_no,))
+        rows = cur.fetchall() or []
+    except Exception:
+        return None
+    if not target:
+        return None
+    for r in rows:
+        try:
+            d = _row_to_dict(cur, r)
+        except Exception:
+            continue
+        if norm_phone(d.get("phone")) == target:
+            return r
+    return None
+
+def rider_qty_get(cur, phone, order_no=None, day=None):
+    """读取某骑手在某订单下的独立数量记录。
+    主键是 (phone, order_no)：不同骑手互不混合，同一骑手的不同订单也各自独立。"""
+    phone = norm_phone(phone)
+    if not phone:
+        return None
+    _ensure_qty_table(cur)
+    try:
+        if order_no:
+            cur.execute(_q("SELECT * FROM rider_order_qty WHERE phone=? AND order_no=?"), (phone, order_no))
+            r = cur.fetchone()
+            if r:
+                return _row_to_dict(cur, r)
+            return None
+        if day:
+            cur.execute(_q("SELECT * FROM rider_order_qty WHERE phone=? AND day=?"), (phone, day))
+            r = cur.fetchone()
+            return _row_to_dict(cur, r) if r else None
+        return None
+    except Exception:
+        return None
+
+
+def rider_day_totals(cur, phone, day=None):
+    """该骑手「当天」的汇总口径（每个骑手各自独立，绝不与其他骑手混合）：
+    分母 = 当天首次输入量（各单 orig 的最大值，即第一次输入的那个数，如 600）；
+    已送 = 当天各单累加（如 100）。这样重下单后仍显示 600 / 剩 500。
+    返回 (baozi_orig, shop_orig, baozi_received, shop_received)"""
+    day = day or now_str()[:10]
+    phone = norm_phone(phone)
+    if not phone:
+        return 0, 0, 0, 0
+    _ensure_qty_table(cur)
+    rows = []
+    try:
+        cur.execute(_q("SELECT baozi_orig, shop_orig, baozi_received, shop_received FROM rider_order_qty WHERE phone=? AND day=?"), (phone, day))
+        rows = cur.fetchall() or []
+    except Exception:
+        return 0, 0, 0, 0
+    bo = so = br = sr = 0
+    for r in rows:
+        d = _row_to_dict(cur, r)
+        bo = max(bo, _to_int(d.get("baozi_orig")))
+        so = max(so, _to_int(d.get("shop_orig")))
+        br += _to_int(d.get("baozi_received"))
+        sr += _to_int(d.get("shop_received"))
+    return bo, so, br, sr
+
+
+def rider_qty_lock(cur, phone, order_no, baozi_in, shop_in):
+    """锁定「该骑手当天」第一次输入的数量作为分母（600 永远不会变成 500）。
+    新订单沿用该骑手当天已锁的分母，所以重新下单后分母仍是 600；
+    不同骑手各锁各的，绝不合在一起算。"""
+    b_in = max(_to_int(baozi_in), 0)
+    s_in = max(_to_int(shop_in), 0)
+    phone = norm_phone(phone)
+    if not phone or not order_no:
+        return b_in, s_in
+    _ensure_qty_table(cur)
+    day = now_str()[:10]
+    day_bo, day_so, _dbr, _dsr = rider_day_totals(cur, phone, day)
+    rec = rider_qty_get(cur, phone, order_no)
+    if rec:
+        # 分母只升不降：历史数据里被旧逻辑压成 500 的记录，会自动被当天首次输入的 600 纠正回来
+        b = max(_to_int(rec.get("baozi_orig")), day_bo)
+        s = max(_to_int(rec.get("shop_orig")), day_so)
+        if b <= 0:
+            b = b_in
+        if s <= 0:
+            s = s_in
+        nb, ns = b, s
+        if nb != _to_int(rec.get("baozi_orig")) or ns != _to_int(rec.get("shop_orig")):
+            try:
+                cur.execute(_q("UPDATE rider_order_qty SET baozi_orig=?, shop_orig=?, updated_at=? WHERE phone=? AND order_no=?"),
+                            (nb, ns, now_str(), phone, order_no))
+            except Exception:
+                pass
+        return nb, ns
+    # 新订单：分母优先沿用该骑手当天首次输入量
+    b_new = day_bo if day_bo > 0 else b_in
+    s_new = day_so if day_so > 0 else s_in
+    try:
+        cur.execute(_q("INSERT INTO rider_order_qty (phone, order_no, day, baozi_orig, shop_orig, baozi_received, shop_received, updated_at) "
+                       "VALUES (?,?,?,?,?,0,0,?)"), (phone, order_no, day, b_new, s_new, now_str()))
+    except Exception:
+        rec2 = rider_qty_get(cur, phone, order_no)
+        if rec2:
+            return (_to_int(rec2.get("baozi_orig")) or b_new), (_to_int(rec2.get("shop_orig")) or s_new)
+    return b_new, s_new
+
+
+def rider_qty_add(cur, phone, order_no, baozi_add, shop_add):
+    """把本次送出的数量累加到「该骑手在该订单」名下，其他骑手 / 其他订单完全不受影响"""
+    b_add = max(_to_int(baozi_add), 0)
+    s_add = max(_to_int(shop_add), 0)
+    phone = norm_phone(phone)
+    if not phone or not order_no:
+        return None
+    _ensure_qty_table(cur)
+    rec = rider_qty_get(cur, phone, order_no)
+    if not rec:
+        try:
+            cur.execute(_q("INSERT INTO rider_order_qty (phone, order_no, day, baozi_orig, shop_orig, baozi_received, shop_received, updated_at) "
+                           "VALUES (?,?,?,0,0,?,?,?)"), (phone, order_no, now_str()[:10], b_add, s_add, now_str()))
+        except Exception:
+            pass
+        return rider_qty_get(cur, phone, order_no)
+    try:
+        cur.execute(_q("UPDATE rider_order_qty SET baozi_received=?, shop_received=?, updated_at=? WHERE phone=? AND order_no=?"),
+                    (_to_int(rec.get("baozi_received")) + b_add, _to_int(rec.get("shop_received")) + s_add,
+                     now_str(), phone, order_no))
+    except Exception:
+        pass
+    return rider_qty_get(cur, phone, order_no)
+
+
+def rider_qty_view(cur, phone, order_dict=None, order_no=None):
+    """骑手端数量统一口径：按「骑手 + 当天」独立统计，每个骑手各自管理自己的数量，互不混合。
+    分母 = 该骑手当天首次输入量（重下单后仍是 600，绝不变成 500）；已送 = 该骑手当天累加。
+    没有该骑手当天记录时回退到订单口径，保证老数据/新骑手都能显示。
+    返回 dict：remaining/total/received + scope"""
+    day = now_str()[:10]
+    if order_no is None and order_dict:
+        order_no = (order_dict.get("order_no") or "").strip()
+    phone = norm_phone(phone)
+    if phone:
+        _ensure_qty_table(cur)
+        bo, so, br, sr = rider_day_totals(cur, phone, day)
+        # 同一订单的独立记录也参与取最大值：跨天/中部刷新时，分母依然是该骑手第一次输入的 600，
+        # 绝不会被“剩余量 500”反向覆盖；已送仍按当天累计。
+        rec = rider_qty_get(cur, phone, order_no) if order_no else None
+        if rec:
+            bo = max(bo, _to_int(rec.get("baozi_orig")))
+            so = max(so, _to_int(rec.get("shop_orig")))
+            if (rec.get("day") or "") != day:
+                br = max(br, _to_int(rec.get("baozi_received")))
+                sr = max(sr, _to_int(rec.get("shop_received")))
+        if bo > 0 or so > 0:
+            return {
+                "scope": "rider_order", "day": day, "order_no": order_no,
+                "baozi_total": bo, "baozi_received": br, "baozi_remaining": max(bo - br, 0),
+                "shop_total": so, "shop_received": sr, "shop_remaining": max(so - sr, 0),
+            }
+    if order_dict:
+        bt, br, st, sr = order_counts(order_dict)
+        return {
+            "scope": "order", "day": day, "order_no": order_no,
+            "baozi_total": bt, "baozi_received": br, "baozi_remaining": max(bt - br, 0),
+            "shop_total": st, "shop_received": sr, "shop_remaining": max(st - sr, 0),
+        }
+    return {
+        "scope": "none", "day": day, "order_no": order_no,
+        "baozi_total": 0, "baozi_received": 0, "baozi_remaining": 0,
+        "shop_total": 0, "shop_received": 0, "shop_remaining": 0,
+    }
+
+
+_OLC_ALPHABET = "23456789CFGHJMPQRVWX"
+_OLC_DEFAULT_REF = (16.8661, 96.1951)  # 仰光市中心，短码补位参考点
+
+
+def _olc_val(ch):
+    try:
+        return _OLC_ALPHABET.index(ch)
+    except ValueError:
+        return -1
+
+
+def olc_encode_prefix(lat, lng, length=4):
+    """Open Location Code 高位编码（用于给短码补齐参考前缀）"""
+    try:
+        lat = max(min(float(lat), 90.0), -90.0)
+        lng = ((float(lng) + 180.0) % 360.0) - 180.0
+    except (TypeError, ValueError):
+        return ""
+    code = ""
+    res = 400.0
+    latv = lat + 90.0
+    lngv = lng + 180.0
+    while len(code) < length:
+        res /= 20.0
+        i = int(latv / res)
+        j = int(lngv / res)
+        i = max(0, min(i, 19))
+        j = max(0, min(j, 19))
+        code += _OLC_ALPHABET[i] + _OLC_ALPHABET[j]
+        latv -= i * res
+        lngv -= j * res
+    return code
+
+
+def decode_plus_code(text, ref_lat=None, ref_lng=None):
+    """Open Location Code（Google Plus Code）解码，返回 (lat, lng) 单元格中心。
+    支持完整码（7M8RV66W+FC3）与短码（V66W+FC3），短码按参考点补高位（默认仰光）。"""
     if not text:
         return None
-    m = re.search(r"(-?\d{1,2}(?:\.\d+)?)\s*[,،]\s*(-?\d{1,3}(?:\.\d+)?)", str(text))
-    if m:
-        return (float(m.group(1)), float(m.group(2)))
+    s = str(text).upper().replace(" ", "")
+    m = re.search(r"([23456789CFGHJMPQRVWX]{2,8})\+([23456789CFGHJMPQRVWX]{0,3})", s)
+    if not m:
+        return None
+    body, tail = m.group(1), m.group(2)
+    if len(body) + len(tail) < 2:
+        return None
+    rl = ref_lat if ref_lat is not None else _OLC_DEFAULT_REF[0]
+    rg = ref_lng if ref_lng is not None else _OLC_DEFAULT_REF[1]
+
+    # '+' 前 8 位及以上是完整码，直接解
+    if len(body) >= 8:
+        full = (body + tail)[:15]
+        got = _olc_decode_core(full)
+        if got and in_region(got[0], got[1]):
+            return got
+        return None
+
+    # 否则是短码（7M8R+FC / PXXQ+XX Yangon 都属此类）：必须按参考点补前若干位。
+    # 补位不能只用参考点自己的前缀，否则会偏最多 1 个经度/纬度格（约 110km）；
+    # 必须像 Google 官方 recoverNearest 那样在参考点周边网格里取「离参考点最近」的那个候选。
+    need = 8 - len(body)
+    best = None
+    best_d = None
+    for dla in (-1, 0, 1):
+        for dln in (-1, 0, 1):
+            la, ln = rl + dla * 1.0, rg + dln * 1.0
+            if not in_region(la, ln):
+                continue
+            pfx = olc_encode_prefix(la, ln, 8)[:need]
+            full = (pfx + body + tail)[:15]
+            if len(full) < 8:
+                full = full + _OLC_ALPHABET[0] * (8 - len(full))
+            got = _olc_decode_core(full)
+            if not got or not in_region(got[0], got[1]):
+                continue
+            d = (got[0] - rl) ** 2 + (got[1] - rg) ** 2
+            if best_d is None or d < best_d:
+                best_d, best = d, got
+    return best
+
+
+def _olc_decode_core(full):
+    """纯 OLC 解码（输入须为补齐后的完整码），返回单元格中心；坐标非法返回 None"""
+    lat, lng = -90.0, -180.0
+    res = 400.0
+    n = min(len(full), 10)
+    for i in range(0, n, 2):
+        res /= 20.0
+        a = _olc_val(full[i])
+        b = _olc_val(full[i + 1]) if i + 1 < n else 0
+        if a < 0 or b < 0:
+            return None
+        lat += a * res
+        lng += b * res
+    half_lat = res / 2.0
+    half_lng = res / 2.0
+    if len(full) > 10:
+        glat = res / 5.0
+        glng = res / 4.0
+        for i in range(10, len(full)):
+            v = _olc_val(full[i])
+            if v < 0:
+                break
+            lat += (v // 4) * glat
+            lng += (v % 4) * glng
+            half_lat = glat / 2.0
+            half_lng = glng / 2.0
+            glat /= 5.0
+            glng /= 4.0
+    if lat < -90 or lat > 90 or lng < -180 or lng > 180:
+        return None
+    return (lat + half_lat, lng + half_lng)
+
+
+# 短码（如 M9VQ+XX Yangon）只有 6 位时，必须用参考点补高位。
+# 手机端粘贴的短码后面通常跟着城市名，按城市取参考点，比固定仰光准得多（曼德勒/内比都等地不会差几百公里）。
+_MM_CITY_REF = (
+    ("naypyidaw", (19.7633, 96.0785)), ("nay pyi taw", (19.7633, 96.0785)), ("内比都", (19.7633, 96.0785)),
+    ("yangon", (16.8661, 96.1951)), ("rangoon", (16.8661, 96.1951)), ("仰光", (16.8661, 96.1951)),
+    ("mandalay", (21.9588, 96.0891)), ("曼德勒", (21.9588, 96.0891)),
+    ("bago", (17.3350, 96.4813)), ("勃固", (17.3350, 96.4813)),
+    ("mawlamyine", (16.4905, 97.6283)), ("maulmain", (16.4905, 97.6283)), ("毛淡棉", (16.4905, 97.6283)),
+    ("taunggyi", (20.7892, 97.0378)), ("东枝", (20.7892, 97.0378)),
+    ("pathein", (16.7790, 94.7320)), ("勃生", (16.7790, 94.7320)),
+    ("monywa", (22.1083, 95.1333)), ("蒙育瓦", (22.1083, 95.1333)),
+    ("myitkyina", (25.3833, 97.3964)), ("密支那", (25.3833, 97.3964)),
+    ("sittwe", (20.1462, 92.8986)), ("实兑", (20.1462, 92.8986)),
+    ("dawei", (14.0823, 98.1915)), ("土瓦", (14.0823, 98.1915)),
+    ("hpa-an", (16.8895, 97.6339)), ("hpaan", (16.8895, 97.6339)), ("帕安", (16.8895, 97.6339)),
+    ("pyay", (18.8192, 95.2114)), ("卑谬", (18.8192, 95.2114)),
+    ("meiktila", (20.8778, 95.8583)), ("密铁拉", (20.8778, 95.8583)),
+    ("lashio", (22.9333, 97.7500)), ("腊戌", (22.9333, 97.7500)),
+    ("myeik", (12.4395, 98.6003)), ("丹老", (12.4395, 98.6003)),
+    ("magway", (20.1500, 94.9320)), ("马圭", (20.1500, 94.9320)),
+)
+
+
+def _city_ref(text):
+    """从文本（如 ...+XX Yangon）中识别缅甸城市，返回其参考坐标；识别不到返回 None"""
+    s = str(text or "").lower()
+    if not s:
+        return None
+    for name, ref in _MM_CITY_REF:
+        if name in s:
+            return ref
     return None
 
 
-def parse_link_coords(text):
-    """从 Google Maps 链接提取坐标：!3d..!4d / ?q= / ?ll= / /place/lat,lng / @lat,lng（支持 URL 编码）"""
+def parse_plus_code_text(text, ref_lat=None, ref_lng=None):
+    """从任意文本中提取 Plus Code 并解码（兼容前后夹带地名）"""
+    if not text:
+        return None
+    if ref_lat is None or ref_lng is None:
+        cr = _city_ref(text)
+        if cr:
+            ref_lat, ref_lng = cr[0], cr[1]
+    return decode_plus_code(text, ref_lat, ref_lng)
+
+
+def parse_coords_text(text):
+    """从用户输入文本提取 纬度,经度。支持：逗号分隔 / geo: 前缀 / 度分秒(DMS) / 16.8°N 96.2°E"""
+    if not text:
+        return None
+    s = str(text).strip()
+    s = re.sub(r"^geo:", "", s, flags=re.I)
+    m = re.search(r"(-?\d{1,2}(?:\.\d+)?)\s*[,،]\s*(-?\d{1,3}(?:\.\d+)?)", s)
+    if m:
+        return (float(m.group(1)), float(m.group(2)))
+    # DMS：16°51'22.0"N 96°14'18.0"E 或 16°51.37'N 96°14.3'E
+    dms = re.findall(
+        r"(\d{1,3})\s*[°º]\s*(?:(\d{1,2}(?:\.\d+)?)\s*['′]\s*)?(?:(\d{1,2}(?:\.\d+)?)\s*[\"″]\s*)?\s*([NSEW])",
+        s, re.I,
+    )
+    if len(dms) >= 2:
+        vals = {}
+        for d, mi, se, hemi in dms:
+            v = float(d) + (float(mi) / 60.0 if mi else 0.0) + (float(se) / 3600.0 if se else 0.0)
+            if hemi.upper() in ("S", "W"):
+                v = -v
+            vals[hemi.upper()] = v
+        lat = vals.get("N", vals.get("S"))
+        lng = vals.get("E", vals.get("W"))
+        if lat is not None and lng is not None:
+            return (lat, lng)
+    return None
+
+
+# 业务所在区域（缅甸及周边）：手机端短链在服务器侧常抓到同意页/首页正文，
+# 里面可能夹带无关坐标，一旦采用就会把骑手定位到国外。超出该范围一律判为无效。
+REGION_BOX = (5.0, 30.0, 88.0, 108.0)  # lat_min, lat_max, lng_min, lng_max
+
+
+def in_region(lat, lng):
+    """坐标是否落在业务区域（缅甸及周边）内"""
+    try:
+        la = float(lat)
+        ln = float(lng)
+    except (TypeError, ValueError):
+        return False
+    if la != la or ln != ln:  # NaN
+        return False
+    a, b, c, d = REGION_BOX
+    return a <= la <= b and c <= ln <= d
+
+
+_LINK_PATTERNS = (
+    r"!3d(-?\d{1,3}\.\d+)!4d(-?\d{1,3}\.\d+)",
+    r"[?&](?:q|query|ll|daddr|destination|center|sll|viewpoint|location)=(-?\d{1,3}\.\d+)\s*,\s*(-?\d{1,3}\.\d+)",
+    r"/place/(-?\d{1,3}\.\d+),(-?\d{1,3}\.\d+)",
+    r"/search/(-?\d{1,3}\.\d+),(-?\d{1,3}\.\d+)",
+    r"@(-?\d{1,3}\.\d+),(-?\d{1,3}\.\d+)",
+)
+
+
+def parse_link_coords(text, strict=True):
+    """从 Google Maps 链接提取坐标：!3d..!4d / ?q= / ?ll= / /place/lat,lng / @lat,lng（支持 URL 编码）。
+    strict=True 时只返回业务区域内的坐标：宁可解析失败、让骑手改填坐标或 Plus Code，
+    也绝不把商家位置落到国外去。"""
     s = str(text or "")
+    # 手机端从 Google Maps App / 微信复制出来的链接常被转义成 &amp;、\u0026，先还原再解析
+    s = s.replace("&amp;", "&").replace("&#38;", "&").replace("\\u0026", "&")
     try:
         if re.search(r"%[0-9A-Fa-f]{2}", s):
             s = urllib.parse.unquote(s)
     except Exception:
         pass
-    patterns = [
-        r"!3d(-?\d{1,3}\.\d+)!4d(-?\d{1,3}\.\d+)",
-        r"[?&](?:q|query|ll|daddr|destination|center)=(-?\d{1,3}\.\d+)\s*,\s*(-?\d{1,3}\.\d+)",
-        r"/place/(-?\d{1,3}\.\d+),(-?\d{1,3}\.\d+)",
-        r"@(-?\d{1,3}\.\d+),(-?\d{1,3}\.\d+)",
-    ]
-    for pat in patterns:
-        m = re.search(pat, s)
-        if m:
-            return (float(m.group(1)), float(m.group(2)))
-    return None
+    if not s:
+        return None
+    # Google 跳转链里常见的反序写法：!2d<经度>!3d<纬度>（与 !3d!4d 等价，只是顺序相反）
+    m = re.search(r"!2d(-?\d{1,3}\.\d+)!3d(-?\d{1,3}\.\d+)", s, re.I)
+    if m:
+        try:
+            cand = (float(m.group(2)), float(m.group(1)))
+            if (not strict) or in_region(cand[0], cand[1]):
+                return cand
+        except (TypeError, ValueError):
+            pass
+    first = None
+    for pat in _LINK_PATTERNS:
+        for m in re.finditer(pat, s):
+            try:
+                cand = (float(m.group(1)), float(m.group(2)))
+            except (TypeError, ValueError):
+                continue
+            if first is None:
+                first = cand
+            if in_region(cand[0], cand[1]):
+                return cand
+    if strict:
+        return None
+    return first
 
 
 # 手机端分享的链接常见形态：无协议头、前后夹带文字、maps.app.goo.gl 短链
@@ -477,38 +1013,118 @@ def normalize_maps_link(raw):
     return s
 
 
-def resolve_shop_location(link, coords_text):
-    """骑手输入的商家位置解析：优先坐标文本，其次链接正则，最后展开短链（多 UA，含重定向链与页面正文）。
+# 短链跳转后的页面正文里常见的结构化坐标（均要求 3 位以上小数，避免误配无关数字）
+_BODY_PATTERNS = (
+    r'\[null,null,(-?\d{1,3}\.\d{3,}),(-?\d{1,3}\.\d{3,})\]',
+    r'"lat"\s*:\s*(-?\d{1,3}\.\d{3,})\s*,\s*"lng"\s*:\s*(-?\d{1,3}\.\d{3,})',
+    r'\[(-?\d{1,3}\.\d{4,}),(-?\d{1,3}\.\d{4,})\]',
+)
+
+
+def parse_body_coords(body):
+    """从短链落地页正文里提取坐标，只接受业务区域内的结果"""
+    if not body:
+        return None
+    for pat in _BODY_PATTERNS:
+        for m in re.finditer(pat, body):
+            try:
+                la, ln = float(m.group(1)), float(m.group(2))
+            except (TypeError, ValueError):
+                continue
+            if in_region(la, ln):
+                return (la, ln)
+    return None
+
+
+def _fetch_maps_page(url):
+    """抓取地图链接（跟随重定向）；返回 (final_url, body)。多 UA 轮询 + 证书兜底，兼容手机端短链。"""
+    try:
+        import ssl as _ssl
+        _no_verify = _ssl._create_unverified_context()
+    except Exception:
+        _no_verify = None
+    for ua in _MAPS_UA_LIST:
+        for ctx in (None, _no_verify):
+            if ctx is None and _no_verify is not None and ua == _MAPS_UA_LIST[-1]:
+                continue
+            try:
+                req = urllib.request.Request(url, headers={
+                    "User-Agent": ua,
+                    "Accept-Language": "en-US,en;q=0.9",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Cookie": "CONSENT=YES+cb; SOCS=CAI",
+                })
+                with urllib.request.urlopen(req, timeout=8, context=ctx) as resp:
+                    final_url = resp.geturl()
+                    try:
+                        body = resp.read(400000).decode("utf-8", "ignore")
+                    except Exception:
+                        body = ""
+                if final_url or body:
+                    return final_url or url, body or ""
+            except Exception:
+                continue
+    return url, ""
+
+
+def resolve_shop_location(link, coords_text, plus_code=""):
+    """骑手输入的商家位置解析（服务端权威解析，手机/电脑结果完全一致）：
+    优先级 坐标文本（含 DMS/geo:）→ Plus Code → 链接正则 → 展开短链（多 UA，含重定向链与页面正文）。
+    所有结果都会校验是否落在业务区域内，绝不让手机端链接把位置定位到国外。
     返回 (lat, lng, link)；解析失败时 lat/lng 为 None。"""
+    # 坐标文本必须是业务区域内的：手机端把 Google 链接解析成坐标时若带出国外坐标，
+    # 这里直接丢弃，继续走链接/Plus Code 解析，绝不把商家点落到国外
     c = parse_coords_text(coords_text)
-    if c:
+    if c and in_region(c[0], c[1]):
         return c[0], c[1], (link or "").strip()
+    pc = parse_plus_code_text(coords_text)
+    if pc and in_region(pc[0], pc[1]):
+        return pc[0], pc[1], (link or "").strip()
+    pc = parse_plus_code_text(plus_code)
+    if pc and in_region(pc[0], pc[1]):
+        return pc[0], pc[1], (link or "").strip()
+    # 链接里若夹带了 plus code（/place/7M8R+XX...）也一并识别
     url = normalize_maps_link(link)
     if not url:
         return None, None, ""
+    pc = parse_plus_code_text(url)
+    if pc and in_region(pc[0], pc[1]):
+        return pc[0], pc[1], url
+    # 链接里已明确写死区外坐标（如 @40.71,-74.00）：判定为不支持的链接，直接拒绝，
+    # 不再去抓页面乱配一个区域内坐标，避免骑手被导到错误位置
+    _any = parse_link_coords(url, strict=False)
+    if _any and not in_region(_any[0], _any[1]):
+        return None, None, url
     c = parse_link_coords(url)
     if c:
         return c[0], c[1], url
     if not url.lower().startswith(("http://", "https://")):
         return None, None, url
-    for ua in _MAPS_UA_LIST:
-        try:
-            req = urllib.request.Request(url, headers={"User-Agent": ua, "Accept-Language": "en-US,en;q=0.9"})
-            with urllib.request.urlopen(req, timeout=8) as resp:
-                final_url = resp.geturl()
-                try:
-                    body = resp.read(300000).decode("utf-8", "ignore")
-                except Exception:
-                    body = ""
-            c = parse_link_coords(final_url)
-            if c:
-                return c[0], c[1], url
-            if body:
-                c = parse_link_coords(body)
-                if c:
-                    return c[0], c[1], url
-        except Exception:
-            continue
+    final_url, body = _fetch_maps_page(url)
+    c = parse_link_coords(final_url)
+    if c:
+        return c[0], c[1], url
+    if body:
+        c = parse_link_coords(body)
+        if c:
+            return c[0], c[1], url
+        pc = parse_plus_code_text(body)
+        if pc and in_region(pc[0], pc[1]):
+            return pc[0], pc[1], url
+        c = parse_body_coords(body)
+        if c:
+            return c[0], c[1], url
+        # 二次跳转：部分手机端短链落地页只给一个中转链接（maps.google.com/?cid=… 或 /maps/place/…），
+        # 再抓一次即可拿到带 !3d/!4d 的真实地址，避免手机端解析失败后退回原链接、定位到国外。
+        m2 = re.search(r"https?://(?:www\.)?google\.[a-z.]{2,}/maps[^\s\"'<>\\]+", body)
+        if m2:
+            u2 = m2.group(0).replace("\\u0026", "&").replace("\\/", "/").replace("&amp;", "&")
+            if u2 and u2 != url:
+                f2, b2 = _fetch_maps_page(u2)
+                c2 = parse_link_coords(f2) or (parse_link_coords(b2) if b2 else None) \
+                    or (parse_body_coords(b2) if b2 else None)
+                if c2:
+                    return c2[0], c2[1], url
     return None, None, url
 
 
@@ -753,7 +1369,14 @@ def rider_bind():
     city = (data.get("city") or "").strip()
     shop_location_link = (data.get("shop_location_link") or "").strip()
     shop_location_coords = (data.get("shop_location_coords") or "").strip()
-    shop_lat, shop_lng, shop_link = resolve_shop_location(shop_location_link, shop_location_coords)
+    shop_location_plus = (data.get("shop_location_plus_code") or data.get("shop_location_plus") or "").strip()
+    shop_lat, shop_lng, shop_link = resolve_shop_location_ex(shop_location_link, shop_location_coords, shop_location_plus)
+    # 手机端链接解析不出区域内坐标时（短链被 Google 定向到国外/被拦截），绝不把原链接当成可用位置存下去：
+    # 否则骑手在手机上一点就跑到国外。此时置空链接并回告骑手改用坐标或 Plus Code。
+    shop_warn = ""
+    if shop_lat is None and (shop_location_link or shop_location_coords or shop_location_plus):
+        shop_warn = "ဆိုင်တည်နေရာ ဖတ်၍မရပါ — Google link သည် နိုင်ငံခြားသို့ ရောက်နေပါသည်။ Coordinates သို့မဟုတ် Plus Code ဖြင့် ပြန်ထည့်ပါ"
+        shop_link = ""
     if not phone or not order_no:
         return jsonify({"ok": False, "msg": "ဖုန်းနံပါတ်နှင့် အမှာစာနံပါတ် နှစ်ခုလုံး ထည့်သွင်းပါ"}), 400
     conn = get_db()
@@ -768,28 +1391,35 @@ def rider_bind():
            "ON CONFLICT(phone) DO UPDATE SET name=excluded.name, order_no=excluded.order_no, rider_name=excluded.rider_name, gps_enabled=1, sim_mode=0"),
         (name, phone, order_no, rider_name),
     )
-    # 数量口径：分母 = 骑手最初输入的原始总量，写入 *_total_orig 后永久固定；
-    # 之后任何提交（包括剩余量回填）都不得覆盖它，只有「已收数量」参与扣减
+    # 数量口径（严格锁定）：分母 = 骑手第一次输入的数量，同一天内第二次/第三次输入任何值都不改动；
+    # 跨天（缅甸时间凌晨 0 点）自动清零，允许按新的第一次输入重新锁定。
     old = _row_to_dict(cur, order)
-    old_bt = int(old.get("baozi_total") or 0)
-    old_br = int(old.get("baozi_received") or 0)
-    old_st = int(old.get("shop_total") or 0)
-    old_sr = int(old.get("shop_received") or 0)
+    _in_bt, _in_st = baozi_total, shop_total
     old_bt_orig = int(old.get("baozi_total_orig") or 0)
     old_st_orig = int(old.get("shop_total_orig") or 0)
-    baozi_orig = old_bt_orig or old_bt or 0
-    shop_orig = old_st_orig or old_st or 0
-    # 分母只增不减：骑手重新提交更大的原始总量时以新值为准（可自愈历史被误扣的分母），
-    # 提交较小值/空值一律不覆盖，保证「200/200」永远不被扣成 196/196
-    if baozi_total > baozi_orig:
-        baozi_orig = baozi_total
-    if shop_total > shop_orig:
-        shop_orig = shop_total
+    today = now_str()[:10]
+    lock_day = (old.get("qty_lock_day") or "").strip()
+    locked = bool(lock_day) and lock_day == today and (old_bt_orig > 0 or old_st_orig > 0)
+    if locked:
+        baozi_orig, shop_orig = old_bt_orig, old_st_orig
+    else:
+        # 跨天 / 首次绑定：以本次输入为准；本次未填（0）时回退到已有原始量，避免清成 0
+        baozi_orig = baozi_total if baozi_total > 0 else old_bt_orig
+        shop_orig = shop_total if shop_total > 0 else old_st_orig
+        lock_day = today
     baozi_total = baozi_orig
     shop_total = shop_orig
+    # 骑手独立分母：以「这个骑手今天第一次输入的数量」为准，同一天内重新下单/换订单号都不会改写
+    rider_bt_orig, rider_st_orig = rider_qty_lock(cur, phone, order_no, _in_bt or baozi_orig, _in_st or shop_orig)
+    rider_qty = rider_qty_view(cur, phone, None, order_no)
+    if rider_qty["scope"] != "rider_order":
+        _o_bt, _o_br, _o_st, _o_sr = order_counts(old)
+        rider_qty = {"scope": "order", "day": today,
+                     "baozi_total": _o_bt, "baozi_received": _o_br, "baozi_remaining": max(_o_bt - _o_br, 0),
+                     "shop_total": _o_st, "shop_received": _o_sr, "shop_remaining": max(_o_st - _o_sr, 0)}
     cur.execute(
-        _q("UPDATE orders SET delivery_address=?, baozi_total=?, shop_total=?, baozi_total_orig=?, shop_total_orig=?, city=?, gps_enabled=1, shop_lat=?, shop_lng=?, shop_link=? WHERE order_no=?"),
-        (delivery_address, baozi_total, shop_total, baozi_orig, shop_orig, city, shop_lat, shop_lng, shop_link, order_no),
+        _q("UPDATE orders SET delivery_address=?, baozi_total=?, shop_total=?, baozi_total_orig=?, shop_total_orig=?, qty_lock_day=?, city=?, gps_enabled=1, shop_lat=?, shop_lng=?, shop_link=? WHERE order_no=?"),
+        (delivery_address, baozi_total, shop_total, baozi_orig, shop_orig, lock_day, city, shop_lat, shop_lng, shop_link, order_no),
     )
     # 永久订单历史：每次绑定订单都记入 order_history（不因刷新/重绑丢失）
     cur.execute(_q("SELECT id FROM order_history WHERE order_no=? AND rider_phone=?"), (order_no, phone))
@@ -808,7 +1438,17 @@ def rider_bind():
     conn.commit()
     conn.close()
     return jsonify({"ok": True, "msg": "ချိတ်ဆက်မှု အောင်မြင်ပါသည်။ GPS ဖွင့်ပြီး အမှာစာ ပို့ဆောင်နေပြီ",
-                    "shop_lat": shop_lat, "shop_lng": shop_lng, "shop_link": shop_link})
+                    "shop_lat": shop_lat, "shop_lng": shop_lng, "shop_link": shop_link,
+                    "shop_warn": shop_warn,
+                    # 骑手独立口径：分母是该骑手今天第一次输入的数量，已送只算这个骑手自己送的
+                    "baozi_total_orig": rider_bt_orig, "shop_total_orig": rider_st_orig,
+                    "baozi_received": rider_qty.get("baozi_received", 0),
+                    "shop_received": rider_qty.get("shop_received", 0),
+                    "baozi_remaining": rider_qty.get("baozi_remaining", 0),
+                    "shop_remaining": rider_qty.get("shop_remaining", 0),
+                    "scope": rider_qty.get("scope", "order"),
+                    "day": today,
+                    "qty_lock_day": lock_day})
 
 
 @app.route("/api/rider/location", methods=["POST"])
@@ -828,8 +1468,7 @@ def report_location():
         return jsonify({"ok": False, "msg": "အမှာစာနံပါတ် သို့မဟုတ် ဖုန်းနံပါတ် မပါရှိပါ"}), 400
     conn = get_db()
     cur = conn.cursor()
-    cur.execute(_q("SELECT * FROM riders WHERE phone=? AND order_no=?"), (phone, order_no))
-    rider = cur.fetchone()
+    rider = rider_row_by_phone(cur, phone, order_no)
     if not rider:
         conn.close()
         return jsonify({"ok": False, "msg": "ဤဖုန်းနံပါတ်သည် ဤအမှာစာနှင့် ချိတ်ဆက်မထားပါ။ ဦးစွာ ချိတ်ဆက်ပါ"}), 403
@@ -838,8 +1477,14 @@ def report_location():
         (order_no, phone, lat, lng, status, is_sim, now_str()),
     )
     # 仅当快递员已选择并确认状态时才更新订单状态（未选择前保持待取餐，不显示配送中）
-    if status:
-        cur.execute(_q("UPDATE orders SET status=? WHERE order_no=?"), (status, order_no))
+    # 终态保护：订单已完成(✅)或已取消(❌)后，定时的 GPS 上报绝不允许把状态覆盖回「配送中」，
+    # 否则商家端会看到状态卡住/回跳，造成手机与电脑不一致。
+    _FINAL_STATUS = ("လက်ခံပြီးပါပြီ", "ပယ်ဖျက်ထားသည်", "待取餐")
+    if status and status not in _FINAL_STATUS:
+        cur.execute(
+            _q("UPDATE orders SET status=? WHERE order_no=? AND (status IS NULL OR status='' OR (status<>? AND status<>?))"),
+            (status, order_no, "လက်ခံပြီးပါပြီ", "ပယ်ဖျက်ထားသည်"),
+        )
     conn.commit()
     conn.close()
     return jsonify({"ok": True, "msg": "တည်နေရာ တင်ပြီးပါပြီ"})
@@ -874,6 +1519,36 @@ def upload_proof():
         return jsonify({"ok": False, "msg": "Save failed: %s" % str(e)}), 500
 
 
+def canonical_maps_link(url, lat, lng):
+    """把商家地图链接统一成「带区域内坐标的 Google 链接」：
+    手机端分享的短链（maps.app.goo.gl/xxx）本身不带坐标，手机点开时可能被 Google 落在别的点；
+    只要链接里没有区域内坐标，就一律替换成按坐标搜索的链接，
+    保证手机端与电脑端打开后落到同一个位置（骑手不会再被导到国外）。"""
+    u = (url or "").strip()
+    if u:
+        try:
+            c = parse_link_coords(u, strict=False)
+        except Exception:
+            c = None
+        if c and in_region(c[0], c[1]):
+            return u
+    if lat is None or lng is None:
+        return u
+    try:
+        return "https://www.google.com/maps/search/?api=1&query=%.6f,%.6f" % (float(lat), float(lng))
+    except (TypeError, ValueError):
+        return u
+
+
+def resolve_shop_location_ex(link, coords_text, plus_code=""):
+    """在 resolve_shop_location 基础上，把返回的链接规范成坐标链接（手机/电脑一致）"""
+    la, ln, lk = resolve_shop_location(link, coords_text, plus_code)
+    if la is None or ln is None:
+        # 解析失败绝不把原始链接（很可能指向国外默认点）交给前端，统一返回空，由前端提示重填
+        return None, None, ""
+    return la, ln, canonical_maps_link(lk, la, ln)
+
+
 @app.route("/api/rider/update-shop", methods=["POST"])
 def rider_update_shop():
     """骑手绑定后补充/更新商家位置（Link 或 Coordinates），供地图标记与引导路线使用"""
@@ -882,11 +1557,12 @@ def rider_update_shop():
     phone = (data.get("phone") or "").strip()
     link = (data.get("shop_location_link") or "").strip()
     coords_text = (data.get("shop_location_coords") or "").strip()
+    plus_text = (data.get("shop_location_plus_code") or data.get("shop_location_plus") or "").strip()
     if not order_no:
         return jsonify({"ok": False, "msg": "Order number required"}), 400
-    shop_lat, shop_lng, shop_link = resolve_shop_location(link, coords_text)
+    shop_lat, shop_lng, shop_link = resolve_shop_location_ex(link, coords_text, plus_text)
     if shop_lat is None or shop_lng is None:
-        return jsonify({"ok": False, "msg": "Cannot resolve shop location from link/coordinates"}), 400
+        return jsonify({"ok": False, "msg": "Cannot resolve shop location. Please paste a Google Maps link that contains coordinates, or fill Plus Code inside Myanmar"}), 400
     conn = get_db()
     cur = conn.cursor()
     cur.execute(_q("UPDATE orders SET shop_lat=?, shop_lng=?, shop_link=? WHERE order_no=?"),
@@ -941,20 +1617,48 @@ def rider_confirm():
         return jsonify({"ok": False, "msg": "အမှာစာနံပါတ် သို့မဟုတ် ဖုန်းနံပါတ် မပါရှိပါ"}), 400
     conn = get_db()
     cur = conn.cursor()
-    cur.execute(_q("SELECT * FROM riders WHERE phone=? AND order_no=?"), (phone, order_no))
-    rider = cur.fetchone()
+    rider = rider_row_by_phone(cur, phone, order_no)
     if not rider:
         conn.close()
         return jsonify({"ok": False, "msg": "ဤဖုန်းနံပါတ်သည် ဤအမှာစာနှင့် ချိတ်ဆက်မထားပါ"}), 403
     cur.execute(_q("SELECT * FROM orders WHERE order_no=?"), (order_no,))
     order = cur.fetchone()
     order_dict = _row_to_dict(cur, order)
+    _st_now = (order_dict.get("status") or "").strip()
+    # 幂等保护：Confirm ✅ 只允许生效一次，重复点击 / 手机电脑同时点击都不会二次累加数量或重复通知
+    if _st_now == "လက်ခံပြီးပါပြီ":
+        _rvA = rider_qty_view(cur, phone, order_dict)
+        conn.close()
+        return jsonify({"ok": True, "already": True, "msg": "ဤအမှာစာ လက်ခံပြီးသားဖြစ်ပါသည်",
+                        "status": "လက်ခံပြီးပါပြီ",
+                        "baozi_received": _rvA["baozi_received"], "baozi_remaining": _rvA["baozi_remaining"],
+                        "baozi_total_orig": _rvA["baozi_total"], "shop_received": _rvA["shop_received"],
+                        "shop_remaining": _rvA["shop_remaining"], "shop_total_orig": _rvA["shop_total"],
+                        "scope": _rvA["scope"], "day": _rvA["day"],
+                        "telegram": False, "telegram_msg": "duplicate ignored"})
+    if _st_now == "ပယ်ဖျက်ထားသည်":
+        conn.close()
+        return jsonify({"ok": False, "msg": "ဤအမှာစာကို ပယ်ဖျက်ပြီးဖြစ်ပါသည်။ Confirm လုပ်၍ မရပါ"})
     new_baozi = (order_dict.get("baozi_received", 0) or 0) + confirm_baozi
     new_shop = (order_dict.get("shop_received", 0) or 0) + 1  # 每确认一个商家地址 +1
     cur.execute(
-        _q("UPDATE orders SET baozi_received=?, shop_received=?, delivery_address=?, payment_method=?, amount=?, status='လက်ခံပြီးပါပြီ', completed_at=? WHERE order_no=?"),
+        _q("UPDATE orders SET baozi_received=?, shop_received=?, delivery_address=?, payment_method=?, amount=?, status='လက်ခံပြီးပါပြီ', completed_at=? "
+           "WHERE order_no=? AND (status IS NULL OR status='' OR status<>'လက်ခံပြီးပါပြီ') AND (status IS NULL OR status<>'ပယ်ဖျက်ထားသည်')"),
         (new_baozi, new_shop, address, payment_method, amount, now_str(), order_no),
     )
+    if cur.rowcount == 0:
+        # 并发重复提交：另一请求已先完成，本次不再累加、不再发通知
+        cur.execute(_q("SELECT * FROM orders WHERE order_no=?"), (order_no,))
+        _dup = _row_to_dict(cur, cur.fetchone())
+        _rvB = rider_qty_view(cur, phone, _dup)
+        conn.close()
+        return jsonify({"ok": True, "already": True, "msg": "ဤအမှာစာ လက်ခံပြီးသားဖြစ်ပါသည်",
+                        "status": _dup.get("status") or "",
+                        "baozi_received": _rvB["baozi_received"], "baozi_remaining": _rvB["baozi_remaining"],
+                        "baozi_total_orig": _rvB["baozi_total"], "shop_received": _rvB["shop_received"],
+                        "shop_remaining": _rvB["shop_remaining"], "shop_total_orig": _rvB["shop_total"],
+                        "scope": _rvB["scope"], "day": _rvB["day"],
+                        "telegram": False, "telegram_msg": "duplicate ignored"})
     conn.commit()
     # 通知 + Telegram：无论是否有照片都发文字通知，有照片再发照片（双保险，避免静默失败）
     cur.execute(_q("SELECT rider_name FROM order_history WHERE order_no=? AND rider_phone=? ORDER BY id DESC LIMIT 1"),
@@ -997,11 +1701,27 @@ def rider_confirm():
                 tg_ok, tg_msg = False, "photo file missing"
     if not tg_ok and text_sent:
         tg_ok, tg_msg = True, "text sent"
+    # 送出的数量只累加到「这个骑手自己」名下：其他骑手的数量完全不受影响
+    _day = now_str()[:10]
+    rider_qty_add(cur, phone, order_no, confirm_baozi, 1)
+    conn.commit()
+    _rvC = rider_qty_view(cur, phone, order_dict, order_no)
     conn.close()
-    _rem_bt_all, _, _rem_st_all, _ = order_counts(order_dict)
-    _rem_bt = max(_rem_bt_all - new_baozi, 0)
-    _rem_st = max(_rem_st_all - new_shop, 0)
-    return jsonify({"ok": True, "msg": "လက်ခံပြီးပါပြီ", "status": "လက်ခံပြီးပါပြီ", "completed_at": now_str(), "baozi_received": new_baozi, "baozi_remaining": _rem_bt, "baozi_total_orig": _rem_bt_all, "shop_remaining": _rem_st, "shop_total_orig": _rem_st_all, "shop_received": new_shop, "payment_method": payment_method, "amount": amount, "telegram": tg_ok, "telegram_msg": tg_msg})
+    # 兜底：若该骑手该单还没有记录（没填过数量），按订单口径返回，保证前端不会显示 0
+    if _rvC["scope"] != "rider_order":
+        _bt_all, _, _st_all, _ = order_counts(order_dict)
+        _rvC.update({
+            "baozi_total": _bt_all, "baozi_received": new_baozi, "baozi_remaining": max(_bt_all - new_baozi, 0),
+            "shop_total": _st_all, "shop_received": new_shop, "shop_remaining": max(_st_all - new_shop, 0),
+        })
+    return jsonify({"ok": True, "msg": "လက်ခံပြီးပါပြီ", "status": "လက်ခံပြီးပါပြီ", "completed_at": now_str(),
+                    "baozi_received": _rvC["baozi_received"], "baozi_remaining": _rvC["baozi_remaining"],
+                    "baozi_total_orig": _rvC["baozi_total"],
+                    "shop_received": _rvC["shop_received"], "shop_remaining": _rvC["shop_remaining"],
+                    "shop_total_orig": _rvC["shop_total"],
+                    "scope": _rvC["scope"], "day": _day,
+                    "payment_method": payment_method, "amount": amount,
+                    "telegram": tg_ok, "telegram_msg": tg_msg})
 
 
 @app.route("/api/rider/cancel", methods=["POST"])
@@ -1014,8 +1734,7 @@ def rider_cancel():
         return jsonify({"ok": False, "msg": "အမှာစာနံပါတ် သို့မဟုတ် ဖုန်းနံပါတ် မပါရှိပါ"}), 400
     conn = get_db()
     cur = conn.cursor()
-    cur.execute(_q("SELECT * FROM riders WHERE phone=? AND order_no=?"), (phone, order_no))
-    rider = cur.fetchone()
+    rider = rider_row_by_phone(cur, phone, order_no)
     rider_name = ""
     if rider:
         rd = _row_to_dict(cur, rider)
@@ -1056,8 +1775,7 @@ def rider_info():
         return jsonify({"ok": False, "msg": "အမှာစာနံပါတ် သို့မဟုတ် ဖုန်းနံပါတ် မပါရှိပါ"}), 400
     conn = get_db()
     cur = conn.cursor()
-    cur.execute(_q("SELECT * FROM riders WHERE phone=? AND order_no=?"), (phone, order_no))
-    rider = cur.fetchone()
+    rider = rider_row_by_phone(cur, phone, order_no)
     if not rider:
         conn.close()
         return jsonify({"ok": False, "msg": "ချိတ်ဆက်မှု မရှိပါ"}), 403
@@ -1070,10 +1788,11 @@ def rider_info():
     )
     latest_row = cur.fetchone()
     latest = _row_to_dict(cur, latest_row) if latest_row else None
+    # 骑手独立口径：只返回这个骑手自己的数量，绝不与其他骑手混算
+    _rv = rider_qty_view(cur, phone, order_dict)
     conn.close()
     if latest:
         latest["address"] = reverse_geocode(latest["lat"], latest["lng"])
-    _s_bt, _s_br, _s_st, _s_sr = order_counts(order_dict)
     return jsonify(
         {
             "ok": True,
@@ -1086,14 +1805,16 @@ def rider_info():
             "city": order_dict.get("city", ""),
             "payment_method": order_dict.get("payment_method", ""),
             "amount": order_dict.get("amount", ""),
-            "baozi_total": _s_bt,
-            "shop_total": _s_st,
-            "baozi_received": _s_br,
-            "shop_received": _s_sr,
-            "baozi_remaining": _s_bt - _s_br,
-            "shop_remaining": _s_st - _s_sr,
-            "baozi_total_orig": _s_bt,
-            "shop_total_orig": _s_st,
+            "scope": _rv["scope"],
+            "day": _rv["day"],
+            "baozi_total": _rv["baozi_total"],
+            "shop_total": _rv["shop_total"],
+            "baozi_received": _rv["baozi_received"],
+            "shop_received": _rv["shop_received"],
+            "baozi_remaining": _rv["baozi_remaining"],
+            "shop_remaining": _rv["shop_remaining"],
+            "baozi_total_orig": _rv["baozi_total"],
+            "shop_total_orig": _rv["shop_total"],
             "gps_enabled": order_dict.get("gps_enabled", 1),
             "latest": latest,
         }
@@ -1129,6 +1850,11 @@ def order_history_api():
         if latest:
             latest["address"] = reverse_geocode(latest["lat"], latest["lng"])
         _h_bt, _h_br, _h_st, _h_sr = order_counts(od)
+        # 每个骑手只看自己这份数量：历史列表里也不会出现别的骑手 / 别的订单的数字
+        _hrv = rider_qty_view(cur, phone, od, order_no)
+        if _hrv["scope"] == "rider_order":
+            _h_bt, _h_br = _hrv["baozi_total"], _hrv["baozi_received"]
+            _h_st, _h_sr = _hrv["shop_total"], _hrv["shop_received"]
         history.append(
             {
                 "order_no": order_no,
@@ -1144,8 +1870,8 @@ def order_history_api():
                 "shop_total": _h_st,
                 "baozi_received": _h_br,
                 "shop_received": _h_sr,
-                "baozi_remaining": _h_bt - _h_br,
-                "shop_remaining": _h_st - _h_sr,
+                "baozi_remaining": max(_h_bt - _h_br, 0),
+                "shop_remaining": max(_h_st - _h_sr, 0),
                 "baozi_total_orig": _h_bt,
                 "shop_total_orig": _h_st,
                 "shop_link": od.get("shop_link", "") or "",
@@ -1193,11 +1919,12 @@ def track():
     if not order:
         conn.close()
         return jsonify({"ok": False, "msg": "အမှာစာနံပါတ် မရှိပါ။ စစ်ဆေးပါ"}), 404
-    cur.execute(_q("SELECT * FROM riders WHERE order_no=?"), (order_no,))
-    rider = cur.fetchone()
+    # 一个订单可能被多个骑手先后绑定：必须按 phone+order_no 精确匹配，
+    # 否则会取到别人的绑定记录，导致商家端状态/轨迹串号、显示卡住。
+    rider = rider_row_by_phone(cur, phone, order_no)
     rider_dict = _row_to_dict(cur, rider) if rider else None
     rider_name_fallback = ""
-    if not rider_dict or rider_dict["phone"] != phone:
+    if not rider_dict or norm_phone(rider_dict.get("phone")) != norm_phone(phone):
         st0 = _row_to_dict(cur, order).get("status", "")
         # 取消/完成订单骑手已解绑：放行最终状态查看，路线由前端清除
         if st0 not in ("ပယ်ဖျက်ထားသည်", "လက်ခံပြီးပါပြီ"):
@@ -1361,11 +2088,11 @@ def track_multi():
             results.append({"ok": False, "order_no": order_no, "msg": "အမှာစာနံပါတ် မရှိပါ။ စစ်ဆေးပါ"})
             continue
         order_dict = _row_to_dict(cur, order)
-        cur.execute(_q("SELECT * FROM riders WHERE order_no=?"), (order_no,))
-        rider = cur.fetchone()
+        # 按 phone+order_no 精确匹配骑手，避免多骑手绑定同一订单号时轨迹/状态串号
+        rider = rider_row_by_phone(cur, phone, order_no)
         rider_dict = _row_to_dict(cur, rider) if rider else None
         rname = ""
-        if not rider_dict or rider_dict["phone"] != phone:
+        if not rider_dict or norm_phone(rider_dict.get("phone")) != norm_phone(phone):
             st0 = order_dict.get("status", "")
             if st0 not in ("ပယ်ဖျက်ထားသည်", "လက်ခံပြီးပါပြီ"):
                 results.append({"ok": False, "order_no": order_no, "msg": "ဖုန်းနံပါတ်နှင့် အမှာစာ မကိုက်ညီပါ။ တည်နေရာ ကြည့်ရှု၍ မရပါ"})
@@ -1759,24 +2486,41 @@ def _patch_rider_remaining():
         r = cur.fetchone()
         if r:
             od = _row_to_dict(cur, r)
+    # 骑手独立口径：每个骑手只看自己那份数量——
+    # 分母 = 该骑手在该单第一次输入的量（重新下单也不会变成 500），已收 = 该骑手在该单累计送出的量
+    rv = rider_qty_view(cur, phone, od, (od or {}).get("order_no") or order_no)
     conn.close()
-    if not od:
+    if rv["scope"] == "none":
         return jsonify({"ok": False, "msg": "no order"}), 404
-    bt, br, st, sr = order_counts(od)
-    # 每日口径：只统计「当天」已收数量，跨天（凌晨 0 点后）自动归零，
-    # 分母永远取骑手最初输入量（ba_*_total_orig），所以显示回到 500 / 500
     today = now_str()[:10]
-    done_day = (od.get("completed_at") or "")[:10]
-    if done_day and done_day != today:
-        br_day, sr_day = 0, 0
+    if rv["scope"] == "rider_order":
+        bt, br_day = rv["baozi_total"], rv["baozi_received"]
+        st, sr_day = rv["shop_total"], rv["shop_received"]
+    elif not phone:
+        bt, br, st, sr = order_counts(od)
+        # 订单口径兜底：只统计「当天」已收数量，跨天（凌晨 0 点后）自动归零；分母仍是首次输入量
+        done_day = (od.get("completed_at") or "")[:10]
+        if done_day and done_day != today:
+            br_day, sr_day = 0, 0
+        else:
+            br_day, sr_day = br, sr
     else:
-        br_day, sr_day = br, sr
+        # 有骑手手机号但当天还没自己的记录（新骑手/跨天首单/历史库刚迁移）：
+        # 用该订单的「原始输入量」当分母（绝不是扣减后的剩余量），已收按该订单当天口径，
+        # 既不显示 0 空白，也不会把分母压成 500。
+        bt, br, st, sr = order_counts(od)
+        done_day = (od.get("completed_at") or "")[:10]
+        if done_day and done_day != today:
+            br_day, sr_day = 0, 0
+        else:
+            br_day, sr_day = br, sr
     return jsonify({
         "ok": True,
         "day": today,
-        "order_no": od.get("order_no") or "",
-        "status": od.get("status") or "",
-        "completed_at": od.get("completed_at") or "",
+        "scope": rv["scope"],
+        "order_no": (od or {}).get("order_no") or order_no or "",
+        "status": (od or {}).get("status") or "",
+        "completed_at": (od or {}).get("completed_at") or "",
         "baozi_total_orig": bt, "baozi_received": br_day, "baozi_remaining": max(bt - br_day, 0),
         "shop_total_orig": st, "shop_received": sr_day, "shop_remaining": max(st - sr_day, 0),
         "server_time": now_str(),

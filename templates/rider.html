@@ -1274,6 +1274,8 @@ function formatEnglishDate(input) {
 async function reportLocation(lat, lng, status, isSim) {
   if (!state.orderNo || !state.phone) return;
   status = status || state.status;
+  // 终态保护：已完成/已取消后不再把旧状态回传服务端，避免把已完成订单冲回"配送中"
+  if (status === "လက်ခံပြီးပါပြီ" || status === "ပယ်ဖျက်ထားသည်") status = "";
   isSim = isSim ? 1 : 0;
   try {
     var r = await fetch("/api/rider/location", {
@@ -1796,10 +1798,22 @@ async function refreshRiderInfo() {
     document.getElementById("bindBtn").textContent = "ချိတ်ဆက်ပြီးပါပြီ";
     document.getElementById("cancelOrderBtn").disabled = false;
     lockStatusButtons();
+    // 以服务端为准：本地锁记录的订单若在服务端已终结（已完成/已取消），立即清卡解锁，避免一直卡在旧状态
+    fetch("/api/rider/active?phone=" + encodeURIComponent(phone), { cache: "no-store" })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        if (!j || !j.ok) return;
+        if (!j.active || j.active.order_no !== saved.order_no) {
+          if (typeof window.reloadTodayMarks === "function") setTimeout(window.reloadTodayMarks, 300);
+          resetAfterCompletion();
+        }
+      })
+      .catch(function () {});
     // 恢复前先校验绑定是否仍有效；旧订单已解绑则自动清除死锁
     fetch("/api/rider/info?order_no=" + encodeURIComponent(saved.order_no) + "&phone=" + encodeURIComponent(phone))
       .then(function (r) { return r.json().then(function (j) { return {r: r, j: j}; }); })
       .then(function (res) {
+        if (!state.orderNo || state.orderNo !== saved.order_no) return;
         if (!res.j.ok) { if (res.r.status === 403) { handleUnbound(res.j.msg); return; } return; }
         showRiderMap();
         startGps();

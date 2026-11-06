@@ -1818,9 +1818,12 @@ async function loadRemaining(phone) {
   try {
     var r0 = await fetch("/api/rider/remaining?phone=" + encodeURIComponent(phone), { cache: "no-store" });
     var j0 = await r0.json();
-    if (j0 && j0.ok && j0.baozi_total_orig > 0) {
-      document.getElementById("baoziCount").value = j0.baozi_total_orig;
-      document.getElementById("shopCount").value = (j0.shop_total_orig !== undefined && j0.shop_total_orig !== null) ? j0.shop_total_orig : document.getElementById("shopCount").value;
+    if (j0 && j0.ok && (j0.baozi_total_orig > 0 || j0.baozi_remaining > 0)) {
+      // 输入框自动显示「剩余数量」（与绿色框ပေါက်စီကျန်ရှိအလုံးရေ/ဆိုင်ကျန်ရှိအရေအတွက်完全一致），下单数量必须与之一致
+      var _rb = (j0.baozi_remaining !== undefined && j0.baozi_remaining !== null) ? j0.baozi_remaining : j0.baozi_total_orig;
+      var _rs = (j0.shop_remaining !== undefined && j0.shop_remaining !== null) ? j0.shop_remaining : j0.shop_total_orig;
+      document.getElementById("baoziCount").value = _rb;
+      if (_rs !== undefined && _rs !== null && _rs !== "") document.getElementById("shopCount").value = _rs;
       return;
     }
   } catch (e) {}
@@ -1829,9 +1832,11 @@ async function loadRemaining(phone) {
     var j = await r.json();
     if (!j.ok || !j.history || j.history.length === 0) return;
     var h = j.history[0];
-    // 输入框提交的是「原始总量」，必须回填 total；绝不能用扣减后的 remaining 覆盖，否则分母会被越扣越小
-    var bt = (h.baozi_total !== undefined && h.baozi_total !== null && h.baozi_total !== "") ? h.baozi_total : h.baozi_remaining;
-    var st = (h.shop_total !== undefined && h.shop_total !== null && h.shop_total !== "") ? h.shop_total : h.shop_remaining;
+    // 输入框自动回填「剩余数量」：骑手每次下单填的数必须与绿色框的剩余量一致，数量不符无法下单
+    var bt = (h.baozi_remaining !== undefined && h.baozi_remaining !== null && h.baozi_remaining !== "") ? h.baozi_remaining : h.baozi_total;
+    var st = (h.shop_remaining !== undefined && h.shop_remaining !== null && h.shop_remaining !== "") ? h.shop_remaining : h.shop_total;
+    if (bt === 0) bt = (h.baozi_total !== undefined && h.baozi_total !== null) ? h.baozi_total : "";
+    if (st === 0) st = (h.shop_total !== undefined && h.shop_total !== null) ? h.shop_total : "";
     if (bt !== undefined && bt !== null && bt !== "") {
       document.getElementById("baoziCount").value = bt;
     }
@@ -2595,21 +2600,19 @@ checkLogin();
       bind.textContent = "Order ချိတ်ဆက်၍ ပို့ဆောင်စမည်";
       return;
     }
-    // 仅有有效剩余量时才校验：允许「首次输入量（分母）」或「当前剩余量」两者之一，
-    // 这样第一次 600、送 100 剩 500 时重新下单填 600 依旧可通过，分母不会被强制压成 500。
+    // 有剩余量时一律严格校验：数量必须等于绿色框显示的剩余量，不一致无法下单（防作弊）
     if (hasRemain) {
-      var db = window.__remain ? Number(window.__remain.baoziOrig) : NaN;
-      var ds = window.__remain ? Number(window.__remain.shopOrig) : NaN;
-      var bOk = (bt === Number(rb)) || (!isNaN(db) && db > 0 && bt === db);
-      var sOk = (st === Number(rs)) || (!isNaN(ds) && ds > 0 && st === ds);
-      // 超出首次输入量（超送）一律拒绝
-      if (!isNaN(db) && db > 0 && bt > db) bOk = false;
-      if (!isNaN(ds) && ds > 0 && st > ds) sOk = false;
-      if (!bOk || !sOk) {
-        bind.disabled = true;
-        bind.textContent = "အရေအတွက် မကိုက်ညီပါ (Count must equal remaining or first input)";
-        return;
-      }
+        // 严格校验：输入数量必须等于页面上显示的剩余数量，数量不一致无法下单（防作弊）
+        var bOk = (bt === Number(rb));
+        var sOk = (st === Number(rs));
+        // 上一批已全部送完（剩余 0）时，允许重新输入新一批数量
+        if (Number(rb) === 0 && bt > 0) bOk = true;
+        if (Number(rs) === 0 && st > 0) sOk = true;
+        if (!bOk || !sOk) {
+            bind.disabled = true;
+            bind.textContent = "အရေအတွက် မကိုက်ညီပါ (Count must equal remaining)";
+            return;
+        }
     }
     bind.disabled = false;
     bind.textContent = "Order ချိတ်ဆက်၍ ပို့ဆောင်စမည်";

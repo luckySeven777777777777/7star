@@ -491,20 +491,43 @@ function parseCoordsText(text) {
   if (m) { r = _validLatLng(parseFloat(m[1]), parseFloat(m[2])); if (r) return r; }
   return null;
 }
+// 业务区域（缅甸及周边）：与后端 REGION_BOX 完全一致。
+// 手机端粘贴的短链在解析/跳转失败时会带出无关坐标（美国/欧洲），一旦采用骑手就被导到国外，
+// 所以这里只认区域内的坐标，解析不到就留空、由后端继续解析或提示改填 Plus Code。
+var REGION_BOX = [5.0, 30.0, 88.0, 108.0]; // lat_min, lat_max, lng_min, lng_max
+function inRegion(la, ln) {
+  if (isNaN(la) || isNaN(ln)) return false;
+  if (la < REGION_BOX[0] || la > REGION_BOX[1]) return false;
+  if (ln < REGION_BOX[2] || ln > REGION_BOX[3]) return false;
+  return true;
+}
 function parseLinkCoords(text) {
   if (!text) return null;
   var s = String(text);
+  // 手机端从 Google Maps App / 微信复制出来的链接常被转义成 &amp;、\u0026，先还原再解析
+  s = s.replace(/&amp;/gi, "&").replace(/\\u0026/gi, "&").replace(/&#38;/g, "&");
   try { if (/%[0-9A-Fa-f]{2}/.test(s)) s = decodeURIComponent(s); } catch (e) {}
+  // 反序写法：!2d<经度>!3d<纬度>（Google 跳转链常见）
+  var m2 = s.match(/!2d(-?\d{1,3}\.\d+)!3d(-?\d{1,3}\.\d+)/i);
+  if (m2) {
+    var rc = [parseFloat(m2[2]), parseFloat(m2[1])];
+    if (inRegion(rc[0], rc[1])) return rc;
+  }
   // Google 分享链接优先级：!3d!4d 是店铺精确坐标；?q=/?ll= 次之；/place/lat,lng；@ 只是视图中心，最后兜底
   var pats = [
     /!3d(-?\d{1,3}\.\d+)!4d(-?\d{1,3}\.\d+)/,
-    /[?&](?:q|query|ll|daddr|destination|center)=(-?\d{1,3}\.\d+)\s*,\s*(-?\d{1,3}\.\d+)/,
+    /[?&](?:q|query|ll|daddr|destination|center|sll|viewpoint|location)=(-?\d{1,3}\.\d+)\s*,\s*(-?\d{1,3}\.\d+)/,
     /\/place\/(-?\d{1,3}\.\d+),(-?\d{1,3}\.\d+)/,
+    /\/search\/(-?\d{1,3}\.\d+),(-?\d{1,3}\.\d+)/,
     /@(-?\d{1,3}\.\d+),(-?\d{1,3}\.\d+)/
   ];
   for (var i = 0; i < pats.length; i++) {
-    var m = s.match(pats[i]);
-    if (m) return [parseFloat(m[1]), parseFloat(m[2])];
+    var re = new RegExp(pats[i].source, "g");
+    var m;
+    while ((m = re.exec(s)) !== null) {
+      var c = [parseFloat(m[1]), parseFloat(m[2])];
+      if (inRegion(c[0], c[1])) return c;  // 只返回区域内的坐标
+    }
   }
   return null;
 }
@@ -513,17 +536,55 @@ function plusCodeValue(ch) { return PLUS_ALPHABET.indexOf(ch); }
 // 官方 Open Location Code 位值加权解码（与 Google 地图/官方库一致）
 // 仰光参考前缀（openlocationcode 验证：encode(16.8661,96.1951,4) = "7M8R0000+"）
 var YANGON_REF_PREFIX = "7M8R";
-function decodePlusCode(text) {
-  if (!text) return null;
-  var s = String(text).toUpperCase();
-  var m = s.match(/([23456789CFGHJMPQRVWX]{2,8})\+([23456789CFGHJMPQRVWX]{2,3})/);
-  if (!m) return null;
-  var code = m[1] + m[2];
-  // 短码补齐：'+' 前不足 8 位时，用仰光参考前缀补足（官方 recoverNearest 规则）
-  if (code.length < 8) {
-    var pad = 8 - m[1].length;
-    code = YANGON_REF_PREFIX.substring(0, pad) + code;
+// 短码（如 M9VQ+XX Yangon）只有 6 位时必须用参考点补高位；手机端粘贴的短码后面通常带城市名，
+// 按城市取前缀才不会把曼德勒/内比都的地址定位到仰光去。与后端 _MM_CITY_REF 一致。
+var MM_CITY_REF_COORDS = [
+  ["naypyidaw", 19.7633, 96.0785], ["nay pyi taw", 19.7633, 96.0785], ["naypyitaw", 19.7633, 96.0785], ["内比都", 19.7633, 96.0785],
+  ["yangon", 16.8661, 96.1951], ["rangoon", 16.8661, 96.1951], ["仰光", 16.8661, 96.1951],
+  ["mandalay", 21.9588, 96.0891], ["曼德勒", 21.9588, 96.0891],
+  ["bago", 17.3350, 96.4813], ["勃固", 17.3350, 96.4813],
+  ["mawlamyine", 16.4905, 97.6283], ["maulmain", 16.4905, 97.6283], ["毛淡棉", 16.4905, 97.6283],
+  ["taunggyi", 20.7892, 97.0378], ["东枝", 20.7892, 97.0378],
+  ["pathein", 16.7790, 94.7320], ["勃生", 16.7790, 94.7320],
+  ["monywa", 22.1083, 95.1333], ["蒙育瓦", 22.1083, 95.1333],
+  ["myitkyina", 25.3833, 97.3964], ["密支那", 25.3833, 97.3964],
+  ["sittwe", 20.1462, 92.8986], ["实兑", 20.1462, 92.8986],
+  ["dawei", 14.0823, 98.1915], ["土瓦", 14.0823, 98.1915],
+  ["hpa-an", 16.8895, 97.6339], ["hpaan", 16.8895, 97.6339], ["帕安", 16.8895, 97.6339],
+  ["pyay", 18.8192, 95.2114], ["卑谬", 18.8192, 95.2114],
+  ["meiktila", 20.8778, 95.8583], ["密铁拉", 20.8778, 95.8583],
+  ["lashio", 22.9333, 97.7500], ["腊戌", 22.9333, 97.7500],
+  ["myeik", 12.4395, 98.6003], ["丹老", 12.4395, 98.6003],
+  ["magway", 20.1500, 94.9320], ["马圭", 20.1500, 94.9320]
+];
+// 返回 [名称, 纬度, 经度]，识别不到返回 null
+function cityRef(text) {
+  var low = String(text || "").toLowerCase();
+  for (var i = 0; i < MM_CITY_REF_COORDS.length; i++) {
+    if (low.indexOf(MM_CITY_REF_COORDS[i][0]) >= 0) return MM_CITY_REF_COORDS[i];
   }
+  return null;
+}
+function cityPlusPrefix(text) {
+  var r = cityRef(text);
+  if (r) return olcEncodePrefix(r[1], r[2], 4);
+  return YANGON_REF_PREFIX;
+}
+// Open Location Code 编码（只取前缀部分，用于短码补位）
+function olcEncodePrefix(lat, lng, len) {
+  var latV = Math.floor((Math.max(-90, Math.min(90, lat)) + 90) * 8000);
+  var lngNorm = ((lng + 180) % 360 + 360) % 360;
+  var lngV = Math.floor(lngNorm * 8000);
+  var pv = 160000, out = "";
+  for (var i = 0; i < Math.floor(len / 2); i++) {
+    out += PLUS_ALPHABET.charAt(Math.floor(latV / pv) % 20);
+    out += PLUS_ALPHABET.charAt(Math.floor(lngV / pv) % 20);
+    pv = Math.floor(pv / 20);
+  }
+  return out;
+}
+// 纯解码：输入必须是补齐后的完整码
+function _olcDecodeCore(code) {
   // pair 段：位值从 160000 起逐对 /20 累加
   var normalLat = -90 * 8000;
   var normalLng = -180 * 8000;
@@ -558,8 +619,37 @@ function decodePlusCode(text) {
   }
   var lat = normalLat / 8000 + gridLat / 25000000;
   var lng = normalLng / 8000 + gridLng / 8192000;
+  if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return null;
   // 取格中心供定位/路线使用
   return [lat + latPrecision / 2, lng + lngPrecision / 2];
+}
+// 与 Google 官方 decode / recoverNearest 结果一致的 Plus Code 解析：
+// '+' 前 8 位以上=完整码直接解；更短的是短码，须在参考点（城市名，默认仰光）周边网格里
+// 取「离参考点最近」的候选，否则会偏最多 1 个经纬度格（约 110km），骑手就找不到店。
+function decodePlusCode(text) {
+  if (!text) return null;
+  var s = String(text).toUpperCase();
+  var m = s.match(/([23456789CFGHJMPQRVWX]{2,8})\+([23456789CFGHJMPQRVWX]{2,3})/);
+  if (!m) return null;
+  var body = m[1], tail = m[2];
+  if (body.length >= 8) return _olcDecodeCore((body + tail).substring(0, 15));
+  var need = 8 - body.length;
+  var ref = cityRef(text) || ["yangon", 16.8661, 96.1951];
+  var rl = ref[1], rg = ref[2];
+  var best = null, bestD = null;
+  for (var dla = -1; dla <= 1; dla++) {
+    for (var dln = -1; dln <= 1; dln++) {
+      var la = rl + dla, ln = rg + dln;
+      if (!inRegion(la, ln)) continue;
+      var full = (olcEncodePrefix(la, ln, 8).substring(0, need) + body + tail).substring(0, 15);
+      while (full.length < 8) { full += "2"; }
+      var got = _olcDecodeCore(full);
+      if (!got || !inRegion(got[0], got[1])) continue;
+      var d = (got[0] - rl) * (got[0] - rl) + (got[1] - rg) * (got[1] - rg);
+      if (bestD === null || d < bestD) { bestD = d; best = got; }
+    }
+  }
+  return best;
 }
 // ===== 剩余数量分母锁定：分母恒等于骑手第一次输入的数量，刷新页面 / 重新获取订单都不会减小 =====
 var DENOM_LOCK_KEY = "riderDenomLock_v1";
@@ -577,36 +667,54 @@ function _denomToday() {
 // 返回该订单被锁定的分母（= 骑手第一次输入的数量）
 // 规则：第一次输入后永久固定，第二次/第三次输入的任何数量都不会改动它；
 //       缅甸时间凌晨 0 点自动清零，新一天的第一次输入重新成为分母。
-function lockDenom(orderNo, baoziTotal, shopTotal) {
+// 分母锁定键 = 骑手手机号 + 订单号（每个骑手每单各自一份，骑手之间不混合、不同订单也不混）
+function _denomKey(phone, orderNo) {
+  var p = String(phone || "").trim();
+  var o = String(orderNo || "").trim();
+  // 分母按「骑手 + 当天」锁定：同一骑手当天的首次输入量跨订单保持（重下单仍是 600），
+  // 不同骑手之间绝不混合
+  if (p) return "rider:" + p + "|day:" + _denomToday();
+  if (o) return "order:" + o;
+  return "";
+}
+// 返回该骑手当天的分母（= 该骑手当天第一次输入的数量）
+// 规则：同一骑手同一天内，无论重新下单、换订单号、改输入，分母都保持首次输入量，
+//       绝不会被 500 覆盖掉 600；缅甸时间凌晨 0 点自动清零，新一天重新锁。
+function lockDenom(phone, orderNo, baoziTotal, shopTotal) {
   var b = _denomNum(baoziTotal), s = _denomNum(shopTotal);
-  if (!orderNo) return { baozi: b, shop: s };
+  var key = _denomKey(phone, orderNo);
   var day = _denomToday();
+  if (!key) return { baozi: b, shop: s };
   var all = loadDenomLock();
-  var rec = all[orderNo];
+  var rec = all[key];
   // 跨天（凌晨 0 点后）自动清零：丢弃前一天的锁
   if (rec && rec.day && rec.day !== day) rec = null;
   if (rec) {
-    var rb = _denomNum(rec.baozi), rs = _denomNum(rec.shop);
-    if (rb > 0) b = rb;   // 严格固定：绝不被后输入的数量覆盖
-    if (rs > 0) s = rs;
+    // 只升不降：已锁定的分母优先，但旧版本误锁成 500 的记录会被本次的 600 纠正回来，
+    // 首次输入量永不被后续数字（剩余量/改单量）覆盖
+    b = Math.max(_denomNum(rec.baozi), b);
+    s = Math.max(_denomNum(rec.shop), s);
   }
   if (b > 0 || s > 0) {
-    all[orderNo] = { baozi: b, shop: s, day: day };
-    // 顺手清理其它日期 / 其它订单的过期记录，避免 localStorage 无限增长
+    all[key] = { baozi: b, shop: s, day: day };
+    // 顺手清理其它日期的过期记录，避免 localStorage 无限增长
     Object.keys(all).forEach(function (k) {
-      if (k !== orderNo && all[k] && all[k].day && all[k].day !== day) delete all[k];
+      if (all[k] && all[k].day && all[k].day !== day) delete all[k];
     });
     saveDenomLock(all);
   }
   return { baozi: b, shop: s };
 }
 window.lockDenom = lockDenom;
+// 商家位置解析（与后端同优先级）：坐标文本 → 链接 → Plus Code，且只接受业务区域内的结果
 function resolveShopLocation() {
   var c = parseCoordsText(document.getElementById("shopLocationCoords").value);
-  if (c) return c;
+  if (c && inRegion(c[0], c[1])) return c;
   c = parseLinkCoords(document.getElementById("shopLocationLink").value);
-  if (c) return c;
-  return decodePlusCode(document.getElementById("shopLocationPlusCode").value);
+  if (c && inRegion(c[0], c[1])) return c;
+  var pc = decodePlusCode(document.getElementById("shopLocationPlusCode").value);
+  if (pc && inRegion(pc[0], pc[1])) return pc;
+  return null;
 }
 // 手机端粘贴的 Google 链接常见问题：缺 https://、前后带文字/空格、短链缺协议头
 function normalizeMapsLink(raw) {
@@ -624,14 +732,27 @@ async function updateShopLocation() {
   var coords = document.getElementById("shopLocationCoords").value.trim();
   var plus = document.getElementById("shopLocationPlusCode").value.trim();
   if (!link && !coords && !plus) { showInfo("Enter Google Maps Link, Coordinates or Plus Code"); return; }
+  // 只要区域外的坐标一律丢弃（手机端短链解析失败时常带出国外坐标），交给后端按链接重新解析
+  if (coords) {
+    var _cc = parseCoordsText(coords);
+    if (_cc && inRegion(_cc[0], _cc[1])) {
+      coords = _cc[0].toFixed(6) + ", " + _cc[1].toFixed(6);
+    } else {
+      coords = "";
+    }
+  }
   if (!coords) {
     var pc = decodePlusCode(plus);
-    if (pc) { coords = pc[0].toFixed(6) + ", " + pc[1].toFixed(6); }
+    if (pc && inRegion(pc[0], pc[1])) { coords = pc[0].toFixed(6) + ", " + pc[1].toFixed(6); }
   }
   // 长链接可直接在前端解析出坐标，避免手机端因网络/短链重定向失败
   if (!coords && link) {
     var lc = parseLinkCoords(link);
-    if (lc) { coords = lc[0].toFixed(6) + ", " + lc[1].toFixed(6); }
+    if (lc && inRegion(lc[0], lc[1])) { coords = lc[0].toFixed(6) + ", " + lc[1].toFixed(6); }
+  }
+  if (!coords && !link) {
+    showInfo("Cannot read this location on phone. Please paste a Google Maps link, or fill Coordinates / Plus Code");
+    return;
   }
   try {
     var r = await fetch("/api/rider/update-shop", {
@@ -644,7 +765,8 @@ async function updateShopLocation() {
     if (j.shop_lat !== null && j.shop_lat !== undefined) {
       setShop(j.shop_lat, j.shop_lng, j.shop_link || "");
       document.getElementById("shopHint").style.display = "none";
-      showInfo("Shop location updated - marker & route shown");
+      // 回显实际识别到的坐标：手机端与电脑端解析结果完全一致，便于骑手确认没错位
+      showInfo("Shop location updated: " + Number(j.shop_lat).toFixed(6) + ", " + Number(j.shop_lng).toFixed(6));
     } else {
       showInfo(j.msg || "Cannot resolve shop location, check link/coords");
     }
@@ -985,6 +1107,11 @@ if (window.visualViewport) {
 }
 document.addEventListener("fullscreenchange", onMapFullscreenChange);
 function setShop(lat, lng, linkText) {
+  // 保底限制：任何来源（旧数据 / 短链解析 / 后端 / 缓存）给的商家坐标，
+  // 只要不在缅甸业务区域内就一律不采用，绝不把骑手地图跳到国外（如 0,0 大西洋）
+  var _la = parseFloat(lat), _ln = parseFloat(lng);
+  if (isNaN(_la) || isNaN(_ln) || !inRegion(_la, _ln)) return;
+  lat = _la; lng = _ln;
   shopLat = lat; shopLng = lng;
   if (!riderMap) showRiderMap();
   if (!shopMarker) {
@@ -1207,6 +1334,15 @@ async function bindOrder() {
     var shopLocationLink = document.getElementById("shopLocationLink").value.trim();
     var shopLocationCoords = document.getElementById("shopLocationCoords").value.trim();
     var shopLocationPlusCode = document.getElementById("shopLocationPlusCode").value.trim();
+    // 区域外的坐标一律不提交（手机端粘贴的链接可能带出国外坐标），交给服务端按链接/Plus Code 重新解析
+    if (shopLocationCoords) {
+      var _bc = parseCoordsText(shopLocationCoords);
+      if (_bc && inRegion(_bc[0], _bc[1])) {
+        shopLocationCoords = _bc[0].toFixed(6) + ", " + _bc[1].toFixed(6);
+      } else {
+        shopLocationCoords = "";
+      }
+    }
     // Plus Code 不在前端强行转坐标：统一交给服务端权威解析，
     // 保证手机端与电脑端用同一套算法，定位结果完全一致（前端仅在服务端解析失败时兜底）
     var r = await fetch("/api/rider/bind", {
@@ -1265,7 +1401,8 @@ async function bindOrder() {
         document.getElementById("shopHint").style.display = "block";
       }
     }
-    showInfo("ချိတ်ဆက်မှု အောင်မြင်ပါသည်။ GPS ဖွင့်ပြီး တည်နေရာ တင်နေပါသည်");
+    showInfo("ချိတ်ဆက်မှု အောင်မြင်ပါသည်။ GPS ဖွင့်ပြီး တည်နေရာ တင်နေပါသည်"
+      + (j.shop_warn ? " ⚠ " + j.shop_warn : ""));
     // 取消订单键启用
     document.getElementById("cancelOrderBtn").disabled = false;
     // GPS 强制开启：绑定成功后自动开启，快递员端不可关闭（仅 track 商家页可关）
@@ -1676,6 +1813,17 @@ function handleUnbound(msg) {
 // ---------- ကျန်ရှိသော အရေအတွက် အလိုအလျောက် ဖြည့်ခြင်း ----------
 async function loadRemaining(phone) {
   if (!phone) return;
+  // 输入框回填的是「这个骑手今天第一次输入的量」（不是扣减后的剩余量）：
+  // 首次 600 送了 100 只剩 500 时，重新下单仍回填 600，分母不会被越扣越小。
+  try {
+    var r0 = await fetch("/api/rider/remaining?phone=" + encodeURIComponent(phone), { cache: "no-store" });
+    var j0 = await r0.json();
+    if (j0 && j0.ok && j0.baozi_total_orig > 0) {
+      document.getElementById("baoziCount").value = j0.baozi_total_orig;
+      document.getElementById("shopCount").value = (j0.shop_total_orig !== undefined && j0.shop_total_orig !== null) ? j0.shop_total_orig : document.getElementById("shopCount").value;
+      return;
+    }
+  } catch (e) {}
   try {
     var r = await fetch("/api/order/history?phone=" + encodeURIComponent(phone));
     var j = await r.json();
@@ -1750,14 +1898,27 @@ async function openHistory() {
   }
 }
 
+// 商家位置统一链接：有区域内坐标时一律用坐标链接（手机/电脑打开都落到同一个点，不会跑到国外）
+function mapsUrlFor(x) {
+  if (!x) return "";
+  var la = parseFloat(x.shop_lat), ln = parseFloat(x.shop_lng);
+  if (!isNaN(la) && !isNaN(ln) && inRegion(la, ln)) {
+    // 手机端优先用坐标 + geo 兜底：坐标链接在 Google Maps App / 浏览器里都会落到同一个点
+    return "https://www.google.com/maps/search/?api=1&query=" + la.toFixed(6) + "," + ln.toFixed(6);
+  }
+  // 没有区域内坐标时绝不回退原始短链：短链在手机上会被 Google 定向到国外，骑手直接找不到位置
+  return "";
+}
 function locDisplay(x) {
   if (!x) return "-";
-  var v = x.shop_link || "";
-  if (v) return v;
+  var v = mapsUrlFor(x);
+  if (v) {
+    return '<a href="' + v + '" target="_blank" rel="noopener" style="color:#1565c0;word-break:break-all;">' + v + '</a>';
+  }
   if (x.shop_lat !== null && x.shop_lat !== undefined && x.shop_lng !== null && x.shop_lng !== undefined) {
     return Number(x.shop_lat).toFixed(6) + ", " + Number(x.shop_lng).toFixed(6);
   }
-  return "-";
+  return '<span style="color:#c62828;">⚠ Location not resolved — re-set with Coordinates / Plus Code</span>';
 }
 function renderHistory() {
   var sel = document.getElementById("historyDateFilter");
@@ -1779,8 +1940,8 @@ function renderHistory() {
       + 'လက်ရှိအခြေအနေ：' + stTagHtml((h.status && h.status !== "待取餐") ? h.status : "-") + '<br>'
       + 'လက်ရှိနေရာ：<b>' + loc + '</b><br>'
       + 'ပို့ရမည့်ဆိုင်လိပ်စာ：<b>' + (h.delivery_address || "-") + '</b><br>'
-      + 'ကျန်ရှိသောပေါက်စီအလုံးအရေတွက်：<b>' + h.baozi_remaining + ' / ' + (lockDenom(h.order_no || "", (h.baozi_total_orig || h.baozi_total), (h.shop_total_orig || h.shop_total)).baozi || "-") + '</b><br>'
-      + 'ကျန်ရှိသောဆိုင်အရေတွက်：<b>' + h.shop_remaining + ' / ' + (lockDenom(h.order_no || "", (h.baozi_total_orig || h.baozi_total), (h.shop_total_orig || h.shop_total)).shop || "-") + '</b><br>'
+      + 'ကျန်ရှိသောပေါက်စီအလုံးအရေတွက်：<b>' + h.baozi_remaining + ' / ' + (lockDenom(h.rider_phone || "", h.order_no || "", (h.baozi_total_orig || h.baozi_total), (h.shop_total_orig || h.shop_total)).baozi || "-") + '</b><br>'
+      + 'ကျန်ရှိသောဆိုင်အရေတွက်：<b>' + h.shop_remaining + ' / ' + (lockDenom(h.rider_phone || "", h.order_no || "", (h.baozi_total_orig || h.baozi_total), (h.shop_total_orig || h.shop_total)).shop || "-") + '</b><br>'
       + 'ငွေပေးချေမှုနည်းလမ်း：<b>' + (h.payment_method || "-") + '</b><br>'
       + 'Amount (MMK)：<b>' + (h.amount || "-") + '</b><br>'
       + '📍 Location / Geographic Location：<b>' + locDisplay(h) + '</b><br>'
@@ -1880,8 +2041,8 @@ async function refreshRiderInfo() {
     // 位置显示地名（反向地理编码），失败时回退经纬度
     document.getElementById("curLocation").textContent = j.latest ? (j.latest.address || (j.latest.lat.toFixed(6) + ", " + j.latest.lng.toFixed(6))) : "-";
     document.getElementById("curCity").textContent = (j.city && j.city !== "") ? j.city : "-";
-    // 分母锁定：分母永远取骑手第一次输入的总量，只增不减
-    var _lk0 = lockDenom(j.order_no || (window.state && state.orderNo) || "",
+    // 分母锁定：分母永远取「这个骑手今天第一次输入的量」，只增不减（重新下单也不会变成 500）
+    var _lk0 = lockDenom(state.phone || j.phone || "", j.order_no || (window.state && state.orderNo) || "",
       (j.baozi_total_orig || j.baozi_total || 0), (j.shop_total_orig || j.shop_total || 0));
     var _obt = _lk0.baozi, _ost = _lk0.shop;
     document.getElementById("curBaozi").textContent = Math.max(_obt - (j.baozi_received || 0), 0) + " / " + _obt;
@@ -2233,8 +2394,8 @@ checkLogin();
     function g(id) { return document.getElementById(id); }
     if (g("rtOrder")) g("rtOrder").textContent = j.order_no || "-";
     if (g("rtStatus")) g("rtStatus").textContent = statusEn(j.status || "");
-    // 分母恒为骑手第一次输入的数量（lockDenom 只增不减），刷新 / 重获订单都不会变小
-    var _lkR = lockDenom(j.order_no || (window.state && state.orderNo) || "",
+    // 分母恒为「该骑手今天第一次输入的数量」（lockDenom 只增不减），刷新 / 重新下单都不会变小
+    var _lkR = lockDenom((window.state && state.phone) || "", j.order_no || (window.state && state.orderNo) || "",
       (j.baozi_total_orig !== undefined ? j.baozi_total_orig : j.baozi_total),
       (j.shop_total_orig !== undefined ? j.shop_total_orig : j.shop_total));
     if (g("rtBaozi")) g("rtBaozi").textContent = ((j.baozi_remaining !== undefined && j.baozi_remaining !== null) ? j.baozi_remaining : "-") +
@@ -2251,6 +2412,10 @@ checkLogin();
     window.__remain.day = j.day || "";
     window.__remain.orderNo = j.order_no || "";
     window.__remain.status = j.status || "";
+    // 分母（骑手第一次输入量）也记下来，供数量校验使用：允许填「首次数」或「当前剩余」，
+    // 这样重新下单时不会被强制改写成剩余量，分母永远是 600。
+    window.__remain.baoziOrig = _lkR.baozi || (j.baozi_total_orig !== undefined ? j.baozi_total_orig : null);
+    window.__remain.shopOrig = _lkR.shop || (j.shop_total_orig !== undefined ? j.shop_total_orig : null);
     d.style.display = "block";
     if (window.validateCountInputs) window.validateCountInputs();
   }
@@ -2269,8 +2434,9 @@ checkLogin();
       if (status) stTxt = window.statusEn ? window.statusEn(status) : status;
       g("rtStatus").textContent = stTxt;
     }
-    if (g("rtBaozi")) g("rtBaozi").textContent = bTxt + " / " + (isNaN(b) ? "-" : lockDenom(orderNo || "", b, s).baozi || "-");
-    if (g("rtShop")) g("rtShop").textContent = sTxt + " / " + (isNaN(s) ? "-" : lockDenom(orderNo || "", b, s).shop || "-");
+    var _lkL = lockDenom((window.state && state.phone) || "", orderNo || "", b, s);
+    if (g("rtBaozi")) g("rtBaozi").textContent = bTxt + " / " + (isNaN(b) ? "-" : (_lkL.baozi || "-"));
+    if (g("rtShop")) g("rtShop").textContent = sTxt + " / " + (isNaN(s) ? "-" : (_lkL.shop || "-"));
     if (g("rtTime")) {
       var now = new Date();
       g("rtTime").textContent = now.getHours() + ":" +
@@ -2280,6 +2446,8 @@ checkLogin();
     window.__remain.shop = isNaN(s) ? null : s;
     window.__remain.orderNo = orderNo || "";
     window.__remain.status = status || "";
+    window.__remain.baoziOrig = isNaN(b) ? null : (_lkL.baozi || b);
+    window.__remain.shopOrig = isNaN(s) ? null : (_lkL.shop || s);
     d.style.display = "block";
     if (window.validateCountInputs) window.validateCountInputs();
   }
@@ -2427,11 +2595,21 @@ checkLogin();
       bind.textContent = "Order ချိတ်ဆက်၍ ပို့ဆောင်စမည်";
       return;
     }
-    // 仅有有效剩余量时才校验「输入数量必须等于剩余数量」
-    if (hasRemain && (bt !== Number(rb) || st !== Number(rs))) {
-      bind.disabled = true;
-      bind.textContent = "အရေအတွက် မကိုက်ညီပါ (Count mismatch — must equal remaining)";
-      return;
+    // 仅有有效剩余量时才校验：允许「首次输入量（分母）」或「当前剩余量」两者之一，
+    // 这样第一次 600、送 100 剩 500 时重新下单填 600 依旧可通过，分母不会被强制压成 500。
+    if (hasRemain) {
+      var db = window.__remain ? Number(window.__remain.baoziOrig) : NaN;
+      var ds = window.__remain ? Number(window.__remain.shopOrig) : NaN;
+      var bOk = (bt === Number(rb)) || (!isNaN(db) && db > 0 && bt === db);
+      var sOk = (st === Number(rs)) || (!isNaN(ds) && ds > 0 && st === ds);
+      // 超出首次输入量（超送）一律拒绝
+      if (!isNaN(db) && db > 0 && bt > db) bOk = false;
+      if (!isNaN(ds) && ds > 0 && st > ds) sOk = false;
+      if (!bOk || !sOk) {
+        bind.disabled = true;
+        bind.textContent = "အရေအတွက် မကိုက်ညီပါ (Count must equal remaining or first input)";
+        return;
+      }
     }
     bind.disabled = false;
     bind.textContent = "Order ချိတ်ဆက်၍ ပို့ဆောင်စမည်";
@@ -2642,11 +2820,20 @@ checkLogin();
       bind.textContent = "Order ချိတ်ဆက်၍ ပို့ဆောင်စမည်";
       return;
     }
-    // 仅当剩余量存在有效数字时，才启用「输入数量必须与剩余数量一致」的校验
-    if (hasRemain && (bt !== Number(rb) || st !== Number(rs))) {
-      bind.disabled = true;
-      bind.textContent = "အရေအတွက် မကိုက်ညီပါ (" + (bRaw || "0") + "/" + rb + " · " + (sRaw || "0") + "/" + rs + ")";
-      return;
+    // 仅当剩余量存在有效数字时才校验：允许「当前剩余量」或「骑手首次输入量(分母)」，
+    // 填 600 不会被强制改成剩余 500，重新下单后分母依旧是 600。
+    if (hasRemain) {
+      var db = window.__remain ? Number(window.__remain.baoziOrig) : NaN;
+      var ds = window.__remain ? Number(window.__remain.shopOrig) : NaN;
+      var bOk = (bt === Number(rb)) || (!isNaN(db) && db > 0 && bt === db);
+      var sOk = (st === Number(rs)) || (!isNaN(ds) && ds > 0 && st === ds);
+      if (!isNaN(db) && db > 0 && bt > db) bOk = false;
+      if (!isNaN(ds) && ds > 0 && st > ds) sOk = false;
+      if (!bOk || !sOk) {
+        bind.disabled = true;
+        bind.textContent = "အရေအတွက် မကိုက်ညီပါ (" + (bRaw || "0") + "/" + rb + " · " + (sRaw || "0") + "/" + rs + ")";
+        return;
+      }
     }
     bind.disabled = false;
     bind.textContent = "Order ချိတ်ဆက်၍ ပို့ဆောင်စမည်";

@@ -631,9 +631,8 @@ def rider_day_totals(cur, phone, day=None):
 
 
 def rider_qty_lock(cur, phone, order_no, baozi_in, shop_in):
-    """锁定「该骑手当天」第一次输入的数量作为分母（600 永远不会变成 500）。
-    新订单沿用该骑手当天已锁的分母，所以重新下单后分母仍是 600；
-    不同骑手各锁各的，绝不合在一起算。"""
+    """分母 = 该骑手在「这一单」第一次输入的数量，写死不变（后面输入多少次都不改）。
+    每个骑手、每一单各管各的：绝不读取别的订单 / 别的骑手的分母。"""
     b_in = max(_to_int(baozi_in), 0)
     s_in = max(_to_int(shop_in), 0)
     phone = norm_phone(phone)
@@ -643,24 +642,39 @@ def rider_qty_lock(cur, phone, order_no, baozi_in, shop_in):
     day = now_str()[:10]
     rec = rider_qty_get(cur, phone, order_no)
     if rec:
-        # 同一订单重下单：分母沿用该骑手第一次输入的数量，绝不改成第二次输入的剩余量
-        b = _to_int(rec.get("baozi_orig"))
-        s = _to_int(rec.get("shop_orig"))
-        if b <= 0:
-            b = b_in
-        if s <= 0:
-            s = s_in
-        nb, ns = b, s
-        if nb != _to_int(rec.get("baozi_orig")) or ns != _to_int(rec.get("shop_orig")):
+        if (rec.get("day") or "") != day:
+            # 跨天：缅甸时间凌晨 0 点自动清零，这单今天第一次输入重新成为分母
+            bo, so = b_in, s_in
             try:
-                cur.execute(_q("UPDATE rider_order_qty SET baozi_orig=?, shop_orig=?, updated_at=? WHERE phone=? AND order_no=?"),
-                            (nb, ns, now_str(), phone, order_no))
+                cur.execute(_q("UPDATE rider_order_qty SET day=?, baozi_orig=?, shop_orig=?, baozi_received=0, shop_received=0, updated_at=? "
+                               "WHERE phone=? AND order_no=?"), (day, bo, so, now_str(), phone, order_no))
             except Exception:
                 pass
-        return nb, ns
-    # 新订单：分母 = 这个骑手在这一单第一次输入的数量，绝不复用当天其他订单的数量
-    b_new = b_in
-    s_new = s_in
+            return bo, so
+        bo = _to_int(rec.get("baozi_orig"))
+        so = _to_int(rec.get("shop_orig"))
+        if bo > 0 or so > 0:
+            # 已经锁定：原样返回，任何后续输入都不改动
+            if bo <= 0:
+                bo = b_in
+            if so <= 0:
+                so = s_in
+            if bo != _to_int(rec.get("baozi_orig")) or so != _to_int(rec.get("shop_orig")):
+                try:
+                    cur.execute(_q("UPDATE rider_order_qty SET baozi_orig=?, shop_orig=?, updated_at=? WHERE phone=? AND order_no=?"),
+                                (bo, so, now_str(), phone, order_no))
+                except Exception:
+                    pass
+            return bo, so
+        # 有记录但分母为空（历史脏数据）：用本次输入补上，之后同样定死
+        bo, so = b_in, s_in
+        try:
+            cur.execute(_q("UPDATE rider_order_qty SET baozi_orig=?, shop_orig=?, updated_at=? WHERE phone=? AND order_no=?"),
+                        (bo, so, now_str(), phone, order_no))
+        except Exception:
+            pass
+        return bo, so
+    b_new, s_new = b_in, s_in
     try:
         cur.execute(_q("INSERT INTO rider_order_qty (phone, order_no, day, baozi_orig, shop_orig, baozi_received, shop_received, updated_at) "
                        "VALUES (?,?,?,?,?,0,0,?)"), (phone, order_no, day, b_new, s_new, now_str()))
@@ -696,26 +710,10 @@ def rider_qty_add(cur, phone, order_no, baozi_add, shop_add):
     return rider_qty_get(cur, phone, order_no)
 
 
-def rider_order_has_rows(cur, order_no):
-    """该订单是否已经有骑手独立数量记录（用于区分老数据 / 已有其他骑手在下单）"""
-    if not order_no:
-        return False
-    _ensure_qty_table(cur)
-    try:
-        cur.execute(_q("SELECT COUNT(*) AS n FROM rider_order_qty WHERE order_no=?"), (order_no,))
-        row = cur.fetchone()
-        n = _row_to_dict(cur, row).get("n") if row else 0
-        return (_to_int(n) or 0) > 0
-    except Exception:
-        return False
-
-
 def rider_qty_view(cur, phone, order_dict=None, order_no=None):
-    """骑手端数量统一口径：严格按「骑手 + 订单」独立，各骑手各管各的，绝不合算。
-    - 有该骑手在这一单的记录：分母/已收/剩余全部取自他本人记录。
-    - 该单已有其他骑手记录、但本人还没输入：一律显示 0，绝不显示别人的数量。
-    - 整单还没有任何骑手记录（老数据）：才回退订单自身口径。
-    返回 dict：remaining/total/received + scope"""
+    """骑手端数量唯一口径：每个骑手在每一单各管各的。
+    分母 = 该骑手该单第一次输入量（写死不变），已送 = 该骑手该单累计；
+    跨天（缅甸时间 0 点）自动清零；该骑手这单今天没有记录时绝不用别人的数顶替。"""
     day = now_str()[:10]
     if order_no is None and order_dict:
         order_no = (order_dict.get("order_no") or "").strip()
@@ -723,34 +721,35 @@ def rider_qty_view(cur, phone, order_dict=None, order_no=None):
     if phone and order_no:
         _ensure_qty_table(cur)
         rec = rider_qty_get(cur, phone, order_no)
-        if rec:
+        if rec and (rec.get("day") or "") == day:
             bo = _to_int(rec.get("baozi_orig"))
             so = _to_int(rec.get("shop_orig"))
             br = _to_int(rec.get("baozi_received"))
             sr = _to_int(rec.get("shop_received"))
-            # 历史脏数据兜底：分母没记下（=0）而已经有送出量时，分母就用他自己送出的量，
-            # 绝不回退成订单总量（否则骑手输入 600 会显示 600/1500）
-            if bo <= 0 and br > 0:
-                bo = br
-            if so <= 0 and sr > 0:
-                so = sr
-            return {"scope": "rider_order", "day": day, "order_no": order_no,
-                    "baozi_total": bo, "baozi_received": br, "baozi_remaining": max(bo - br, 0),
-                    "shop_total": so, "shop_received": sr, "shop_remaining": max(so - sr, 0)}
-        if rider_order_has_rows(cur, order_no):
-            # 别人已经在下这一单：这个骑手还没输入数量，全部显示 0
-            return {"scope": "rider_order", "day": day, "order_no": order_no,
-                    "baozi_total": 0, "baozi_received": 0, "baozi_remaining": 0,
-                    "shop_total": 0, "shop_received": 0, "shop_remaining": 0}
+            return {
+                "scope": "rider_order", "day": day, "order_no": order_no,
+                "baozi_total": bo, "baozi_received": br, "baozi_remaining": max(bo - br, 0),
+                "shop_total": so, "shop_received": sr, "shop_remaining": max(so - sr, 0),
+            }
+    if phone:
+        # 该骑手这单今天还没有记录：返回本人的 0，绝不显示订单总量或别人的数
+        return {
+            "scope": "rider_order", "day": day, "order_no": order_no or "",
+            "baozi_total": 0, "baozi_received": 0, "baozi_remaining": 0,
+            "shop_total": 0, "shop_received": 0, "shop_remaining": 0,
+        }
     if order_dict:
         bt, br, st, sr = order_counts(order_dict)
-        return {"scope": "order", "day": day, "order_no": order_no,
-                "baozi_total": bt, "baozi_received": br, "baozi_remaining": max(bt - br, 0),
-                "shop_total": st, "shop_received": sr, "shop_remaining": max(st - sr, 0)}
-    return {"scope": "none", "day": day, "order_no": order_no,
-            "baozi_total": 0, "baozi_received": 0, "baozi_remaining": 0,
-            "shop_total": 0, "shop_received": 0, "shop_remaining": 0}
-
+        return {
+            "scope": "order", "day": day, "order_no": order_no,
+            "baozi_total": bt, "baozi_received": br, "baozi_remaining": max(bt - br, 0),
+            "shop_total": st, "shop_received": sr, "shop_remaining": max(st - sr, 0),
+        }
+    return {
+        "scope": "none", "day": day, "order_no": order_no,
+        "baozi_total": 0, "baozi_received": 0, "baozi_remaining": 0,
+        "shop_total": 0, "shop_received": 0, "shop_remaining": 0,
+    }
 
 
 _OLC_ALPHABET = "23456789CFGHJMPQRVWX"
@@ -1391,9 +1390,7 @@ def rider_bind():
     shop_warn = ""
     if shop_lat is None and (shop_location_link or shop_location_coords or shop_location_plus):
         shop_warn = "ဆိုင်တည်နေရာ ဖတ်၍မရပါ — Google link သည် နိုင်ငံခြားသို့ ရောက်နေပါသည်။ Coordinates သို့မဟုတ် Plus Code ဖြင့် ပြန်ထည့်ပါ"
-        # 恢复原逻辑：不再清空商家原始链接，手机端照常可点开
-        if shop_location_link:
-            shop_link = shop_location_link
+        shop_link = ""
     if not phone or not order_no:
         return jsonify({"ok": False, "msg": "ဖုန်းနံပါတ်နှင့် အမှာစာနံပါတ် နှစ်ခုလုံး ထည့်သွင်းပါ"}), 400
     conn = get_db()
@@ -1412,22 +1409,6 @@ def rider_bind():
     # 跨天（缅甸时间凌晨 0 点）自动清零，允许按新的第一次输入重新锁定。
     old = _row_to_dict(cur, order)
     _in_bt, _in_st = baozi_total, shop_total
-    # 【防作弊校验】该骑手在这一单已有记录时，输入的数量必须等于页面上显示的剩余量，否则不允许下单
-    _ensure_qty_table(cur)
-    _pre_rec = rider_qty_get(cur, norm_phone(phone), order_no)
-    if _pre_rec:
-        _pre_b_rem = max(_to_int(_pre_rec.get("baozi_orig")) - _to_int(_pre_rec.get("baozi_received")), 0)
-        _pre_s_rem = max(_to_int(_pre_rec.get("shop_orig")) - _to_int(_pre_rec.get("shop_received")), 0)
-        if _pre_b_rem > 0 and _in_bt != _pre_b_rem:
-            conn.close()
-            return jsonify({"ok": False, "code": "qty_mismatch",
-                            "msg": "ပေါက်စီအရေအတွက် မကိုက်ညီပါ။ ကျန်ရှိအလုံးရေ %d အတိုင်း ထည့်ပါ" % _pre_b_rem,
-                            "baozi_remaining": _pre_b_rem, "shop_remaining": _pre_s_rem}), 400
-        if _pre_s_rem > 0 and _in_st != _pre_s_rem:
-            conn.close()
-            return jsonify({"ok": False, "code": "qty_mismatch",
-                            "msg": "ဆိုင်အရေအတွက် မကိုက်ညီပါ။ ကျန်ရှိအရေအတွက် %d အတိုင်း ထည့်ပါ" % _pre_s_rem,
-                            "baozi_remaining": _pre_b_rem, "shop_remaining": _pre_s_rem}), 400
     old_bt_orig = int(old.get("baozi_total_orig") or 0)
     old_st_orig = int(old.get("shop_total_orig") or 0)
     today = now_str()[:10]
@@ -1446,10 +1427,10 @@ def rider_bind():
     rider_bt_orig, rider_st_orig = rider_qty_lock(cur, phone, order_no, _in_bt or baozi_orig, _in_st or shop_orig)
     rider_qty = rider_qty_view(cur, phone, None, order_no)
     if rider_qty["scope"] != "rider_order":
-        _o_bt, _o_br, _o_st, _o_sr = order_counts(old)
-        rider_qty = {"scope": "order", "day": today,
-                     "baozi_total": _o_bt, "baozi_received": _o_br, "baozi_remaining": max(_o_bt - _o_br, 0),
-                     "shop_total": _o_st, "shop_received": _o_sr, "shop_remaining": max(_o_st - _o_sr, 0)}
+        # 绝不拿订单总量冒充骑手数量：只用本人本次输入量初始化，各骑手互不干扰
+        rider_qty = {"scope": "rider_order", "day": today,
+                     "baozi_total": rider_bt_orig, "baozi_received": 0, "baozi_remaining": rider_bt_orig,
+                     "shop_total": rider_st_orig, "shop_received": 0, "shop_remaining": rider_st_orig}
     cur.execute(
         _q("UPDATE orders SET delivery_address=?, baozi_total=?, shop_total=?, baozi_total_orig=?, shop_total_orig=?, qty_lock_day=?, city=?, gps_enabled=1, shop_lat=?, shop_lng=?, shop_link=? WHERE order_no=?"),
         (delivery_address, baozi_total, shop_total, baozi_orig, shop_orig, lock_day, city, shop_lat, shop_lng, shop_link, order_no),
@@ -1577,8 +1558,8 @@ def resolve_shop_location_ex(link, coords_text, plus_code=""):
     """在 resolve_shop_location 基础上，把返回的链接规范成坐标链接（手机/电脑一致）"""
     la, ln, lk = resolve_shop_location(link, coords_text, plus_code)
     if la is None or ln is None:
-        # 恢复原逻辑：解析不出坐标时保留商家填写的原始链接，手机/电脑照常能打开
-        return None, None, (link or "")
+        # 解析失败绝不把原始链接（很可能指向国外默认点）交给前端，统一返回空，由前端提示重填
+        return None, None, ""
     return la, ln, canonical_maps_link(lk, la, ln)
 
 
@@ -1619,17 +1600,14 @@ def rider_active():
         conn.close()
         return jsonify({"ok": True, "active": None})
     od = _row_to_dict(cur, row)
-    _arv = rider_qty_view(cur, phone, od, od.get("order_no"))
     conn.close()
     return jsonify({"ok": True, "active": {
         "order_no": od.get("order_no"), "rider_name": od.get("rider_name", "") or "",
         "status": od.get("status", "") or "", "city": od.get("city", "") or "",
         "shop_lat": od.get("shop_lat"), "shop_lng": od.get("shop_lng"),
         "shop_link": od.get("shop_link", "") or "", "gps_enabled": od.get("gps_enabled", 1),
-        "scope": _arv["scope"],
-        "baozi_total": _arv["baozi_total"], "baozi_received": _arv["baozi_received"],
-        "shop_total": _arv["shop_total"], "shop_received": _arv["shop_received"],
-        "baozi_remaining": _arv["baozi_remaining"], "shop_remaining": _arv["shop_remaining"],
+        "baozi_total": od.get("baozi_total", 0) or 0, "baozi_received": od.get("baozi_received", 0) or 0,
+        "shop_total": od.get("shop_total", 0) or 0, "shop_received": od.get("shop_received", 0) or 0,
         "amount": od.get("amount", "") or "", "payment_method": od.get("payment_method", "") or "",
         "delivery_address": od.get("delivery_address", "") or od.get("address", "") or ""
     }})
@@ -1657,6 +1635,19 @@ def rider_confirm():
     if not rider:
         conn.close()
         return jsonify({"ok": False, "msg": "ဤဖုန်းနံပါတ်သည် ဤအမှာစာနှင့် ချိတ်ဆက်မထားပါ"}), 403
+    # 下单数量校验：本次确认的数量不能超过「该骑手本人这一单」的剩余量（分母 = 第一次输入量，写死不变）
+    if confirm_baozi > 0:
+        try:
+            _chk = rider_qty_view(cur, phone, None, order_no)
+            if _chk.get("scope") == "rider_order":
+                _tot = _to_int(_chk.get("baozi_total"))
+                _rem = _to_int(_chk.get("baozi_remaining"))
+                if _tot > 0 and confirm_baozi > _rem:
+                    conn.close()
+                    return jsonify({"ok": False, "msg": "အရေအတွက် မမှန်ပါ — ကျန်ရှိ %d ထက် မပိုရပါ" % _rem,
+                                    "baozi_total_orig": _tot, "baozi_remaining": _rem, "scope": "rider_order"}), 400
+        except Exception:
+            pass
     cur.execute(_q("SELECT * FROM orders WHERE order_no=?"), (order_no,))
     order = cur.fetchone()
     order_dict = _row_to_dict(cur, order)
@@ -1675,13 +1666,6 @@ def rider_confirm():
     if _st_now == "ပယ်ဖျက်ထားသည်":
         conn.close()
         return jsonify({"ok": False, "msg": "ဤအမှာစာကို ပယ်ဖျက်ပြီးဖြစ်ပါသည်။ Confirm လုပ်၍ မရပါ"})
-    # 【防作弊校验】确认数量不能超过该骑手在这一单的剩余量
-    _rv_pre = rider_qty_view(cur, phone, order_dict, order_no)
-    if _rv_pre.get("scope") == "rider_order" and confirm_baozi > _rv_pre["baozi_remaining"]:
-        conn.close()
-        return jsonify({"ok": False, "code": "qty_over",
-                        "msg": "ကျန်ရှိအလုံးရေထက် ပိုမပို့နိုင်ပါ (Cannot exceed remaining)",
-                        "baozi_remaining": _rv_pre["baozi_remaining"], "shop_remaining": _rv_pre["shop_remaining"]}), 400
     new_baozi = (order_dict.get("baozi_received", 0) or 0) + confirm_baozi
     new_shop = (order_dict.get("shop_received", 0) or 0) + 1  # 每确认一个商家地址 +1
     cur.execute(
@@ -1749,16 +1733,14 @@ def rider_confirm():
     rider_qty_add(cur, phone, order_no, confirm_baozi, 1)
     conn.commit()
     _rvC = rider_qty_view(cur, phone, order_dict, order_no)
-    # 该骑手这一单还没有有效分母（首次就直接确认、没填过总量）：分母取他本人本次提交的数量，
-    # 绝对不能拿订单总量当分母 —— 否则骑手输入 600 会显示 600/1500、店铺 20 显示 20/30
-    if (_rvC["scope"] != "rider_order" or _to_int(_rvC["baozi_total"]) <= 0
-            or _to_int(_rvC["shop_total"]) <= 0):
-        rider_qty_lock(cur, phone, order_no,
-                       _to_int(confirm_baozi) or _to_int(new_baozi),
-                       _to_int(new_shop))
-        conn.commit()
-        _rvC = rider_qty_view(cur, phone, order_dict, order_no)
     conn.close()
+    # 兜底：绝不回退订单总量（那会让每个骑手都显成同一个数），只用本人已送出量
+    if _rvC["scope"] != "rider_order":
+        _rvC.update({
+            "scope": "rider_order",
+            "baozi_received": new_baozi, "baozi_remaining": 0,
+            "shop_received": new_shop, "shop_remaining": 0,
+        })
     return jsonify({"ok": True, "msg": "လက်ခံပြီးပါပြီ", "status": "လက်ခံပြီးပါပြီ", "completed_at": now_str(),
                     "baozi_received": _rvC["baozi_received"], "baozi_remaining": _rvC["baozi_remaining"],
                     "baozi_total_orig": _rvC["baozi_total"],
@@ -1988,16 +1970,23 @@ def track():
     latest = track_list[-1] if track_list else None
     order_dict = _row_to_dict(cur, order)
     rider_dict = _row_to_dict(cur, rider) if rider else None
-    # 商家端数量：优先用「该骑手 + 该订单」的独立口径，分母=该骑手第一次输入量，与骑手页面完全一致
-    _rv_t = rider_qty_view(cur, phone, order_dict, order_no)
+    # 商家/客户看到的分母与剩余，必须与该骑手本人手机上显示的一致（骑手第一次输入量、本人累计送出）
+    _rq_view = None
+    try:
+        if norm_phone(phone):
+            _rq_view = rider_qty_view(cur, phone, None, order_no)
+    except Exception:
+        _rq_view = None
     conn.close()
     if latest:
         latest["address"] = reverse_geocode(latest["lat"], latest["lng"])
-    if _rv_t.get("scope") == "rider_order":
-        _d_bt, _d_br = _rv_t["baozi_total"], _rv_t["baozi_received"]
-        _d_st, _d_sr = _rv_t["shop_total"], _rv_t["shop_received"]
-    else:
-        _d_bt, _d_br, _d_st, _d_sr = order_counts(order_dict)
+    _d_bt, _d_br, _d_st, _d_sr = order_counts(order_dict)
+    if _rq_view and _rq_view.get("scope") == "rider_order" and (
+            _to_int(_rq_view.get("baozi_total")) > 0 or _to_int(_rq_view.get("shop_total")) > 0):
+        _d_bt = _to_int(_rq_view.get("baozi_total"))
+        _d_br = _to_int(_rq_view.get("baozi_received"))
+        _d_st = _to_int(_rq_view.get("shop_total"))
+        _d_sr = _to_int(_rq_view.get("shop_received"))
     return jsonify(
         {
             "ok": True,
@@ -2020,8 +2009,8 @@ def track():
             "shop_total": _d_st,
             "baozi_received": _d_br,
             "shop_received": _d_sr,
-            "baozi_remaining": _d_bt - _d_br,
-            "shop_remaining": _d_st - _d_sr,
+            "baozi_remaining": max(_d_bt - _d_br, 0),
+            "shop_remaining": max(_d_st - _d_sr, 0),
             "baozi_total_orig": _d_bt,
             "shop_total_orig": _d_st,
             "latest": latest,
@@ -2162,13 +2151,18 @@ def track_multi():
         track_list = _rows_to_dicts(cur, points)
         latest = track_list[-1] if track_list else None
         # 批量接口不串行调用逆地理编码（10-20 个骑手时避免阻塞），前端以坐标兜底显示
-        # 数量按「这个骑手 + 这个订单」独立口径返回，与骑手页面完全一致
-        _mrv = rider_qty_view(cur, phone, order_dict, order_no)
-        if _mrv.get("scope") == "rider_order":
-            _m_bt, _m_br = _mrv["baozi_total"], _mrv["baozi_received"]
-            _m_st, _m_sr = _mrv["shop_total"], _mrv["shop_received"]
-        else:
-            _m_bt, _m_br, _m_st, _m_sr = order_counts(order_dict)
+        _m_bt, _m_br, _m_st, _m_sr = order_counts(order_dict)
+        # 与该骑手手机端显示一致：分母 = 本人第一次输入量，剩余 = 本人累计送出
+        try:
+            _mq = rider_qty_view(cur, phone, None, order_no)
+            if _mq.get("scope") == "rider_order" and (
+                    _to_int(_mq.get("baozi_total")) > 0 or _to_int(_mq.get("shop_total")) > 0):
+                _m_bt = _to_int(_mq.get("baozi_total"))
+                _m_br = _to_int(_mq.get("baozi_received"))
+                _m_st = _to_int(_mq.get("shop_total"))
+                _m_sr = _to_int(_mq.get("shop_received"))
+        except Exception:
+            pass
         results.append(
             {
                 "ok": True,
@@ -2553,15 +2547,18 @@ def _patch_rider_remaining():
     if rv["scope"] == "rider_order":
         bt, br_day = rv["baozi_total"], rv["baozi_received"]
         st, sr_day = rv["shop_total"], rv["shop_received"]
-    else:
-        # 只有整单还没有任何骑手记录（老数据）时才用订单口径；
-        # 一旦已有其他骑手在下这单，本人没有记录就是 0，绝不显示别人的数量。
+    elif not phone:
         bt, br, st, sr = order_counts(od)
+        # 订单口径兜底：只统计「当天」已收数量，跨天（凌晨 0 点后）自动归零；分母仍是首次输入量
         done_day = (od.get("completed_at") or "")[:10]
         if done_day and done_day != today:
             br_day, sr_day = 0, 0
         else:
             br_day, sr_day = br, sr
+    else:
+        # 有骑手手机号但这单还没有本人的记录：显示 0，等骑手第一次输入再由 rider_qty_lock 写死。
+        # 绝不回退订单总量——否则每个骑手都会被显示成同一个订单数量。
+        bt, br_day, st, sr_day = 0, 0, 0, 0
     return jsonify({
         "ok": True,
         "day": today,

@@ -164,8 +164,7 @@
   #riderMapWrap.map-css-full #riderMap { height:100% !important; min-height:0 !important; border-radius:0 !important; }
   body.map-full-lock { overflow:hidden !important; }
   #riderMapWrap:fullscreen, #riderMapWrap:-webkit-full-screen { height:100vh; background:#fff; padding:6px; box-sizing:border-box; display:flex; flex-direction:column; }
-  #riderMapWrap:fullscreen .map-holder, #riderMapWrap:-webkit-full-screen .map-holder { flex:1 1 auto; min-height:0; height:auto; }
-  #riderMapWrap:fullscreen #riderMap, #riderMapWrap:-webkit-full-screen #riderMap { height:100% !important; min-height:0 !important; }
+  #riderMapWrap:fullscreen #riderMap, #riderMapWrap:-webkit-full-screen #riderMap { height:100% !important; }
   .map-pad { position:absolute; right:10px; bottom:24px; z-index:25; display:grid; grid-template-columns:repeat(3, 38px); grid-template-rows:repeat(3, 38px); gap:4px; user-select:none; }
   .map-pad button { width:38px; height:38px; margin:0; padding:0; border:none; border-radius:10px; background:rgba(255,255,255,0.94); color:#e07b00; font-size:16px; line-height:1; font-weight:bold; cursor:pointer; box-shadow:0 2px 8px rgba(0,0,0,0.22); display:flex; align-items:center; justify-content:center; }
   .map-pad button:active { background:#ffe0b2; transform:scale(0.95); }
@@ -433,19 +432,10 @@ var todayDoneItems = [];   // 今日已完成订单 [{order_no, lat, lng}]（缅
 var todayDoneDay = "";
 var cancelledItems = [];   // 今日已取消订单 [{order_no, lat, lng}]，地图显示红圈 ❌（凌晨12点自动清零）
 
-// 统一坐标校验：拒绝 NaN、超范围、以及 (0,0)——(0,0) 会让手机端地图跳到世界地图/国外
-function validGeo(lat, lng) {
-  var la = parseFloat(lat), ln = parseFloat(lng);
-  if (isNaN(la) || isNaN(ln)) return null;
-  if (la < -90 || la > 90 || ln < -180 || ln > 180) return null;
-  if (Math.abs(la) < 1e-7 && Math.abs(ln) < 1e-7) return null;
-  return [la, ln];
-}
-window.validGeo = validGeo;
 function parseCoordsText(text) {
   if (!text) return null;
-  var m = String(text).match(/(-?\d{1,3}(?:\.\d+)?)\s*[,،;；]\s*(-?\d{1,3}(?:\.\d+)?)/);
-  return m ? validGeo(m[1], m[2]) : null;
+  var m = String(text).match(/(-?\d{1,2}(?:\.\d+)?)\s*[,،]\s*(-?\d{1,3}(?:\.\d+)?)/);
+  return m ? [parseFloat(m[1]), parseFloat(m[2])] : null;
 }
 function parseLinkCoords(text) {
   if (!text) return null;
@@ -453,19 +443,14 @@ function parseLinkCoords(text) {
   try { if (/%[0-9A-Fa-f]{2}/.test(s)) s = decodeURIComponent(s); } catch (e) {}
   // Google 分享链接优先级：!3d!4d 是店铺精确坐标；?q=/?ll= 次之；/place/lat,lng；@ 只是视图中心，最后兜底
   var pats = [
-    /!8m2!3d(-?\d{1,3}\.\d+)!4d(-?\d{1,3}\.\d+)/,
     /!3d(-?\d{1,3}\.\d+)!4d(-?\d{1,3}\.\d+)/,
-    /[?&](?:q|query|ll|sll|daddr|destination|center|viewpoint)=(-?\d{1,3}\.\d+)\s*,\s*(-?\d{1,3}\.\d+)/,
-    /\/maps\/search\/(-?\d{1,3}\.\d+)[,+\s]+(-?\d{1,3}\.\d+)/,
-    /\/maps\/place\/(-?\d{1,3}\.\d+),(-?\d{1,3}\.\d+)/,
+    /[?&](?:q|query|ll|daddr|destination|center)=(-?\d{1,3}\.\d+)\s*,\s*(-?\d{1,3}\.\d+)/,
     /\/place\/(-?\d{1,3}\.\d+),(-?\d{1,3}\.\d+)/,
-    /\/dir\/[^/]*\/(-?\d{1,3}\.\d+),(-?\d{1,3}\.\d+)/,
-    /@(-?\d{1,3}\.\d+),(-?\d{1,3}\.\d+)/,
-    /^(-?\d{1,3}\.\d+)\s*,\s*(-?\d{1,3}\.\d+)$/
+    /@(-?\d{1,3}\.\d+),(-?\d{1,3}\.\d+)/
   ];
   for (var i = 0; i < pats.length; i++) {
     var m = s.match(pats[i]);
-    if (m) { var v = validGeo(m[1], m[2]); if (v) return v; }
+    if (m) return [parseFloat(m[1]), parseFloat(m[2])];
   }
   return null;
 }
@@ -522,18 +507,8 @@ function decodePlusCode(text) {
   // 取格中心供定位/路线使用
   return [lat + latPrecision / 2, lng + lngPrecision / 2];
 }
-// ===== 剩余数量分母锁定：分母恒等于「本骑手当天第一次输入的数量」，刷新/重新获取订单都不减小，凌晨自动清零 =====
-// 键 = 订单号|骑手手机号|缅甸日期：不同骑手互不影响，跨天（缅甸时间凌晨）自动换新键 → 分母与已收一起归零
-var DENOM_LOCK_KEY = "riderDenomLock_v2";
-// 缅甸时间 = UTC+6:30
-function _denomToday() {
-  var d = new Date(Date.now() + 23400000);
-  return d.getUTCFullYear() + "-" + ("0" + (d.getUTCMonth() + 1)).slice(-2) + "-" + ("0" + d.getUTCDate()).slice(-2);
-}
-function _denomKey(orderNo, phone) {
-  var ph = String(phone || (window.state && window.state.phone) || "");
-  return String(orderNo || "") + "|" + ph + "|" + _denomToday();
-}
+// ===== 剩余数量分母锁定：分母恒等于骑手第一次输入的数量，刷新页面 / 重新获取订单都不会减小 =====
+var DENOM_LOCK_KEY = "riderDenomLock_v1";
 function loadDenomLock() {
   try { return JSON.parse(localStorage.getItem(DENOM_LOCK_KEY) || "{}") || {}; } catch (e) { return {}; }
 }
@@ -541,25 +516,17 @@ function saveDenomLock(all) {
   try { localStorage.setItem(DENOM_LOCK_KEY, JSON.stringify(all)); } catch (e) {}
 }
 function _denomNum(v) { var n = parseInt(v, 10); return isNaN(n) ? 0 : n; }
-// 返回该订单（该骑手、当天）被锁定的分母（首次输入量）；只增不减
-function lockDenom(orderNo, baoziTotal, shopTotal, phone) {
+// 返回该订单被锁定的分母（首次输入量）；只增不减
+function lockDenom(orderNo, baoziTotal, shopTotal) {
   var b = _denomNum(baoziTotal), s = _denomNum(shopTotal);
   if (!orderNo) return { baozi: b, shop: s };
   var all = loadDenomLock();
-  var today = _denomToday();
-  // 清理非今天 / 旧格式（v1 单订单键）的记录：缅甸时间凌晨清零
-  for (var k in all) {
-    if (!Object.prototype.hasOwnProperty.call(all, k)) continue;
-    var parts = String(k).split("|");
-    if (parts.length < 3 || parts[2] !== today) { delete all[k]; }
-  }
-  var key = _denomKey(orderNo, phone);
-  var rec = all[key];
+  var rec = all[orderNo];
   if (rec) {
     b = Math.max(_denomNum(rec.baozi), b);
     s = Math.max(_denomNum(rec.shop), s);
   }
-  all[key] = { baozi: b, shop: s };
+  all[orderNo] = { baozi: b, shop: s };
   saveDenomLock(all);
   return { baozi: b, shop: s };
 }
@@ -596,16 +563,6 @@ async function updateShopLocation() {
     var lc = parseLinkCoords(link);
     if (lc) { coords = lc[0].toFixed(6) + ", " + lc[1].toFixed(6); }
   }
-  // 前端解析不出坐标时：http(s) 链接（可能是 maps.app.goo.gl 短链）交后端跟随跳转展开；
-  // 其余情况明确报错，绝不提交空坐标，避免地图落到 0,0 显示世界地图
-  if (!coords && link && !/^https?:\/\//i.test(link)) {
-    showInfo("Cannot read coordinates from this link. Paste Google Maps share link (https://maps.app.goo.gl/...) or coordinates like 16.840900, 96.173500");
-    return;
-  }
-  if (!coords && !link) {
-    showInfo("Cannot read coordinates. Please paste a Google Maps link or coordinates like 16.840900, 96.173500");
-    return;
-  }
   try {
     var r = await fetch("/api/rider/update-shop", {
       method: "POST",
@@ -614,12 +571,12 @@ async function updateShopLocation() {
     });
     var j = await r.json();
     if (!j.ok) { showInfo(j.msg || "Update failed"); return; }
-    if (j.shop_lat !== null && j.shop_lat !== undefined && validGeo(j.shop_lat, j.shop_lng)) {
+    if (j.shop_lat !== null && j.shop_lat !== undefined) {
       setShop(j.shop_lat, j.shop_lng, j.shop_link || "");
       document.getElementById("shopHint").style.display = "none";
       showInfo("Shop location updated - marker & route shown");
     } else {
-      showInfo(j.msg || "Cannot resolve shop location. Please paste Google Maps share link or coordinates like 16.840900, 96.173500");
+      showInfo(j.msg || "Cannot resolve shop location, check link/coords");
     }
   } catch (e) {
     showInfo("Server unreachable");
@@ -844,15 +801,8 @@ function setMapFullscreenBtn(on) {
   else { b.classList.remove("btn-danger"); b.classList.add("btn-gray"); }
 }
 function resizeRiderMapNow() {
-  if (!riderMap) return;
-  try { riderMap.invalidateSize(); } catch (e) {}
+  if (riderMap) { try { riderMap.invalidateSize(); } catch (e) {} }
 }
-// 全屏切换后连续多次重算尺寸：手机上浏览器布局是异步完成的，只调一次常常仍是 0 高度 → 地图空白
-function burstResizeRiderMap() {
-  resizeRiderMapNow();
-  [100, 300, 600, 1000].forEach(function (ms) { setTimeout(resizeRiderMapNow, ms); });
-}
-window.burstResizeRiderMap = burstResizeRiderMap;
 function enterCssMapFull() {
   var wrap = document.getElementById("riderMapWrap");
   if (!wrap || wrap.classList.contains("map-css-full")) return;
@@ -861,7 +811,6 @@ function enterCssMapFull() {
   setMapFullscreenBtn(true);
   setTimeout(resizeRiderMapNow, 60);
   setTimeout(resizeRiderMapNow, 320);
-  burstResizeRiderMap();
 }
 function exitCssMapFull() {
   var wrap = document.getElementById("riderMapWrap");
@@ -870,7 +819,6 @@ function exitCssMapFull() {
   document.body.classList.remove("map-full-lock");
   setMapFullscreenBtn(false);
   setTimeout(resizeRiderMapNow, 60);
-  burstResizeRiderMap();
 }
 function toggleMapFullscreen() {
   var wrap = document.getElementById("riderMapWrap");
@@ -903,12 +851,9 @@ function onMapFullscreenChange() {
   var cssOn = !!(wrap && wrap.classList.contains("map-css-full"));
   var on = !!(document.fullscreenElement || document.webkitFullscreenElement) || cssOn;
   setMapFullscreenBtn(on);
-  // 全屏（原生或 CSS 兜底）时高度交给 CSS（.map-holder flex:1 + #riderMap height:100%），
-  // 不要再写死 calc(100vh-70px)，否则父容器无 flex 高度会让地图算成 0 → 全屏空白
-  if (mapEl) mapEl.style.height = on ? "" : "320px";
+  if (mapEl) mapEl.style.height = cssOn ? "" : (on ? "calc(100vh - 70px)" : "320px");
   resizeRiderMapNow();
   setTimeout(resizeRiderMapNow, 220);
-  burstResizeRiderMap();
 }
 document.addEventListener("fullscreenchange", onMapFullscreenChange);
 document.addEventListener("webkitfullscreenchange", onMapFullscreenChange);
@@ -1181,7 +1126,7 @@ async function bindOrder() {
     if (window.loadRemain) window.loadRemain(phone, orderNo);
     // 显示骑手端地图：商家位置 + 骑手自身位置 + 绿色路线
     showRiderMap();
-    if (j.shop_lat !== null && j.shop_lat !== undefined && validGeo(j.shop_lat, j.shop_lng)) {
+    if (j.shop_lat !== null && j.shop_lat !== undefined) {
       setShop(j.shop_lat, j.shop_lng, j.shop_link || "");
       document.getElementById("shopHint").style.display = "none";
     } else {
@@ -1274,8 +1219,6 @@ function formatEnglishDate(input) {
 async function reportLocation(lat, lng, status, isSim) {
   if (!state.orderNo || !state.phone) return;
   status = status || state.status;
-  // 终态保护：已完成/已取消后不再把旧状态回传服务端，避免把已完成订单冲回"配送中"
-  if (status === "လက်ခံပြီးပါပြီ" || status === "ပယ်ဖျက်ထားသည်") status = "";
   isSim = isSim ? 1 : 0;
   try {
     var r = await fetch("/api/rider/location", {
@@ -1677,8 +1620,8 @@ function renderHistory() {
       + 'လက်ရှိအခြေအနေ：' + stTagHtml((h.status && h.status !== "待取餐") ? h.status : "-") + '<br>'
       + 'လက်ရှိနေရာ：<b>' + loc + '</b><br>'
       + 'ပို့ရမည့်ဆိုင်လိပ်စာ：<b>' + (h.delivery_address || "-") + '</b><br>'
-      + 'ကျန်ရှိသောပေါက်စီအလုံးအရေတွက်：<b>' + h.baozi_remaining + ' / ' + (lockDenom(h.order_no || "", (h.baozi_total_orig || h.baozi_total), (h.shop_total_orig || h.shop_total), (h.rider_phone || (window.state && state.phone) || "")).baozi || "-") + '</b><br>'
-      + 'ကျန်ရှိသောဆိုင်အရေတွက်：<b>' + h.shop_remaining + ' / ' + (lockDenom(h.order_no || "", (h.baozi_total_orig || h.baozi_total), (h.shop_total_orig || h.shop_total), (h.rider_phone || (window.state && state.phone) || "")).shop || "-") + '</b><br>'
+      + 'ကျန်ရှိသောပေါက်စီအလုံးအရေတွက်：<b>' + h.baozi_remaining + ' / ' + (lockDenom(h.order_no || "", (h.baozi_total_orig || h.baozi_total), (h.shop_total_orig || h.shop_total)).baozi || "-") + '</b><br>'
+      + 'ကျန်ရှိသောဆိုင်အရေတွက်：<b>' + h.shop_remaining + ' / ' + (lockDenom(h.order_no || "", (h.baozi_total_orig || h.baozi_total), (h.shop_total_orig || h.shop_total)).shop || "-") + '</b><br>'
       + 'ငွေပေးချေမှုနည်းလမ်း：<b>' + (h.payment_method || "-") + '</b><br>'
       + 'Amount (MMK)：<b>' + (h.amount || "-") + '</b><br>'
       + '📍 Location / Geographic Location：<b>' + locDisplay(h) + '</b><br>'
@@ -1798,22 +1741,10 @@ async function refreshRiderInfo() {
     document.getElementById("bindBtn").textContent = "ချိတ်ဆက်ပြီးပါပြီ";
     document.getElementById("cancelOrderBtn").disabled = false;
     lockStatusButtons();
-    // 以服务端为准：本地锁记录的订单若在服务端已终结（已完成/已取消），立即清卡解锁，避免一直卡在旧状态
-    fetch("/api/rider/active?phone=" + encodeURIComponent(phone), { cache: "no-store" })
-      .then(function (r) { return r.json(); })
-      .then(function (j) {
-        if (!j || !j.ok) return;
-        if (!j.active || j.active.order_no !== saved.order_no) {
-          if (typeof window.reloadTodayMarks === "function") setTimeout(window.reloadTodayMarks, 300);
-          resetAfterCompletion();
-        }
-      })
-      .catch(function () {});
     // 恢复前先校验绑定是否仍有效；旧订单已解绑则自动清除死锁
     fetch("/api/rider/info?order_no=" + encodeURIComponent(saved.order_no) + "&phone=" + encodeURIComponent(phone))
       .then(function (r) { return r.json().then(function (j) { return {r: r, j: j}; }); })
       .then(function (res) {
-        if (!state.orderNo || state.orderNo !== saved.order_no) return;
         if (!res.j.ok) { if (res.r.status === 403) { handleUnbound(res.j.msg); return; } return; }
         showRiderMap();
         startGps();
@@ -2144,9 +2075,8 @@ checkLogin();
       if (status) stTxt = window.statusEn ? window.statusEn(status) : status;
       g("rtStatus").textContent = stTxt;
     }
-    var _phL = (window.state && window.state.phone) || "";
-    if (g("rtBaozi")) g("rtBaozi").textContent = bTxt + " / " + (isNaN(b) ? "-" : lockDenom(orderNo || "", b, s, _phL).baozi || "-");
-    if (g("rtShop")) g("rtShop").textContent = sTxt + " / " + (isNaN(s) ? "-" : lockDenom(orderNo || "", b, s, _phL).shop || "-");
+    if (g("rtBaozi")) g("rtBaozi").textContent = bTxt + " / " + (isNaN(b) ? "-" : lockDenom(orderNo || "", b, s).baozi || "-");
+    if (g("rtShop")) g("rtShop").textContent = sTxt + " / " + (isNaN(s) ? "-" : lockDenom(orderNo || "", b, s).shop || "-");
     if (g("rtTime")) {
       var now = new Date();
       g("rtTime").textContent = now.getHours() + ":" +

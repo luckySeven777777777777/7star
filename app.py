@@ -641,12 +641,11 @@ def rider_qty_lock(cur, phone, order_no, baozi_in, shop_in):
         return b_in, s_in
     _ensure_qty_table(cur)
     day = now_str()[:10]
-    day_bo, day_so, _dbr, _dsr = rider_day_totals(cur, phone, day)
     rec = rider_qty_get(cur, phone, order_no)
     if rec:
-        # 分母只升不降：历史数据里被旧逻辑压成 500 的记录，会自动被当天首次输入的 600 纠正回来
-        b = max(_to_int(rec.get("baozi_orig")), day_bo)
-        s = max(_to_int(rec.get("shop_orig")), day_so)
+        # 同一订单重下单：分母沿用该骑手第一次输入的数量，绝不改成第二次输入的剩余量
+        b = _to_int(rec.get("baozi_orig"))
+        s = _to_int(rec.get("shop_orig"))
         if b <= 0:
             b = b_in
         if s <= 0:
@@ -659,9 +658,9 @@ def rider_qty_lock(cur, phone, order_no, baozi_in, shop_in):
             except Exception:
                 pass
         return nb, ns
-    # 新订单：分母优先沿用该骑手当天首次输入量
-    b_new = day_bo if day_bo > 0 else b_in
-    s_new = day_so if day_so > 0 else s_in
+    # 新订单：分母 = 这个骑手在这一单第一次输入的数量，绝不复用当天其他订单的数量
+    b_new = b_in
+    s_new = s_in
     try:
         cur.execute(_q("INSERT INTO rider_order_qty (phone, order_no, day, baozi_orig, shop_orig, baozi_received, shop_received, updated_at) "
                        "VALUES (?,?,?,?,?,0,0,?)"), (phone, order_no, day, b_new, s_new, now_str()))
@@ -708,16 +707,16 @@ def rider_qty_view(cur, phone, order_dict=None, order_no=None):
     phone = norm_phone(phone)
     if phone:
         _ensure_qty_table(cur)
-        bo, so, br, sr = rider_day_totals(cur, phone, day)
-        # 同一订单的独立记录也参与取最大值：跨天/中部刷新时，分母依然是该骑手第一次输入的 600，
-        # 绝不会被“剩余量 500”反向覆盖；已送仍按当天累计。
+        # 严格按「骑手 + 订单」独立计数：每个骑手只显示自己这一单的数量，
+        # 既不会把同一天其他订单的数量算进来，也不会把别的骑手算进来。
         rec = rider_qty_get(cur, phone, order_no) if order_no else None
         if rec:
-            bo = max(bo, _to_int(rec.get("baozi_orig")))
-            so = max(so, _to_int(rec.get("shop_orig")))
-            if (rec.get("day") or "") != day:
-                br = max(br, _to_int(rec.get("baozi_received")))
-                sr = max(sr, _to_int(rec.get("shop_received")))
+            bo = _to_int(rec.get("baozi_orig"))
+            so = _to_int(rec.get("shop_orig"))
+            br = _to_int(rec.get("baozi_received"))
+            sr = _to_int(rec.get("shop_received"))
+        else:
+            bo = so = br = sr = 0
         if bo > 0 or so > 0:
             return {
                 "scope": "rider_order", "day": day, "order_no": order_no,
@@ -1395,6 +1394,22 @@ def rider_bind():
     # 跨天（缅甸时间凌晨 0 点）自动清零，允许按新的第一次输入重新锁定。
     old = _row_to_dict(cur, order)
     _in_bt, _in_st = baozi_total, shop_total
+    # 【防作弊校验】该骑手在这一单已有记录时，输入的数量必须等于页面上显示的剩余量，否则不允许下单
+    _ensure_qty_table(cur)
+    _pre_rec = rider_qty_get(cur, norm_phone(phone), order_no)
+    if _pre_rec:
+        _pre_b_rem = max(_to_int(_pre_rec.get("baozi_orig")) - _to_int(_pre_rec.get("baozi_received")), 0)
+        _pre_s_rem = max(_to_int(_pre_rec.get("shop_orig")) - _to_int(_pre_rec.get("shop_received")), 0)
+        if _pre_b_rem > 0 and _in_bt != _pre_b_rem:
+            conn.close()
+            return jsonify({"ok": False, "code": "qty_mismatch",
+                            "msg": "ပေါက်စီအရေအတွက် မကိုက်ညီပါ။ ကျန်ရှိအလုံးရေ %d အတိုင်း ထည့်ပါ" % _pre_b_rem,
+                            "baozi_remaining": _pre_b_rem, "shop_remaining": _pre_s_rem}), 400
+        if _pre_s_rem > 0 and _in_st != _pre_s_rem:
+            conn.close()
+            return jsonify({"ok": False, "code": "qty_mismatch",
+                            "msg": "ဆိုင်အရေအတွက် မကိုက်ညီပါ။ ကျန်ရှိအရေအတွက် %d အတိုင်း ထည့်ပါ" % _pre_s_rem,
+                            "baozi_remaining": _pre_b_rem, "shop_remaining": _pre_s_rem}), 400
     old_bt_orig = int(old.get("baozi_total_orig") or 0)
     old_st_orig = int(old.get("shop_total_orig") or 0)
     today = now_str()[:10]
@@ -1639,6 +1654,13 @@ def rider_confirm():
     if _st_now == "ပယ်ဖျက်ထားသည်":
         conn.close()
         return jsonify({"ok": False, "msg": "ဤအမှာစာကို ပယ်ဖျက်ပြီးဖြစ်ပါသည်။ Confirm လုပ်၍ မရပါ"})
+    # 【防作弊校验】确认数量不能超过该骑手在这一单的剩余量
+    _rv_pre = rider_qty_view(cur, phone, order_dict, order_no)
+    if _rv_pre.get("scope") == "rider_order" and confirm_baozi > _rv_pre["baozi_remaining"]:
+        conn.close()
+        return jsonify({"ok": False, "code": "qty_over",
+                        "msg": "ကျန်ရှိအလုံးရေထက် ပိုမပို့နိုင်ပါ (Cannot exceed remaining)",
+                        "baozi_remaining": _rv_pre["baozi_remaining"], "shop_remaining": _rv_pre["shop_remaining"]}), 400
     new_baozi = (order_dict.get("baozi_received", 0) or 0) + confirm_baozi
     new_shop = (order_dict.get("shop_received", 0) or 0) + 1  # 每确认一个商家地址 +1
     cur.execute(
@@ -1943,10 +1965,16 @@ def track():
     latest = track_list[-1] if track_list else None
     order_dict = _row_to_dict(cur, order)
     rider_dict = _row_to_dict(cur, rider) if rider else None
+    # 商家端数量：优先用「该骑手 + 该订单」的独立口径，分母=该骑手第一次输入量，与骑手页面完全一致
+    _rv_t = rider_qty_view(cur, phone, order_dict, order_no)
     conn.close()
     if latest:
         latest["address"] = reverse_geocode(latest["lat"], latest["lng"])
-    _d_bt, _d_br, _d_st, _d_sr = order_counts(order_dict)
+    if _rv_t.get("scope") == "rider_order":
+        _d_bt, _d_br = _rv_t["baozi_total"], _rv_t["baozi_received"]
+        _d_st, _d_sr = _rv_t["shop_total"], _rv_t["shop_received"]
+    else:
+        _d_bt, _d_br, _d_st, _d_sr = order_counts(order_dict)
     return jsonify(
         {
             "ok": True,
@@ -2111,7 +2139,13 @@ def track_multi():
         track_list = _rows_to_dicts(cur, points)
         latest = track_list[-1] if track_list else None
         # 批量接口不串行调用逆地理编码（10-20 个骑手时避免阻塞），前端以坐标兜底显示
-        _m_bt, _m_br, _m_st, _m_sr = order_counts(order_dict)
+        # 数量按「这个骑手 + 这个订单」独立口径返回，与骑手页面完全一致
+        _mrv = rider_qty_view(cur, phone, order_dict, order_no)
+        if _mrv.get("scope") == "rider_order":
+            _m_bt, _m_br = _mrv["baozi_total"], _mrv["baozi_received"]
+            _m_st, _m_sr = _mrv["shop_total"], _mrv["shop_received"]
+        else:
+            _m_bt, _m_br, _m_st, _m_sr = order_counts(order_dict)
         results.append(
             {
                 "ok": True,

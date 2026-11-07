@@ -726,11 +726,48 @@ function normalizeMapsLink(raw) {
   if (m2) return "https://" + m2[0];
   return s;
 }
+// ===== 手机端输入规范化：把手机输入法/微信粘贴带进来的全角字符、前后缀文字清掉，
+// 保证手机上粘贴的 Google 链接 / Plus Code / 坐标与电脑端解析结果完全一致 =====
+function toHalfWidth(s) {
+  return String(s || "")
+    .replace(/[\uFF01-\uFF5E]/g, function (c) { return String.fromCharCode(c.charCodeAt(0) - 0xFEE0); })
+    .replace(/\u3000/g, " ");
+}
+function normalizePlusCodeInput(raw) {
+  var s = toHalfWidth(raw).trim();
+  s = s.replace(/^(plus\s*code|pluscode|plus|ကုဒ်)\s*[:：]?\s*/i, "");
+  var m = s.toUpperCase().match(/([23456789CFGHJMPQRVWX]{2,8}\+[23456789CFGHJMPQRVWX]{0,3})/);
+  if (m) return m[0];
+  return s.toUpperCase();
+}
+function normalizeCoordsInput(raw) {
+  var s = toHalfWidth(raw).trim();
+  s = s.replace(/^(coordinates?|coordinate|coords?|latlng|lat\/lng)\s*[:：]?\s*/i, "");
+  return s.replace(/\s*[,;]\s*/, ", ");
+}
+// 手机键盘没有 "type=url" 友好体验时，粘贴值可能缺协议头 / 带前后说明文字，这里统一清洗
+function normalizeMapsLinkInput(raw) {
+  var s = toHalfWidth(raw).trim();
+  return normalizeMapsLink(s);
+}
+function bindPlaceInputNormalizers() {
+  [["shopLocationLink", normalizeMapsLinkInput],
+   ["shopLocationCoords", normalizeCoordsInput],
+   ["shopLocationPlusCode", normalizePlusCodeInput]].forEach(function (pair) {
+    var el = document.getElementById(pair[0]);
+    if (!el) return;
+    var fn = pair[1];
+    el.addEventListener("blur", function () { el.value = fn(el.value); });
+    el.addEventListener("paste", function () {
+      setTimeout(function () { el.value = fn(el.value); }, 30);
+    });
+  });
+}
 async function updateShopLocation() {
   if (!state.orderNo) { showInfo("Bind an order first"); return; }
-  var link = normalizeMapsLink(document.getElementById("shopLocationLink").value);
-  var coords = document.getElementById("shopLocationCoords").value.trim();
-  var plus = document.getElementById("shopLocationPlusCode").value.trim();
+  var link = normalizeMapsLinkInput(document.getElementById("shopLocationLink").value);
+  var coords = normalizeCoordsInput(document.getElementById("shopLocationCoords").value);
+  var plus = normalizePlusCodeInput(document.getElementById("shopLocationPlusCode").value);
   if (!link && !coords && !plus) { showInfo("Enter Google Maps Link, Coordinates or Plus Code"); return; }
   // 只要区域外的坐标一律丢弃（手机端短链解析失败时常带出国外坐标），交给后端按链接重新解析
   if (coords) {
@@ -1053,8 +1090,17 @@ function enterCssMapFull() {
   }
   wrap.classList.add("map-css-full");
   document.body.classList.add("map-full-lock");
+  // 手机端（含微信 WebView / 安卓浏览器）再把 html 也锁住，避免全屏时页面仍能滚动、
+  // 导致地图容器被顶出可视区看起来像“没打开”
+  try {
+    document.documentElement.style.overflow = "hidden";
+    document.documentElement.style.height = "100%";
+  } catch (e) {}
   setMapFullscreenBtn(true);
+  // 先按真实可视高度写死像素再 invalidateSize，手机端首帧就能正常渲染瓦片
+  applyFullMapSize();
   if (riderMap) { try { riderMap.invalidateSize(); } catch (e) {} }
+  try { window.scrollTo(0, 0); } catch (e) {}
   _fullBurstResize();
 }
 function exitCssMapFull() {
@@ -1062,6 +1108,10 @@ function exitCssMapFull() {
   if (!wrap) return;
   wrap.classList.remove("map-css-full");
   document.body.classList.remove("map-full-lock");
+  try {
+    document.documentElement.style.overflow = "";
+    document.documentElement.style.height = "";
+  } catch (e) {}
   // 还原 DOM 位置，避免地图容器长期挂在 body 下影响后续布局
   if (wrap.__homeParent && wrap.parentNode !== wrap.__homeParent) {
     var anchor = (wrap.__homeNext && wrap.__homeNext.parentNode === wrap.__homeParent) ? wrap.__homeNext : null;

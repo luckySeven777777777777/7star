@@ -422,6 +422,20 @@ function statusEn(st) {
   var k = st || "";
   return m[k] || k || "Pending";
 }
+// 终态弹窗统一格式（与 ✅ 已完成订单样式完全一致，只是标签不同）：
+// ❌ Cancelled / ✅ Completed + Order：单号 + Rider: 骑手 + 时间
+// 取消的订单永远显示 Cancelled，绝不会显示 Complete / Completed
+function finalPopupHtml(j, st) {
+  var isCancel = (st === "ပယ်ဖျက်ထားသည်");
+  var isDone = (st === "လက်ခံပြီးပါပြီ");
+  var label = isCancel ? "Cancelled" : (isDone ? "Completed" : statusEn(st));
+  var t = (j.completed_at || (j.latest && j.latest.report_time) || j.update_time || "");
+  t = String(t || "").replace("T", " ").slice(0, 19);
+  var html = (isCancel ? "❌ " : "✅ ") + "<b>" + label + "</b><br>Order：<b>" + ((j.order_no) || "") + "</b>";
+  if (j.rider_name) html += "<br>Rider: " + j.rider_name;
+  if (t) html += "<br>" + t;
+  return html;
+}
 var refreshTimer = null;
 var currentOrderNo = "";
 var currentPhone = "";
@@ -524,7 +538,7 @@ function render(j) {
         if (marker) { try { map.removeLayer(marker); } catch (e) {} marker = null; }
         if (!doneMarker) {
           doneMarker = L.marker(baseLL, { icon: doneIcon(j.order_no, _k2) }).addTo(map);
-          doneMarker.bindPopup((_k2 === "cancel" ? "❌ " : "✅ ") + "<b>" + statusEn(st) + "</b><br>Order：<b>" + j.order_no + "</b>");
+          doneMarker.bindPopup(finalPopupHtml(j, st));
         } else {
           doneMarker.setLatLng(baseLL);
           doneMarker.setIcon(doneIcon(j.order_no, _k2));
@@ -579,7 +593,7 @@ function render(j) {
       var _kind = (st === "ပယ်ဖျက်ထားသည်") ? "cancel" : "done";
       if (!doneMarker) {
         doneMarker = L.marker(shopLL, { icon: doneIcon(j.order_no, _kind) }).addTo(map);
-        doneMarker.bindPopup((_kind === "cancel" ? "❌ " : "✅ ") + "<b>" + statusEn(st) + "</b><br>Order：<b>" + j.order_no + "</b>");
+        doneMarker.bindPopup(finalPopupHtml(j, st));
       } else {
         doneMarker.setLatLng(shopLL);
         doneMarker.setIcon(doneIcon(j.order_no, _kind));
@@ -605,7 +619,7 @@ function render(j) {
       var _k3 = (st === "ပယ်ဖျက်ထားသည်") ? "cancel" : "done";
       if (!doneMarker) {
         doneMarker = L.marker(latest, { icon: doneIcon(j.order_no, _k3) }).addTo(map);
-        doneMarker.bindPopup((_k3 === "cancel" ? "❌ " : "✅ ") + "<b>" + statusEn(st) + "</b><br>Order：<b>" + j.order_no + "</b>");
+        doneMarker.bindPopup(finalPopupHtml(j, st));
       } else {
         doneMarker.setLatLng(latest);
         doneMarker.setIcon(doneIcon(j.order_no, _k3));
@@ -988,7 +1002,7 @@ function renderMulti(results, silent) {
       if (x.shop_lat !== null && x.shop_lat !== undefined && x.shop_lng !== null && x.shop_lng !== undefined) {
         anchor = [x.shop_lat, x.shop_lng];
       }
-      var finPopup = (_kind === "cancel" ? "❌ " : "✅ ") + "<b>" + (x.status || "") + "</b><br>Order：<b>" + x.order_no + "</b><br>🛵 " + (x.rider_name || "-");
+      var finPopup = finalPopupHtml(x, x.status);
       var fm = multiMarkers[key];
       if (fm && fm._finalMarker) {
         fm.setLatLng(anchor);

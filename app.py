@@ -766,6 +766,29 @@ def rider_qty_view(cur, phone, order_dict=None, order_no=None):
     }
 
 
+def order_rider_count(cur, order_no):
+    """该订单历史上共出现过几个不同骑手。
+    只有 <=1 个骑手时才允许用订单级数字兜底（那本来就是他自己的数）；
+    >1 个骑手时严禁兜底，否则新骑手会把别人的数量当自己的显示。"""
+    if not order_no:
+        return 0
+    seen = set()
+    for sql in (
+        "SELECT rider_phone AS p FROM order_history WHERE order_no=?",
+        "SELECT phone AS p FROM riders WHERE order_no=?",
+    ):
+        try:
+            cur.execute(_q(sql), (order_no,))
+            for r in cur.fetchall() or []:
+                d = _row_to_dict(cur, r) or {}
+                k = _rq_key(d.get("p"))
+                if k:
+                    seen.add(k)
+        except Exception:
+            pass
+    return len(seen)
+
+
 _OLC_ALPHABET = "23456789CFGHJMPQRVWX"
 _OLC_DEFAULT_REF = (16.8661, 96.1951)  # 仰光市中心，短码补位参考点
 
@@ -931,9 +954,9 @@ def parse_coords_text(text):
         return None
     s = str(text).strip()
     s = re.sub(r"^geo:", "", s, flags=re.I)
-    m = re.search(r"(-?\d{1,2}(?:\.\d+)?)\s*[,،]\s*(-?\d{1,3}(?:\.\d+)?)", s)
+    m = re.search(r"(-?\d{1,3}(?:\.\d+)?)\s*[,،]\s*(-?\d{1,3}(?:\.\d+)?)", s)
     if m:
-        return (float(m.group(1)), float(m.group(2)))
+        return swap_if_reversed(m.group(1), m.group(2))
     # DMS：16°51'22.0"N 96°14'18.0"E 或 16°51.37'N 96°14.3'E
     dms = re.findall(
         r"(\d{1,3})\s*[°º]\s*(?:(\d{1,2}(?:\.\d+)?)\s*['′]\s*)?(?:(\d{1,2}(?:\.\d+)?)\s*[\"″]\s*)?\s*([NSEW])",
@@ -949,7 +972,7 @@ def parse_coords_text(text):
         lat = vals.get("N", vals.get("S"))
         lng = vals.get("E", vals.get("W"))
         if lat is not None and lng is not None:
-            return (lat, lng)
+            return swap_if_reversed(lat, lng)
     return None
 
 
@@ -969,6 +992,27 @@ def in_region(lat, lng):
         return False
     a, b, c, d = REGION_BOX
     return a <= la <= b and c <= ln <= d
+
+
+def swap_if_reversed(lat, lng):
+    """经纬度反序纠正：手机端复制/上报的坐标可能是「经度,纬度」，
+    直接当纬度用会把位置画反。反序后落在业务区域内就交换。"""
+    try:
+        la = float(lat)
+        ln = float(lng)
+    except (TypeError, ValueError):
+        return lat, lng
+    if la != la or ln != ln:
+        return lat, lng
+    if -90.0 <= la <= 90.0 and -180.0 <= ln <= 180.0:
+        if in_region(la, ln):
+            return la, ln
+        if -90.0 <= ln <= 90.0 and in_region(ln, la):
+            return ln, la
+        return la, ln
+    if -90.0 <= ln <= 90.0:
+        return ln, la
+    return la, ln
 
 
 _LINK_PATTERNS = (
@@ -1543,6 +1587,7 @@ def report_location():
     try:
         lat = float(data.get("lat"))
         lng = float(data.get("lng"))
+        lat, lng = swap_if_reversed(lat, lng)
     except (TypeError, ValueError):
         return jsonify({"ok": False, "msg": "လတ္တီတွဒ်/လောင်ဂျီတွဒ် ပုံစံ မမှန်ပါ"}), 400
     if not order_no or not phone:
@@ -2036,6 +2081,9 @@ def track():
             _d_sr = _to_int(_rv.get("shop_received"))
     except Exception as _e_rv:
         print("[track] rider qty view failed: %s" % _e_rv)
+    # 同一订单多骑手：禁止订单口径兜底，避免显示别人的数量
+    if phone and order_rider_count(cur, order_no) > 1:
+        _d_bt = _d_br = _d_st = _d_sr = 0
     conn.close()
     if latest:
         latest["address"] = reverse_geocode(latest["lat"], latest["lng"])
@@ -2591,6 +2639,7 @@ def _patch_rider_remaining():
     # 骑手独立口径：每个骑手只看自己那份数量——
     # 分母 = 该骑手在该单第一次输入的量（重新下单也不会变成 500），已收 = 该骑手在该单累计送出的量
     rv = rider_qty_view(cur, phone, od, (od or {}).get("order_no") or order_no)
+    _multi_rider = order_rider_count(cur, (od or {}).get("order_no") or order_no)
     conn.close()
     if rv["scope"] == "none":
         return jsonify({"ok": False, "msg": "no order"}), 404
@@ -2616,10 +2665,17 @@ def _patch_rider_remaining():
             br_day, sr_day = 0, 0
         else:
             br_day, sr_day = br, sr
+    # 隔离兜底：同一订单有多个骑手时，绝不允许把订单级数字（别人的量）当成这个骑手的量。
+    # 但只对"订单级兜底"（scope=order）生效——骑手自己已有记录时（scope=rider_order）
+    # 那本来就是他自己的数，一律保留，绝不归零。
+    if phone and _multi_rider > 1 and rv["scope"] == "order":
+        bt, br_day, st, sr_day = 0, 0, 0, 0
     return jsonify({
         "ok": True,
         "day": today,
         "scope": rv["scope"],
+        "multi_rider": _multi_rider,
+        "first_input": (bt <= 0),
         "order_no": (od or {}).get("order_no") or order_no or "",
         "status": (od or {}).get("status") or "",
         "completed_at": (od or {}).get("completed_at") or "",

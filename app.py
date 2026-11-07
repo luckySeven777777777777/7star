@@ -1394,6 +1394,23 @@ def rider_bind():
     # 数量口径（严格锁定）：分母 = 骑手第一次输入的数量，同一天内第二次/第三次输入任何值都不改动；
     # 跨天（缅甸时间凌晨 0 点）自动清零，允许按新的第一次输入重新锁定。
     old = _row_to_dict(cur, order)
+    # 【数量校验】已经送过一部分后重新输入总量时，输入值绝不能大于「剩余量」：
+    # 首次输入 600、送掉 100 后剩 500，此时再输入 600 必须被拒绝（只能输入 ≤500），
+    # 否则等于把已经送掉的量重复下单。
+    _prev_rec = rider_qty_get(cur, phone, order_no)
+    if _prev_rec:
+        _pv_bt = _to_int(_prev_rec.get("baozi_orig"))
+        _pv_br = _to_int(_prev_rec.get("baozi_received"))
+        _pv_st = _to_int(_prev_rec.get("shop_orig"))
+        _pv_sr = _to_int(_prev_rec.get("shop_received"))
+        _rem_bt = max(_pv_bt - _pv_br, 0)
+        _rem_st = max(_pv_st - _pv_sr, 0)
+        if _pv_br > 0 and baozi_total > _rem_bt:
+            conn.close()
+            return jsonify({"ok": False, "msg": "ပေါက်စီ အရေအတွက် မမှန်ပါ — ကျန်ရှိသည် %d သာ ဖြစ်သည်။ %d ထည့်၍ မရပါ။ ကျန်ရှိသော အရေအတွက်ကိုသာ ထည့်ပါ" % (_rem_bt, baozi_total)}), 400
+        if _pv_sr > 0 and shop_total > _rem_st:
+            conn.close()
+            return jsonify({"ok": False, "msg": "ဆိုင် အရေအတွက် မမှန်ပါ — ကျန်ရှိသည် %d သာ ဖြစ်သည်။ %d ထည့်၍ မရပါ။ ကျန်ရှိသော အရေအတွက်ကိုသာ ထည့်ပါ" % (_rem_st, shop_total)}), 400
     _in_bt, _in_st = baozi_total, shop_total
     old_bt_orig = int(old.get("baozi_total_orig") or 0)
     old_st_orig = int(old.get("shop_total_orig") or 0)
@@ -1943,10 +1960,21 @@ def track():
     latest = track_list[-1] if track_list else None
     order_dict = _row_to_dict(cur, order)
     rider_dict = _row_to_dict(cur, rider) if rider else None
+    _d_bt, _d_br, _d_st, _d_sr = order_counts(order_dict)
+    # 商家端数量口径：只要带了骑手手机号，就必须用「这个骑手自己的第一次输入量」当分母、
+    # 只算这个骑手自己的已送量，绝不与其它骑手或其它订单混算（与骑手页面完全一致）
+    try:
+        _rv = rider_qty_view(cur, phone, None, order_no)
+        if _rv.get("scope") == "rider_order":
+            _d_bt = _to_int(_rv.get("baozi_total"))
+            _d_br = _to_int(_rv.get("baozi_received"))
+            _d_st = _to_int(_rv.get("shop_total"))
+            _d_sr = _to_int(_rv.get("shop_received"))
+    except Exception as _e_rv:
+        print("[track] rider qty view failed: %s" % _e_rv)
     conn.close()
     if latest:
         latest["address"] = reverse_geocode(latest["lat"], latest["lng"])
-    _d_bt, _d_br, _d_st, _d_sr = order_counts(order_dict)
     return jsonify(
         {
             "ok": True,

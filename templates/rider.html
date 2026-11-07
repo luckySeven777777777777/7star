@@ -671,10 +671,10 @@ function _denomToday() {
 function _denomKey(phone, orderNo) {
   var p = String(phone || "").trim();
   var o = String(orderNo || "").trim();
-  // 分母按「骑手 + 订单 + 当天」锁定：每个骑手每一单各自一份，互不混合、跨订单也不互相抬高
-  if (p && o) return "rider:" + p + "|order:" + o + "|day:" + _denomToday();
+  // 分母按「骑手 + 当天」锁定：同一骑手当天的首次输入量跨订单保持（重下单仍是 600），
+  // 不同骑手之间绝不混合
   if (p) return "rider:" + p + "|day:" + _denomToday();
-  if (o) return "order:" + o + "|day:" + _denomToday();
+  if (o) return "order:" + o;
   return "";
 }
 // 返回该骑手当天的分母（= 该骑手当天第一次输入的数量）
@@ -689,9 +689,11 @@ function lockDenom(phone, orderNo, baoziTotal, shopTotal) {
   var rec = all[key];
   // 跨天（凌晨 0 点后）自动清零：丢弃前一天的锁
   if (rec && rec.day && rec.day !== day) rec = null;
-  if (rec && (_denomNum(rec.baozi) > 0 || _denomNum(rec.shop) > 0)) {
-    // 已锁定：原样返回，后面再输入多少次都不改动（600 永远显示 600，不会被 1500/500 替换）
-    return { baozi: _denomNum(rec.baozi), shop: _denomNum(rec.shop) };
+  if (rec) {
+    // 只升不降：已锁定的分母优先，但旧版本误锁成 500 的记录会被本次的 600 纠正回来，
+    // 首次输入量永不被后续数字（剩余量/改单量）覆盖
+    b = Math.max(_denomNum(rec.baozi), b);
+    s = Math.max(_denomNum(rec.shop), s);
   }
   if (b > 0 || s > 0) {
     all[key] = { baozi: b, shop: s, day: day };
@@ -2586,8 +2588,7 @@ checkLogin();
     var rb = window.__remain ? window.__remain.baozi : null;
     var rs = window.__remain ? window.__remain.shop : null;
     var hasRemain = rb !== null && rb !== undefined && rs !== null && rs !== undefined &&
-      !isNaN(Number(rb)) && !isNaN(Number(rs)) &&
-      (Number(rb) > 0 || Number(rs) > 0); // 0/0 = 该骑手本单今日尚无数量记录，按「首次输入」放行，避免按钮永久置灰
+      !isNaN(Number(rb)) && !isNaN(Number(rs));
     // 剩余量缺失（新订单首次绑定）时不做一致性校验，仅要求手机号与两个数量已填且 > 0
     if (pRaw === "" || isNaN(bt) || bt <= 0 || isNaN(st) || st <= 0) {
       bind.disabled = true;
@@ -2809,8 +2810,7 @@ checkLogin();
     var rb = window.__remain ? window.__remain.baozi : null;
     var rs = window.__remain ? window.__remain.shop : null;
     var hasRemain = rb !== null && rb !== undefined && rs !== null && rs !== undefined &&
-      !isNaN(Number(rb)) && !isNaN(Number(rs)) &&
-      (Number(rb) > 0 || Number(rs) > 0); // 0/0 = 该骑手本单今日尚无数量记录，按「首次输入」放行，避免按钮永久置灰
+      !isNaN(Number(rb)) && !isNaN(Number(rs));
     var bt = bRaw === "" ? NaN : parseInt(bRaw, 10);
     var st = sRaw === "" ? NaN : parseInt(sRaw, 10);
     // 剩余量缺失（新订单首次绑定本来就没有剩余量可参照）：绝不改文案、绝不因剩余量缺失而禁用，

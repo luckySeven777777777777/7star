@@ -633,10 +633,8 @@ function locDisplay(x) {
     var u = "https://www.google.com/maps/search/?api=1&query=" + la.toFixed(6) + "," + ln.toFixed(6);
     return '<a href="' + u + '" target="_blank" rel="noopener" style="color:#1565c0;word-break:break-all;">' + u + '</a>';
   }
-  // 与骑手端完全一致：没有区域内坐标时绝不回退原始短链（短链在手机上会被 Google 定向到国外）
-  if (x.shop_lat !== null && x.shop_lat !== undefined && x.shop_lng !== null && x.shop_lng !== undefined) {
-    return Number(x.shop_lat).toFixed(6) + ", " + Number(x.shop_lng).toFixed(6);
-  }
+  var v = x.shop_link || "";
+  if (v) return '<a href="' + v + '" target="_blank" rel="noopener" style="color:#1565c0;word-break:break-all;">' + v + '</a>';
   return "-";
 }
 // 拥堵着色 + ETA 辅助（与骑手端同一套逻辑）

@@ -451,6 +451,9 @@ async function search() {
   var riderName = document.getElementById("riderName").value.trim();
   if (!orderNo || !phone || !riderName) { showErr("Order Number + ပို့ဆောင်သူ ဖုန်းနံပါတ် + ပို့ဆောင်သူအမည် သုံးခုလုံး ထည့်သွင်းပါ"); return; }
   clearErr();
+  // 轮询必须始终存活：即使某次请求失败（403/网络抖动）也要继续下一次，
+  // 否则订单被取消/完成后商家端会停在旧状态，看起来像「取消不实时更新」。
+  if (!refreshTimer) refreshTimer = setInterval(search, 3000);
   document.getElementById("searchBtn").disabled = true;
   document.getElementById("searchBtn").textContent = "ရှာဖွေနေသည်...";
   var r = await fetch("/api/track?order_no=" + encodeURIComponent(orderNo) + "&phone=" + encodeURIComponent(phone) + "&name=" + encodeURIComponent(riderName) + "&_t=" + Date.now(), { cache: "no-store" });
@@ -465,7 +468,7 @@ async function search() {
   currentOrderNo = orderNo;
   currentPhone = phone;
   if (refreshTimer) clearInterval(refreshTimer);
-  refreshTimer = setInterval(search, 5000);
+  refreshTimer = setInterval(search, 3000);
   if (window._multiRefreshTimer) { clearInterval(window._multiRefreshTimer); window._multiRefreshTimer = null; }
   if (multiGroup) { try { map.removeLayer(multiGroup); } catch (e) {} multiGroup = null; }
   Object.keys(multiMarkers).forEach(function (k) { try { map.removeLayer(multiMarkers[k]); } catch (e) {} });
@@ -542,6 +545,7 @@ function render(j) {
         } else {
           doneMarker.setLatLng(baseLL);
           doneMarker.setIcon(doneIcon(j.order_no, _k2));
+          doneMarker.setPopup(finalPopupHtml(j, st));
         }
         if (!_mapPinned) map.setView(baseLL, 15);
         return;
@@ -597,6 +601,7 @@ function render(j) {
       } else {
         doneMarker.setLatLng(shopLL);
         doneMarker.setIcon(doneIcon(j.order_no, _kind));
+        doneMarker.setPopup(finalPopupHtml(j, st));
       }
     } else {
       if (!shopMarker) {
@@ -623,6 +628,7 @@ function render(j) {
       } else {
         doneMarker.setLatLng(latest);
         doneMarker.setIcon(doneIcon(j.order_no, _k3));
+        doneMarker.setPopup(finalPopupHtml(j, st));
       }
     }
     _routeBounds = L.latLngBounds(latLngs);
@@ -879,6 +885,10 @@ async function searchMulti(silent) {
   });
   if (riders.length === 0) { if (!silent) showInfo("Add at least one rider."); return; }
   clearErr();
+  // 多骑手看板同样保持轮询存活，避免取消/完成状态停更
+  if (!window._multiRefreshTimer) {
+    window._multiRefreshTimer = setInterval(function () { searchMulti(true); }, 3000);
+  }
   var btn = document.getElementById("multiBtn");
   if (!silent) {
     document.getElementById("multiSummary").style.display = "none";
@@ -938,12 +948,15 @@ function renderMulti(results, silent) {
       var dateTxt = x.update_time ? String(x.update_time).slice(0, 10) : "-";
       var stTxt = (x.status && x.status !== "待取餐") ? x.status : "-";
       var addrTxt = x.delivery_address || "-";
-      html += '<div class="multi-card ok">' +
+      // 取消/完成必须一眼可见：卡片直接打上 ❌ Cancelled / ✅ Completed，不再像进行中订单
+      var _isCancel = (x.status === "ပယ်ဖျက်ထားသည်");
+      var _isDone = (x.status === "လက်ခံပြီးပါပြီ");
+      html += '<div class="multi-card ok' + (_isCancel ? ' is-cancel' : (_isDone ? ' is-done' : '')) + '">' +
         'Date：' + dateTxt + '<br>' +
         'Name：🛵 <b>' + (x.rider_name || "-") + '</b><br>' +
         'Order：' + x.order_no + ' · City:' + (x.city || "-") + '<br>' +
         'ပို့ရမည့်လိပ်စာ：' + addrTxt + '<br>' +
-        stTagHtml(stTxt) + '<br>' +
+        (_isCancel ? "❌ " : (_isDone ? "✅ " : "")) + stTagHtml(stTxt) + '<br>' +
         'ကျန်ရှိသောပေါက်စီအလုံးအရေတွက်：' + (bt - br) + ' / ' + bt + '<br>' +
         'ကျန်ရှိသောဆိုင်အရေတွက်：' + (st - sr) + ' / ' + st + '<br>' +
         'ငွေပေးချေမှုနည်းလမ်း：' + (x.payment_method || "-") + '<br>' +

@@ -1432,6 +1432,19 @@ async function bindOrder() {
         shopLocationCoords = "";
       }
     }
+    // 提交前硬拦截：同一订单第二次输入与剩余量对不上时，连请求都不发（防止按钮状态异常绕过）
+    try {
+      var _rm = window.__remain || {};
+      var _rNo2 = String(_rm.orderNo || "").trim();
+      var _nb2 = Number(_rm.baozi), _ns2 = Number(_rm.shop);
+      var _inB = parseInt(baoziTotal, 10), _inS = parseInt(shopTotal, 10);
+      var _same2 = !(_rNo2 !== "" && orderNo !== "" && _rNo2 !== orderNo);
+      if (_same2 && _rm.baozi !== null && _rm.baozi !== undefined && _rm.shop !== null && _rm.shop !== undefined &&
+          !isNaN(_nb2) && !isNaN(_ns2) && (!isNaN(_inB) && !isNaN(_inS)) && (_inB !== _nb2 || _inS !== _ns2)) {
+        showInfo("အရေအတွက် မကိုက်ညီပါ — ကျန်ရှိသည် " + _nb2 + " / " + _ns2 + " သာ ဖြစ်သည်");
+        return;
+      }
+    } catch (e) {}
     // Plus Code 不在前端强行转坐标：统一交给服务端权威解析，
     // 保证手机端与电脑端用同一套算法，定位结果完全一致（前端仅在服务端解析失败时兜底）
     var r = await fetch("/api/rider/bind", {
@@ -2919,15 +2932,17 @@ checkLogin();
       bind.textContent = "Order ချိတ်ဆက်၍ ပို့ဆောင်စမည်";
       return;
     }
-    // 仅当剩余量存在有效数字时才校验：允许「当前剩余量」或「骑手首次输入量(分母)」，
-    // 填 600 不会被强制改成剩余 500，重新下单后分母依旧是 600。
-    if (hasRemain) {
-      var db = window.__remain ? Number(window.__remain.baoziOrig) : NaN;
-      var ds = window.__remain ? Number(window.__remain.shopOrig) : NaN;
-      var bOk = (bt === Number(rb)) || (!isNaN(db) && db > 0 && bt === db);
-      var sOk = (st === Number(rs)) || (!isNaN(ds) && ds > 0 && st === ds);
-      if (!isNaN(db) && db > 0 && bt > db) bOk = false;
-      if (!isNaN(ds) && ds > 0 && st > ds) sOk = false;
+    // 严格一致：第二次输入必须与上方显示的剩余量完全相同。
+    // 例：首次 600、送出 100、剩余 500 时，再填第一次的 600 一律禁止（只有 500 才能下单）。
+    // 只有输入一个全新的订单号时才算「第一次输入」，此时不做剩余量相等限制。
+    var _tNoEl = document.getElementById("orderNo");
+    var _tNo = _tNoEl ? String(_tNoEl.value || "").trim() : "";
+    var _rNo = window.__remain ? String(window.__remain.orderNo || "").trim() : "";
+    var _sameOrder = !(_rNo !== "" && _tNo !== "" && _rNo !== _tNo);
+    if (hasRemain && _sameOrder) {
+      var nb = Number(rb), ns = Number(rs);
+      var bOk = (bt === nb) && bt > 0;
+      var sOk = (st === ns) && st > 0;
       if (!bOk || !sOk) {
         bind.disabled = true;
         bind.textContent = "အရေအတွက် မကိုက်ညီပါ (" + (bRaw || "0") + "/" + rb + " · " + (sRaw || "0") + "/" + rs + ")";

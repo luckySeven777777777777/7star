@@ -522,6 +522,16 @@ def norm_phone(phone):
     return s
 
 
+def _rq_key(phone):
+    """骑手数量的存储键：手机号优先，非数字输入（如测试用的 aabb / abc）保留原样小写。
+    否则不同骑手会被 norm_phone 折叠成同一个空键，导致两个骑手数量完全同步。"""
+    p = norm_phone(phone)
+    if p:
+        return p
+    raw = str(phone or "").strip().lower()
+    return ("n:" + raw) if raw else ""
+
+
 def _ensure_qty_table(cur):
     """惰性建表兜底：无论启动迁移是否成功（线上库/新库/迁移被跳过），
     第一次读写骑手数量前都保证 rider_order_qty 存在，避免 INSERT 静默失败后
@@ -584,7 +594,7 @@ def rider_row_by_phone(cur, phone, order_no):
 def rider_qty_get(cur, phone, order_no=None, day=None):
     """读取某骑手在某订单下的独立数量记录。
     主键是 (phone, order_no)：不同骑手互不混合，同一骑手的不同订单也各自独立。"""
-    phone = norm_phone(phone)
+    phone = _rq_key(phone)
     if not phone:
         return None
     _ensure_qty_table(cur)
@@ -610,7 +620,7 @@ def rider_day_totals(cur, phone, day=None):
     已送 = 当天各单累加（如 100）。这样重下单后仍显示 600 / 剩 500。
     返回 (baozi_orig, shop_orig, baozi_received, shop_received)"""
     day = day or now_str()[:10]
-    phone = norm_phone(phone)
+    phone = _rq_key(phone)
     if not phone:
         return 0, 0, 0, 0
     _ensure_qty_table(cur)
@@ -636,7 +646,7 @@ def rider_qty_lock(cur, phone, order_no, baozi_in, shop_in):
     不同骑手各锁各的，绝不合在一起算。"""
     b_in = max(_to_int(baozi_in), 0)
     s_in = max(_to_int(shop_in), 0)
-    phone = norm_phone(phone)
+    phone = _rq_key(phone)
     if not phone or not order_no:
         return b_in, s_in
     _ensure_qty_table(cur)
@@ -676,7 +686,7 @@ def rider_qty_add(cur, phone, order_no, baozi_add, shop_add):
     """把本次送出的数量累加到「该骑手在该订单」名下，其他骑手 / 其他订单完全不受影响"""
     b_add = max(_to_int(baozi_add), 0)
     s_add = max(_to_int(shop_add), 0)
-    phone = norm_phone(phone)
+    phone = _rq_key(phone)
     if not phone or not order_no:
         return None
     _ensure_qty_table(cur)
@@ -705,7 +715,7 @@ def rider_qty_view(cur, phone, order_dict=None, order_no=None):
     day = now_str()[:10]
     if order_no is None and order_dict:
         order_no = (order_dict.get("order_no") or "").strip()
-    phone = norm_phone(phone)
+    phone = _rq_key(phone)
     if phone:
         _ensure_qty_table(cur)
         bo, so, br, sr = rider_day_totals(cur, phone, day)
@@ -1426,6 +1436,18 @@ def rider_bind():
     if _day_sr > 0 and 0 < _rem_st < _day_so and shop_total > _rem_st:
         conn.close()
         return jsonify({"ok": False, "msg": "ဆိုင် အရေအတွက် မမှန်ပါ — ကျန်ရှိသည် %d သာ ဖြစ်သည်။ %d ထည့်၍ မရပါ။ ကျန်ရှိသော အရေအတွက်ကိုသာ ထည့်ပါ" % (_rem_st, shop_total)}), 400
+    # 【严格一致】只要这位骑手当天已经有送出记录，第二次输入必须与「当前剩余量」完全一致：
+    # 首次 600、送出 100、剩余 500 时再输入 600（第一次的总量）一律拒绝，禁止继续下单。
+    _sv = rider_qty_view(cur, phone, None, order_no)
+    if _sv.get("scope") in ("rider_order", "rider_empty"):
+        _sv_br = _to_int(_sv.get("baozi_received"))
+        _sv_sr = _to_int(_sv.get("shop_received"))
+        if _sv_br > 0 or _sv_sr > 0:
+            _sv_rb = _to_int(_sv.get("baozi_remaining"))
+            _sv_rs = _to_int(_sv.get("shop_remaining"))
+            if baozi_total != _sv_rb or shop_total != _sv_rs:
+                conn.close()
+                return jsonify({"ok": False, "msg": "အရေအတွက် မကိုက်ညီပါ — ကျန်ရှိသည် ပေါက်စီ %d / ဆိုင် %d သာ ဖြစ်သည်။ ကျန်ရှိသော အရေအတွက်အတိုင်းသာ ထည့်ပါ" % (_sv_rb, _sv_rs)}), 400
     _prev_rec = rider_qty_get(cur, phone, order_no)
     if _prev_rec:
         _pv_bt = _to_int(_prev_rec.get("baozi_orig"))
@@ -1458,7 +1480,7 @@ def rider_bind():
     # 骑手独立分母：以「这个骑手今天第一次输入的数量」为准，同一天内重新下单/换订单号都不会改写
     rider_bt_orig, rider_st_orig = rider_qty_lock(cur, phone, order_no, _in_bt or baozi_orig, _in_st or shop_orig)
     rider_qty = rider_qty_view(cur, phone, None, order_no)
-    if rider_qty["scope"] != "rider_order":
+    if rider_qty["scope"] == "none":
         _o_bt, _o_br, _o_st, _o_sr = order_counts(old)
         rider_qty = {"scope": "order", "day": today,
                      "baozi_total": _o_bt, "baozi_received": _o_br, "baozi_remaining": max(_o_bt - _o_br, 0),
@@ -1495,6 +1517,19 @@ def rider_bind():
                     "scope": rider_qty.get("scope", "order"),
                     "day": today,
                     "qty_lock_day": lock_day})
+
+
+@app.after_request
+def _api_no_store(resp):
+    """接口一律禁缓存：商家端轮询到取消/完成状态必须立即生效，不能拿到旧响应。"""
+    try:
+        if request.path.startswith("/api/"):
+            resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+            resp.headers["Pragma"] = "no-cache"
+            resp.headers["Expires"] = "0"
+    except Exception:
+        pass
+    return resp
 
 
 @app.route("/api/rider/location", methods=["POST"])
@@ -1898,7 +1933,7 @@ def order_history_api():
         _h_bt, _h_br, _h_st, _h_sr = order_counts(od)
         # 每个骑手只看自己这份数量：历史列表里也不会出现别的骑手 / 别的订单的数字
         _hrv = rider_qty_view(cur, phone, od, order_no)
-        if _hrv["scope"] == "rider_order":
+        if _hrv["scope"] in ("rider_order", "rider_empty"):
             _h_bt, _h_br = _hrv["baozi_total"], _hrv["baozi_received"]
             _h_st, _h_sr = _hrv["shop_total"], _hrv["shop_received"]
         history.append(
@@ -1994,7 +2029,7 @@ def track():
     # 只算这个骑手自己的已送量，绝不与其它骑手或其它订单混算（与骑手页面完全一致）
     try:
         _rv = rider_qty_view(cur, phone, None, order_no)
-        if _rv.get("scope") == "rider_order":
+        if _rv.get("scope") in ("rider_order", "rider_empty"):
             _d_bt = _to_int(_rv.get("baozi_total"))
             _d_br = _to_int(_rv.get("baozi_received"))
             _d_st = _to_int(_rv.get("shop_total"))
@@ -2172,7 +2207,7 @@ def track_multi():
         _m_bt, _m_br, _m_st, _m_sr = order_counts(order_dict)
         try:
             _rvm = rider_qty_view(cur, phone, order_dict, order_no)
-            if _rvm.get("scope") == "rider_order":
+            if _rvm.get("scope") in ("rider_order", "rider_empty"):
                 _m_bt = _to_int(_rvm.get("baozi_total"))
                 _m_br = _to_int(_rvm.get("baozi_received"))
                 _m_st = _to_int(_rvm.get("shop_total"))
@@ -2560,7 +2595,7 @@ def _patch_rider_remaining():
     if rv["scope"] == "none":
         return jsonify({"ok": False, "msg": "no order"}), 404
     today = now_str()[:10]
-    if rv["scope"] == "rider_order":
+    if rv["scope"] in ("rider_order", "rider_empty"):
         bt, br_day = rv["baozi_total"], rv["baozi_received"]
         st, sr_day = rv["shop_total"], rv["shop_received"]
     elif not phone:

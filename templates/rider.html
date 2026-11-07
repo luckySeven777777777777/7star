@@ -1088,6 +1088,18 @@ function enterCssMapFull() {
   if (wrap.parentNode !== document.body) {
     document.body.appendChild(wrap);
   }
+  // 进入全屏前把三个容器的内联样式原样存下来，退出时逐字还原，
+  // 否则 #riderMap 的高度只剩内联 320px 这一处来源，被清掉后高度归 0 → 地图看不见，只能刷新恢复
+  try {
+    var _mEl = document.getElementById("riderMap");
+    var _hEl = wrap.querySelector(".map-holder");
+    wrap.__savedCss = {
+      wrap: wrap.style.cssText,
+      holder: _hEl ? _hEl.style.cssText : "",
+      map: _mEl ? _mEl.style.cssText : "",
+      display: wrap.style.display || ""
+    };
+  } catch (e) {}
   wrap.classList.add("map-css-full");
   document.body.classList.add("map-full-lock");
   // 手机端（含微信 WebView / 安卓浏览器）再把 html 也锁住，避免全屏时页面仍能滚动、
@@ -1117,19 +1129,46 @@ function exitCssMapFull() {
     var anchor = (wrap.__homeNext && wrap.__homeNext.parentNode === wrap.__homeParent) ? wrap.__homeNext : null;
     wrap.__homeParent.insertBefore(wrap, anchor);
   }
-  wrap.style.removeProperty("height");
-  wrap.style.removeProperty("width");
+  // 【问题1修复】退出全屏必须逐字还原进入前的内联样式（wrap / holder / #riderMap）。
+  // 原来只 removeProperty，而 #riderMap 的高度唯一来源就是内联 320px，移除后高度归 0
+  // → 地图容器尺寸为 0，瓦片不渲染，表现为“关掉全屏地图就没了，必须刷新”。
   var mapEl = document.getElementById("riderMap");
   var holder = wrap.querySelector(".map-holder");
-  if (holder) { holder.style.removeProperty("height"); }
+  var _sv = wrap.__savedCss || null;
+  try {
+    if (_sv) {
+      wrap.style.cssText = _sv.wrap || "";
+      if (holder) holder.style.cssText = _sv.holder || "";
+      if (mapEl) mapEl.style.cssText = _sv.map || "";
+    }
+  } catch (e) {}
+  // 兜底：万一没存到（比如热更新打断了流程），保证 wrap 可见、地图有实际像素高度
+  wrap.style.removeProperty("height");
+  wrap.style.removeProperty("width");
+  if (wrap.style.display === "none") wrap.style.display = "block";
+  if (holder) {
+    holder.style.removeProperty("height");
+  }
   if (mapEl) {
-    mapEl.style.removeProperty("height");
     mapEl.style.removeProperty("min-height");
     mapEl.style.removeProperty("width");
+    var _mh = mapEl.getBoundingClientRect().height;
+    if (!_mh || _mh < 80) {
+      // 还原后仍然没有高度：写死一个可见高度，绝不允许 0 高度
+      mapEl.style.setProperty("height", "320px", "important");
+      if (holder) holder.style.setProperty("height", "320px", "important");
+    }
   }
   setMapFullscreenBtn(false);
-  setTimeout(resizeRiderMapNow, 60);
-  setTimeout(resizeRiderMapNow, 320);
+  // 退出后连续多档校正，手机键盘/地址栏收放导致的尺寸变化也能跟上
+  [0, 40, 120, 260, 520, 900].forEach(function (t) {
+    setTimeout(function () {
+      try {
+        if (riderMap) riderMap.invalidateSize(true);
+      } catch (e) {}
+      resizeRiderMapNow();
+    }, t);
+  });
 }
 function toggleMapFullscreen() {
   var wrap = document.getElementById("riderMapWrap");
@@ -2645,19 +2684,29 @@ checkLogin();
       bind.textContent = "Order ချိတ်ဆက်၍ ပို့ဆောင်စမည်";
       return;
     }
-    // 仅有有效剩余量时才校验：允许「首次输入量（分母）」或「当前剩余量」两者之一，
-    // 这样第一次 600、送 100 剩 500 时重新下单填 600 依旧可通过，分母不会被强制压成 500。
+    // 校验规则（关键）：
+    // 1) 一旦这位骑手已经送过（received > 0，剩余 < 首次输入量），只允许填「当前剩余量」；
+    //    例如 600 → 送 100 → 剩 500，再填 600 一律拒绝，只有 500 能下单。
+    // 2) 还没送过（剩余 = 首次输入量）时，允许填首次输入量本身，用于正常首次/新批次下单。
     if (hasRemain) {
       var db = window.__remain ? Number(window.__remain.baoziOrig) : NaN;
       var ds = window.__remain ? Number(window.__remain.shopOrig) : NaN;
-      var bOk = (bt === Number(rb)) || (!isNaN(db) && db > 0 && bt === db);
-      var sOk = (st === Number(rs)) || (!isNaN(ds) && ds > 0 && st === ds);
+      var nb = Number(rb), ns = Number(rs);
+      var bPartial = (!isNaN(db) && db > 0 && nb < db);   // 已经送过一部分
+      var sPartial = (!isNaN(ds) && ds > 0 && ns < ds);
+      // 已经送过一部分：只允许 ≤ 当前剩余量；剩余量本身(如 500)可下单，超出的(如 600)一律拒绝
+      var bOk = bPartial ? (bt <= nb && bt > 0) : (bt === nb || (!isNaN(db) && db > 0 && bt === db));
+      var sOk = sPartial ? (st <= ns && st > 0) : (st === ns || (!isNaN(ds) && ds > 0 && st === ds));
       // 超出首次输入量（超送）一律拒绝
       if (!isNaN(db) && db > 0 && bt > db) bOk = false;
       if (!isNaN(ds) && ds > 0 && st > ds) sOk = false;
+      // 已经送过一部分时，超过当前剩余量一律拒绝（600 剩 500 时填 600 必须被拦下）
+      if (bPartial && bt > nb) bOk = false;
+      if (sPartial && st > ns) sOk = false;
       if (!bOk || !sOk) {
         bind.disabled = true;
-        bind.textContent = "အရေအတွက် မကိုက်ညီပါ (Count must equal remaining or first input)";
+        bind.textContent = "အရေအတွက် မကိုက်ညီပါ (Count must equal remaining " +
+          (isNaN(nb) ? "-" : nb) + " / " + (isNaN(ns) ? "-" : ns) + ")";
         return;
       }
     }

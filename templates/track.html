@@ -453,7 +453,7 @@ async function search() {
   clearErr();
   document.getElementById("searchBtn").disabled = true;
   document.getElementById("searchBtn").textContent = "ရှာဖွေနေသည်...";
-  var r = await fetch("/api/track?order_no=" + encodeURIComponent(orderNo) + "&phone=" + encodeURIComponent(phone) + "&name=" + encodeURIComponent(riderName));
+  var r = await fetch("/api/track?order_no=" + encodeURIComponent(orderNo) + "&phone=" + encodeURIComponent(phone) + "&name=" + encodeURIComponent(riderName) + "&_t=" + Date.now(), { cache: "no-store" });
   var j = await r.json();
   document.getElementById("searchBtn").disabled = false;
   document.getElementById("searchBtn").textContent = "တည်နေရာ ရှာမည်";
@@ -888,8 +888,9 @@ async function searchMulti(silent) {
   try {
     var r = await fetch("/api/track/multi", {
       method: "POST",
+      cache: "no-store",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ riders: riders })
+      body: JSON.stringify({ riders: riders, _t: Date.now() })
     });
     var j = await r.json();
     if (!silent) {
@@ -899,7 +900,7 @@ async function searchMulti(silent) {
     if (!j.ok) { if (!silent) showInfo(j.msg); return; }
     renderMulti(j.results || [], silent);
     if (window._multiRefreshTimer) clearInterval(window._multiRefreshTimer);
-    window._multiRefreshTimer = setInterval(function () { searchMulti(true); }, 5000);
+    window._multiRefreshTimer = setInterval(function () { searchMulti(true); }, 3000);
   } catch (e) {
     if (!silent) {
       btn.disabled = false;

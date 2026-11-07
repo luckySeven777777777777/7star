@@ -602,6 +602,12 @@ function render(j) {
         doneMarker.setLatLng(shopLL);
         doneMarker.setIcon(doneIcon(j.order_no, _kind));
         doneMarker.setPopup(finalPopupHtml(j, st));
+        // 弹窗正打开时必须强制重开一次，否则状态从 ✅完成 变成 ❌取消 后，
+        // 地图上的弹窗仍停留在旧内容（用户看到的"先✅后刷新才变❌"就是这个原因）
+        if (doneMarker.isPopupOpen && doneMarker.isPopupOpen()) {
+          doneMarker.closePopup();
+          doneMarker.openPopup();
+        }
       }
     } else {
       if (!shopMarker) {
@@ -629,6 +635,10 @@ function render(j) {
         doneMarker.setLatLng(latest);
         doneMarker.setIcon(doneIcon(j.order_no, _k3));
         doneMarker.setPopup(finalPopupHtml(j, st));
+        if (doneMarker.isPopupOpen && doneMarker.isPopupOpen()) {
+          doneMarker.closePopup();
+          doneMarker.openPopup();
+        }
       }
     }
     _routeBounds = L.latLngBounds(latLngs);
@@ -1022,6 +1032,7 @@ function renderMulti(results, silent) {
         fm.setLatLng(anchor);
         fm.setIcon(doneIcon(x.order_no, _kind));
         fm.setPopupContent(finPopup);
+        if (fm.isPopupOpen && fm.isPopupOpen()) { fm.closePopup(); fm.openPopup(); }
       } else {
         if (fm) { try { map.removeLayer(fm); } catch (e) {} }
         fm = L.marker(anchor, { icon: doneIcon(x.order_no, _kind) }).addTo(map);

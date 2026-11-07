@@ -458,8 +458,16 @@ var cancelledItems = [];   // 今日已取消订单 [{order_no, lat, lng}]，地
 
 function _validLatLng(la, ln) {
   if (isNaN(la) || isNaN(ln)) return null;
-  if (la < -90 || la > 90 || ln < -180 || ln > 180) return null;
-  return [la, ln];
+  // 手机端 Google 复制的坐标可能是「经度,纬度」反序，直接当纬度用会把位置画反。
+  // 先按正常顺序判断是否在业务区域内，不在则尝试交换，交换后落在区域内才采用。
+  var _inR = function (a, b) { return (typeof inRegion === "function") ? inRegion(a, b) : true; };
+  if (la >= -90 && la <= 90 && ln >= -180 && ln <= 180) {
+    if (_inR(la, ln)) return [la, ln];
+    if (ln >= -90 && ln <= 90 && _inR(ln, la)) return [ln, la];
+    return [la, ln];
+  }
+  if (ln >= -90 && ln <= 90) return [ln, la];
+  return null;
 }
 function _dmsToDec(deg, min, sec, hemi) {
   var v = Math.abs(parseFloat(deg || 0)) + (parseFloat(min || 0) / 60) + (parseFloat(sec || 0) / 3600);
@@ -2514,6 +2522,8 @@ checkLogin();
     window.__remain.day = j.day || "";
     window.__remain.orderNo = j.order_no || "";
     window.__remain.status = j.status || "";
+    // 首次输入标记：该骑手在这单还没有自己的数量记录（不是把别人的数量当自己的）
+    window.__remain.firstInput = !!j.first_input;
     // 分母（骑手第一次输入量）也记下来，供数量校验使用：允许填「首次数」或「当前剩余」，
     // 这样重新下单时不会被强制改写成剩余量，分母永远是 600。
     window.__remain.baoziOrig = _lkR.baozi || (j.baozi_total_orig !== undefined ? j.baozi_total_orig : null);
@@ -2691,6 +2701,12 @@ checkLogin();
     var rs = window.__remain ? window.__remain.shop : null;
     var hasRemain = rb !== null && rb !== undefined && rs !== null && rs !== undefined &&
       !isNaN(Number(rb)) && !isNaN(Number(rs));
+    // 该骑手在这单还没有自己的数量（first_input）时不做"必须等于剩余量"校验，
+    // 否则会把别人的剩余量当成他的上限，导致他永远无法录入自己的数量。
+    if (window.__remain && window.__remain.firstInput) hasRemain = false;
+    // 该骑手在这单还没有自己的数量（首次输入/与别人无关）时，不做"必须等于剩余量"的校验，
+    // 否则会显示别人的剩余量并把自己锁死，无法录入自己的数量。
+    if (window.__remain && window.__remain.firstInput) hasRemain = false;
     // 剩余量缺失（新订单首次绑定）时不做一致性校验，仅要求手机号与两个数量已填且 > 0
     if (pRaw === "" || isNaN(bt) || bt <= 0 || isNaN(st) || st <= 0) {
       bind.disabled = true;
@@ -2923,6 +2939,9 @@ checkLogin();
     var rs = window.__remain ? window.__remain.shop : null;
     var hasRemain = rb !== null && rb !== undefined && rs !== null && rs !== undefined &&
       !isNaN(Number(rb)) && !isNaN(Number(rs));
+    // 该骑手在这单还没有自己的数量（first_input）时不做"必须等于剩余量"校验，
+    // 否则会把别人的剩余量当成他的上限，导致他永远无法录入自己的数量。
+    if (window.__remain && window.__remain.firstInput) hasRemain = false;
     var bt = bRaw === "" ? NaN : parseInt(bRaw, 10);
     var st = sRaw === "" ? NaN : parseInt(sRaw, 10);
     // 剩余量缺失（新订单首次绑定本来就没有剩余量可参照）：绝不改文案、绝不因剩余量缺失而禁用，

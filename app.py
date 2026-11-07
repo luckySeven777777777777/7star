@@ -725,6 +725,24 @@ def rider_qty_view(cur, phone, order_dict=None, order_no=None):
                 "shop_total": so, "shop_received": sr, "shop_remaining": max(so - sr, 0),
             }
     if order_dict:
+        # 隔离保护：只要这个订单下已经有任何骑手自己的数量记录，就禁止再用「订单口径」兜底，
+        # 否则没有自己记录的那个骑手会把别人的数字当自己的显示 → 看起来各骑手数量同步。
+        _has_rider_rec = False
+        if order_no:
+            try:
+                cur.execute(_q("SELECT COUNT(*) AS c FROM rider_order_qty WHERE order_no=?"), (order_no,))
+                _cnt = cur.fetchone()
+                if _cnt is not None:
+                    _cnt_val = list(_cnt.values())[0] if isinstance(_cnt, dict) else list(_cnt)[0]
+                    _has_rider_rec = _to_int(_cnt_val) > 0
+            except Exception:
+                _has_rider_rec = False
+        if _has_rider_rec:
+            return {
+                "scope": "rider_empty", "day": day, "order_no": order_no,
+                "baozi_total": 0, "baozi_received": 0, "baozi_remaining": 0,
+                "shop_total": 0, "shop_received": 0, "shop_remaining": 0,
+            }
         bt, br, st, sr = order_counts(order_dict)
         return {
             "scope": "order", "day": day, "order_no": order_no,
@@ -1397,20 +1415,31 @@ def rider_bind():
     # 【数量校验】已经送过一部分后重新输入总量时，输入值绝不能大于「剩余量」：
     # 首次输入 600、送掉 100 后剩 500，此时再输入 600 必须被拒绝（只能输入 ≤500），
     # 否则等于把已经送掉的量重复下单。
+    # 【数量校验】按「该骑手当天」的真实剩余量校验（不再只看本订单记录）：
+    # 首次输入 600、送掉 100 后剩 500，之后不管换不换订单号，再输入 600 都必须被拒绝，只能输入 ≤500。
+    _day_bo, _day_so, _day_br, _day_sr = rider_day_totals(cur, phone)
+    _rem_bt = max(_day_bo - _day_br, 0)
+    _rem_st = max(_day_so - _day_sr, 0)
+    if _day_br > 0 and 0 < _rem_bt < _day_bo and baozi_total > _rem_bt:
+        conn.close()
+        return jsonify({"ok": False, "msg": "ပေါက်စီ အရေအတွက် မမှန်ပါ — ကျန်ရှိသည် %d သာ ဖြစ်သည်။ %d ထည့်၍ မရပါ။ ကျန်ရှိသော အရေအတွက်ကိုသာ ထည့်ပါ" % (_rem_bt, baozi_total)}), 400
+    if _day_sr > 0 and 0 < _rem_st < _day_so and shop_total > _rem_st:
+        conn.close()
+        return jsonify({"ok": False, "msg": "ဆိုင် အရေအတွက် မမှန်ပါ — ကျန်ရှိသည် %d သာ ဖြစ်သည်။ %d ထည့်၍ မရပါ။ ကျန်ရှိသော အရေအတွက်ကိုသာ ထည့်ပါ" % (_rem_st, shop_total)}), 400
     _prev_rec = rider_qty_get(cur, phone, order_no)
     if _prev_rec:
         _pv_bt = _to_int(_prev_rec.get("baozi_orig"))
         _pv_br = _to_int(_prev_rec.get("baozi_received"))
         _pv_st = _to_int(_prev_rec.get("shop_orig"))
         _pv_sr = _to_int(_prev_rec.get("shop_received"))
-        _rem_bt = max(_pv_bt - _pv_br, 0)
-        _rem_st = max(_pv_st - _pv_sr, 0)
-        if _pv_br > 0 and baozi_total > _rem_bt:
+        _p_rem_bt = max(_pv_bt - _pv_br, 0)
+        _p_rem_st = max(_pv_st - _pv_sr, 0)
+        if _pv_br > 0 and 0 < _p_rem_bt < _pv_bt and baozi_total > _p_rem_bt:
             conn.close()
-            return jsonify({"ok": False, "msg": "ပေါက်စီ အရေအတွက် မမှန်ပါ — ကျန်ရှိသည် %d သာ ဖြစ်သည်။ %d ထည့်၍ မရပါ။ ကျန်ရှိသော အရေအတွက်ကိုသာ ထည့်ပါ" % (_rem_bt, baozi_total)}), 400
-        if _pv_sr > 0 and shop_total > _rem_st:
+            return jsonify({"ok": False, "msg": "ပေါက်စီ အရေအတွက် မမှန်ပါ — ကျန်ရှိသည် %d သာ ဖြစ်သည်။ %d ထည့်၍ မရပါ။ ကျန်ရှိသော အရေအတွက်ကိုသာ ထည့်ပါ" % (_p_rem_bt, baozi_total)}), 400
+        if _pv_sr > 0 and 0 < _p_rem_st < _pv_st and shop_total > _p_rem_st:
             conn.close()
-            return jsonify({"ok": False, "msg": "ဆိုင် အရေအတွက် မမှန်ပါ — ကျန်ရှိသည် %d သာ ဖြစ်သည်။ %d ထည့်၍ မရပါ။ ကျန်ရှိသော အရေအတွက်ကိုသာ ထည့်ပါ" % (_rem_st, shop_total)}), 400
+            return jsonify({"ok": False, "msg": "ဆိုင် အရေအတွက် မမှန်ပါ — ကျန်ရှိသည် %d သာ ဖြစ်သည်။ %d ထည့်၍ မရပါ။ ကျန်ရှိသော အရေအတွက်ကိုသာ ထည့်ပါ" % (_p_rem_st, shop_total)}), 400
     _in_bt, _in_st = baozi_total, shop_total
     old_bt_orig = int(old.get("baozi_total_orig") or 0)
     old_st_orig = int(old.get("shop_total_orig") or 0)
@@ -2139,7 +2168,17 @@ def track_multi():
         track_list = _rows_to_dicts(cur, points)
         latest = track_list[-1] if track_list else None
         # 批量接口不串行调用逆地理编码（10-20 个骑手时避免阻塞），前端以坐标兜底显示
+        # 数量口径必须按「这个骑手自己」取，绝不共用订单口径，否则多骑手列表里所有人的数量会一模一样
         _m_bt, _m_br, _m_st, _m_sr = order_counts(order_dict)
+        try:
+            _rvm = rider_qty_view(cur, phone, order_dict, order_no)
+            if _rvm.get("scope") == "rider_order":
+                _m_bt = _to_int(_rvm.get("baozi_total"))
+                _m_br = _to_int(_rvm.get("baozi_received"))
+                _m_st = _to_int(_rvm.get("shop_total"))
+                _m_sr = _to_int(_rvm.get("shop_received"))
+        except Exception as _e_m:
+            print("[track/multi] rider qty view failed: %s" % _e_m)
         results.append(
             {
                 "ok": True,

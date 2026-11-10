@@ -532,12 +532,6 @@ def _rq_key(phone):
     return ("n:" + raw) if raw else ""
 
 
-def _biz_day():
-    """业务日 = 缅甸仰光时间的自然日文本（凌晨 0 点切换）。
-    每天 0 点后骑手数量必须清零重新计算：前一天的分母与已送量都不会带进新的一天。"""
-    return now_str()[:10]
-
-
 def _ensure_qty_table(cur):
     """惰性建表兜底：无论启动迁移是否成功（线上库/新库/迁移被跳过），
     第一次读写骑手数量前都保证 rider_order_qty 存在，避免 INSERT 静默失败后
@@ -609,22 +603,7 @@ def rider_qty_get(cur, phone, order_no=None, day=None):
             cur.execute(_q("SELECT * FROM rider_order_qty WHERE phone=? AND order_no=?"), (phone, order_no))
             r = cur.fetchone()
             if r:
-                d = _row_to_dict(cur, r)
-                # 跨天（缅甸时间 0 点后）自动清零：昨晚的分母与已送量绝不带到今天，
-                # 今天的第一次输入重新成为分母（凌晨 0 点后数量清零重新计算）
-                if (d.get("day") or "") != _biz_day():
-                    try:
-                        cur.execute(_q("UPDATE rider_order_qty SET day=?, baozi_orig=0, shop_orig=0, "
-                                       "baozi_received=0, shop_received=0, updated_at=? WHERE phone=? AND order_no=?"),
-                                    (_biz_day(), now_str(), phone, order_no))
-                    except Exception:
-                        pass
-                    d["day"] = _biz_day()
-                    d["baozi_orig"] = 0
-                    d["shop_orig"] = 0
-                    d["baozi_received"] = 0
-                    d["shop_received"] = 0
-                return d
+                return _row_to_dict(cur, r)
             return None
         if day:
             cur.execute(_q("SELECT * FROM rider_order_qty WHERE phone=? AND day=?"), (phone, day))
@@ -671,7 +650,7 @@ def rider_qty_lock(cur, phone, order_no, baozi_in, shop_in):
     if not phone or not order_no:
         return b_in, s_in
     _ensure_qty_table(cur)
-    day = _biz_day()
+    day = now_str()[:10]
     day_bo, day_so, _dbr, _dsr = rider_day_totals(cur, phone, day)
     rec = rider_qty_get(cur, phone, order_no)
     if rec:
@@ -685,8 +664,8 @@ def rider_qty_lock(cur, phone, order_no, baozi_in, shop_in):
         nb, ns = b, s
         if nb != _to_int(rec.get("baozi_orig")) or ns != _to_int(rec.get("shop_orig")):
             try:
-                cur.execute(_q("UPDATE rider_order_qty SET day=?, baozi_orig=?, shop_orig=?, updated_at=? WHERE phone=? AND order_no=?"),
-                            (day, nb, ns, now_str(), phone, order_no))
+                cur.execute(_q("UPDATE rider_order_qty SET baozi_orig=?, shop_orig=?, updated_at=? WHERE phone=? AND order_no=?"),
+                            (nb, ns, now_str(), phone, order_no))
             except Exception:
                 pass
         return nb, ns
@@ -715,13 +694,13 @@ def rider_qty_add(cur, phone, order_no, baozi_add, shop_add):
     if not rec:
         try:
             cur.execute(_q("INSERT INTO rider_order_qty (phone, order_no, day, baozi_orig, shop_orig, baozi_received, shop_received, updated_at) "
-                           "VALUES (?,?,?,0,0,?,?,?)"), (phone, order_no, _biz_day(), b_add, s_add, now_str()))
+                           "VALUES (?,?,?,0,0,?,?,?)"), (phone, order_no, now_str()[:10], b_add, s_add, now_str()))
         except Exception:
             pass
         return rider_qty_get(cur, phone, order_no)
     try:
-        cur.execute(_q("UPDATE rider_order_qty SET day=?, baozi_received=?, shop_received=?, updated_at=? WHERE phone=? AND order_no=?"),
-                    (_biz_day(), _to_int(rec.get("baozi_received")) + b_add, _to_int(rec.get("shop_received")) + s_add,
+        cur.execute(_q("UPDATE rider_order_qty SET baozi_received=?, shop_received=?, updated_at=? WHERE phone=? AND order_no=?"),
+                    (_to_int(rec.get("baozi_received")) + b_add, _to_int(rec.get("shop_received")) + s_add,
                      now_str(), phone, order_no))
     except Exception:
         pass
@@ -743,13 +722,12 @@ def rider_qty_view(cur, phone, order_dict=None, order_no=None):
         # 同一订单的独立记录也参与取最大值：跨天/中部刷新时，分母依然是该骑手第一次输入的 600，
         # 绝不会被“剩余量 500”反向覆盖；已送仍按当天累计。
         rec = rider_qty_get(cur, phone, order_no) if order_no else None
-        if rec and (rec.get("day") or "") == day:
-            # 只采纳「当天」的记录：跨天的旧记录已在上层被清零，
-            # 绝不把昨天的分母 / 已送量重新拉回今天（否则分母永远原封不动、数量不清零）
+        if rec:
             bo = max(bo, _to_int(rec.get("baozi_orig")))
             so = max(so, _to_int(rec.get("shop_orig")))
-            br = max(br, _to_int(rec.get("baozi_received")))
-            sr = max(sr, _to_int(rec.get("shop_received")))
+            if (rec.get("day") or "") != day:
+                br = max(br, _to_int(rec.get("baozi_received")))
+                sr = max(sr, _to_int(rec.get("shop_received")))
         if bo > 0 or so > 0:
             return {
                 "scope": "rider_order", "day": day, "order_no": order_no,

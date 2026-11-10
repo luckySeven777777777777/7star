@@ -714,10 +714,11 @@ function _denomToday() {
 function _denomKey(phone, orderNo) {
   var p = String(phone || "").trim();
   var o = String(orderNo || "").trim();
-  // 问题1：必须「骑手手机号 + 订单号」同时具备才锁定分母 —— 每个骑手每一单各自一份，
-  // 绝不因为订单号相同就让两个骑手共用一份分母，也绝不跨订单复用别的骑手的老数量。
-  if (p && o) return "rider:" + p + "|order:" + o;
-  return "";
+  // 【必须按「骑手 + 订单」锁分母】每个骑手每一单各自一份，骑手之间不混合、不同订单也不混。
+  // 之前按 rider+day 锁定，导致同一骑手换单、或两个骑手共用同一手机号时读到同一把锁，
+  // 于是新订单永远显示老订单/老骑手的数量（分母被顶成 600），这是「数量同步」的根因。
+  if (!p || !o) return "";
+  return "rider:" + p + "|order:" + o;
 }
 // 返回该骑手当天的分母（= 该骑手当天第一次输入的数量）
 // 规则：同一骑手同一天内，无论重新下单、换订单号、改输入，分母都保持首次输入量，
@@ -732,13 +733,10 @@ function lockDenom(phone, orderNo, baoziTotal, shopTotal) {
   // 跨天（凌晨 0 点后）自动清零：丢弃前一天的锁
   if (rec && rec.day && rec.day !== day) rec = null;
   if (rec) {
-    // 本次给出的「该骑手本单」数字优先（可把历史上被订单级数字顶大的错误锁纠正回来，例如 60 → 20）；
-    // 只有本次没给出数字时才沿用旧锁。
-    // 问题5：同一天内首次锁定后，分母永久固定，第二次输入不再改变
-    // 【当天首次输入优先】键已按「骑手+当天」固定，本地锁就是当天第一次输入的量，
-    // 所以第二次下单（换订单号）也沿用它；服务端值只在本地无锁时兜底。
-    b = _denomNum(rec.baozi) || b;
-    s = _denomNum(rec.shop) || s;
+    // 【服务端优先】服务端返回的已经是「该骑手 + 该订单」自己的首次输入量，
+    // 本地锁只在服务端没给数字（0/空）时兜底，绝不允许本地旧锁把新订单的分母顶成老数字。
+    if (b <= 0) b = _denomNum(rec.baozi);
+    if (s <= 0) s = _denomNum(rec.shop);
   }
   if (b > 0 || s > 0) {
     all[key] = { baozi: b, shop: s, day: day };
@@ -1440,24 +1438,6 @@ async function createOrder() {
       document.getElementById("newOrder").textContent = j.order_no;
       document.getElementById("orderBox").style.display = "block";
       document.getElementById("orderNo").value = j.order_no;
-      // 问题1：新建订单必须从空白开始输入 —— 绝不沿用上一个骑手/上一单留在框里的数字
-      try {
-        document.getElementById("baoziCount").value = "";
-        document.getElementById("shopCount").value = "";
-        // 关键：__remain 只能重置成"空对象"，绝不能置 null。
-        // 置 null 后 paintRemain / applyRemainLocal 里对 __remain.xxx 的赋值会抛 TypeError，
-        // 面板刷新就此中断，界面永远停在 0 / -（本次"创建订单就变成这样"的根因）。
-        window.__remain = { baozi: null, shop: null, day: "", orderNo: j.order_no || "", status: "" };
-        var _rt = document.getElementById("rtReturn"); if (_rt) _rt.textContent = "0";
-        var _ra = document.getElementById("rtBaozi"); if (_ra) _ra.textContent = "-";
-        var _rb = document.getElementById("rtShop"); if (_rb) _rb.textContent = "-";
-        var _ro = document.getElementById("rtOrder"); if (_ro) _ro.textContent = j.order_no || "-";
-        var _rs = document.getElementById("rtStatus"); if (_rs) _rs.textContent = "-";
-        var _rtm = document.getElementById("rtTime"); if (_rtm) _rtm.textContent = "-";
-        // 新单还没绑定，锁状态以服务端「是否有未完成订单」为准，避免本地残留锁把 Get New Orders 永远锁死
-        try { if (typeof checkActiveLock === "function") checkActiveLock(); } catch (e2) {}
-        try { if (window.updateGetNewOrderState) window.updateGetNewOrderState(); } catch (e3) {}
-      } catch (e) {}
     } else {
       showInfo(j.msg || "ဖန်တီးမှု မအောင်မြင်ပါ");
     }
@@ -1538,10 +1518,14 @@ async function bindOrder() {
     state.pendingStatus = "";
     state.confirmedStatuses = [];
     state.__finalSynced = "";
+    // 问题1/问题3：换订单必须清掉上一单的状态与数量缓存，否则新订单会继承老骑手/老订单的状态与锁
+    state.status = "";
+    state.curBaozi = "";
+    try { window.__remain = null; window.__finalLock = null; } catch (e) {}
     document.querySelectorAll("#statusBox button").forEach(function(btn) { btn.disabled = false; });
     // 问题4：绑定后仍按顺序放开，只有「အစားအစာယူရန်」可先点
     try { if (window.applyStatusOrder) window.applyStatusOrder(); } catch (e) {}
-    try { applyFinalButtons(); } catch (e) {}
+    document.getElementById("confirmDeliveredBtn").disabled = false;
     document.getElementById("reportPanel").style.display = "block";
     document.getElementById("curOrder").textContent = orderNo;
     document.getElementById("curDate").textContent = formatEnglishDate(new Date());
@@ -1624,48 +1608,6 @@ function disableStatusButton(status) {
 }
 // 问题4：三个状态键必须按顺序点击，前一个确认后才放开下一个
 var STATUS_ORDER = ["အစားအစာယူရန် စောင့်ဆိုင်း", "ပို့ဆောင်နေသည်", "ရောက်ရှိပြီး"];
-// ===== 问题3 / 问题4：确认 ✅ 与取消 ❌ 按钮的启用规则 =====
-// 1. 必须先按顺序点完三个状态键（အစားအစာယူရန် → စောင့်ဆိုင်းပို့ဆောင်နေသည် → ရောက်ရှိပြီး）才允许点确认或取消；
-// 2. 想取消不需要先确认，想确认也不需要先取消（两者互不等待），但都必须等三个状态键按序点完；
-// 3. 订单一旦确认 → 取消永久禁用；订单一旦取消 → 确认永久禁用（双向互斥）。
-var _finalMarks = window.__finalMarks = window.__finalMarks || {};  // order_no -> "confirm" | "cancel"
-function _allStatusDone() {
-  var conf = state.confirmedStatuses || [];
-  for (var i = 0; i < STATUS_ORDER.length; i++) {
-    if (conf.indexOf(STATUS_ORDER[i]) < 0) return false;
-  }
-  return true;
-}
-function _finalMarkOf(orderNo) {
-  var o = String(orderNo || "").trim();
-  return o ? (_finalMarks[o] || "") : "";
-}
-function applyFinalButtons() {
-  var btnOk = document.getElementById("confirmDeliveredBtn");
-  var btnNo = document.getElementById("cancelOrderBtn");
-  var conf = state.confirmedStatuses || [];
-  var mk = _finalMarkOf(state.orderNo);
-  var isConfirmed = mk === "confirm" || state.status === "လက်ခံပြီးပါပြီ" || conf.indexOf("လက်ခံပြီးပါပြီ") >= 0;
-  var isCancelled = mk === "cancel" || state.status === "ပယ်ဖျက်ထားသည်" || conf.indexOf("ပယ်ဖျက်ထားသည်") >= 0;
-  var ready = _allStatusDone();
-  if (btnOk) btnOk.disabled = (isConfirmed || isCancelled || !ready);
-  if (btnNo) btnNo.disabled = (isConfirmed || isCancelled || !ready);
-  var _tip = isConfirmed ? "订单已确认，无法再取消"
-    : isCancelled ? "订单已取消，无法再确认"
-    : (!ready ? "请先按顺序点完三个状态键" : "");
-  if (btnOk) btnOk.title = _tip;
-  if (btnNo) btnNo.title = _tip;
-  return { ready: ready, confirmed: isConfirmed, cancelled: isCancelled };
-}
-window.applyFinalButtons = applyFinalButtons;
-function _finalBlockMsg(kind) {
-  // 返回被拦截的原因（空字符串 = 允许）
-  var st = applyFinalButtons();
-  if (st.confirmed) return "ဤအမှာစာ လက်ခံပြီးပါပြီ။ ပယ်ဖျက်၍ မရတော့ပါ（订单已确认，无法再取消）";
-  if (st.cancelled) return "ဤအမှာစာ ပယ်ဖျက်ပြီးပါပြီ။ လက်ခံ၍ မရတော့ပါ（订单已取消，无法再确认）";
-  if (!st.ready) return "ဦးစွာ အစားအစာယူရန် → စောင့်ဆိုင်းပို့ဆောင်နေသည် → ရောက်ရှိပြီး အစဉ်လိုက် နှိပ်ပြီးမှ " + kind + " ကို နှိပ်ပါ（请先把三个状态键按顺序点完）";
-  return "";
-}
 function applyStatusOrder() {
   var box = document.getElementById("statusBox");
   if (!box) return;
@@ -1680,13 +1622,14 @@ function applyStatusOrder() {
     if (conf.indexOf(stt) >= 0) { btns[k].disabled = true; continue; }
     btns[k].disabled = (idx > unlocked);
   }
-  try { applyFinalButtons(); } catch (e) {}
 }
 window.applyStatusOrder = applyStatusOrder;
 function lockStatusButtons() {
   (state.confirmedStatuses || []).forEach(function(s) { disableStatusButton(s); });
   try { applyStatusOrder(); } catch (e) {}
-  try { applyFinalButtons(); } catch (e) {}
+  if ((state.confirmedStatuses || []).indexOf("လက်ခံပြီးပါပြီ") >= 0) {
+    document.getElementById("confirmDeliveredBtn").disabled = true;
+  }
 }
 function saveLockLocal() {
   try {
@@ -1788,9 +1731,6 @@ function stopSim() {
 
 // ---------- ဆိုင်မှ လက်ခံရရှိကြောင်း အတည်ပြုခြင်း ----------
 function confirmDelivered() {
-  // 问题3 / 问题4：三个状态键未按序点完、或订单已取消 → 禁止确认
-  var _blkOk = _finalBlockMsg("လက်ခံပြီးပါပြီ");
-  if (_blkOk) { showInfo(_blkOk); return; }
   // 已完成的订单不允许再打开确认框（防止重复确认导致数量/通知翻倍）
   if (state.orderNo && _confirmDoneOrders[state.orderNo]) {
     showInfo("ဤအမှာစာ လက်ခံပြီးသားဖြစ်ပါသည်（该订单已确认完成）");
@@ -1915,7 +1855,7 @@ async function doConfirmDelivered() {
       else if (_btn) _btn.disabled = false;
       return;
     }
-    if (state.orderNo) { _confirmDoneOrders[state.orderNo] = true; _finalMarks[state.orderNo] = "confirm"; }
+    if (state.orderNo) _confirmDoneOrders[state.orderNo] = true;
     var _doneNo = state.orderNo, _donePh = state.phone;
     var _doneRet = (j.baozi_returned !== undefined && j.baozi_returned !== null) ? (parseInt(j.baozi_returned, 10) || 0) : null;
     closeConfirmModal();
@@ -1957,9 +1897,6 @@ async function doConfirmDelivered() {
 
 // ---------- အော်ဒါ ပယ်ဖျက်ခြင်း ----------
 function confirmCancelOrder() {
-  // 问题3 / 问题4：三个状态键未按序点完、或订单已确认 → 禁止取消
-  var _blkNo = _finalBlockMsg("အော်ဒါ ပယ်ဖျက်မည် ❌");
-  if (_blkNo) { showInfo(_blkNo); return; }
   document.getElementById("cancelOrderText").textContent = "Order Number: " + (state.orderNo || "-");
   if (document.getElementById("cancelBaozi")) document.getElementById("cancelBaozi").value = "";
   if (document.getElementById("cancelReason")) document.getElementById("cancelReason").value = "";
@@ -1984,18 +1921,6 @@ async function doCancelOrder() {
     var j = await r.json();
     if (!j.ok) { showInfo(j.msg); return; }
     closeCancelOrder();
-    // 问题4：取消成功 → 该订单永久禁止确认（双向互斥）
-    _finalMarks[orderNo] = "cancel";
-    state.status = "ပယ်ဖျက်ထားသည်";
-    if (!state.confirmedStatuses) state.confirmedStatuses = [];
-    if (state.confirmedStatuses.indexOf("ပယ်ဖျက်ထားသည်") < 0) state.confirmedStatuses.push("ပယ်ဖျက်ထားသည်");
-    // 问题2：取消时填写的退回包子数立刻显示（与确认时填写的退回量一起累计）
-    if (j.baozi_returned !== undefined && j.baozi_returned !== null) {
-      var _rtElC = document.getElementById("rtReturn");
-      if (_rtElC) _rtElC.textContent = j.baozi_returned;
-      try { if (window.__remain) window.__remain.baoziReturned = j.baozi_returned; } catch (e) {}
-    }
-    try { applyFinalButtons(); } catch (e) {}
     // 取消后地图保留红圈 ❌ + 订单号（与确认 ✅ 一致），骑手与商家都能第一时间看到
     var cLat = (shopLat === null || shopLat === undefined) ? state.curLat : shopLat;
     var cLng = (shopLat === null || shopLat === undefined) ? state.curLng : shopLng;
@@ -2066,7 +1991,7 @@ function resetAfterCompletion() {
   // 清除本地锁定记录，刷新后不残留旧订单锁定
   try { localStorage.removeItem("riderLock_" + oldPhone); } catch (e) {}
   // 自动带出原始总量（分母不扣减，只扣减骑手确认时的剩余量）
-  if (oldPhone) { loadTodayCancelled(oldPhone); }
+  if (oldPhone) { loadRemaining(oldPhone); loadTodayCancelled(oldPhone); }
 }
 
 // ---------- ဖုန်းနံပါတ်နှင့် အမှာစာ မကိုက်ညီပါက အလိုအလျောက် ပြန်လည်သတ်မှတ်ခြင်း ----------
@@ -2077,24 +2002,19 @@ function handleUnbound(msg) {
 }
 
 // ---------- ကျန်ရှိသော အရေအတွက် အလိုအလျောက် ဖြည့်ခြင်း ----------
-async function loadRemaining(phone, orderNo) {
-  // 问题1：只在「这个骑手 × 这一单」已经有自己的数量记录时才回填；
-  // 绝不回填别的骑手 / 别的订单的数字（旧逻辑用历史订单兜底，会把上一单甚至别人的量显示出来）。
-  var p = String(phone || "").trim();
-  var o = String(orderNo || "").trim();
-  if (!p || !o) return;
+async function loadRemaining(phone) {
+  if (!phone) return;
+  // 输入框回填的是「这个骑手今天第一次输入的量」（不是扣减后的剩余量）：
+  // 首次 600 送了 100 只剩 500 时，重新下单仍回填 600，分母不会被越扣越小。
+  // 【新订单必须自己输入】这里绝不回填上一单/上一个骑手的数量，
+  // 否则新单会带着老数字，骑手以为数量被"串"了。清空输入框，让每一单从自己的首次输入开始。
   try {
-    var r0 = await fetch("/api/rider/remaining?phone=" + encodeURIComponent(p) + "&order_no=" + encodeURIComponent(o), { cache: "no-store" });
-    if (!r0.ok) return;
-    var j0 = await r0.json();
-    if (!j0 || !j0.ok) return;
-    if (j0.scope !== "rider_order") return;               // 本单还没有自己的记录 → 保持空白，让骑手自己输入
-    if (String(j0.order_no || "") !== o) return;          // 订单不匹配 → 一律不回填
-    if (j0.baozi_total_orig > 0) {
-      document.getElementById("baoziCount").value = j0.baozi_total_orig;
-      document.getElementById("shopCount").value = (j0.shop_total_orig !== undefined && j0.shop_total_orig !== null) ? j0.shop_total_orig : document.getElementById("shopCount").value;
-    }
+    document.getElementById("baoziCount").value = "";
+    document.getElementById("shopCount").value = "";
+    if (window.validateCountInputs) window.validateCountInputs();
   } catch (e) {}
+  // 仅刷新「剩余数量」卡片的退回/取消标记，不碰输入框
+  try { await fetch("/api/rider/remaining?phone=" + encodeURIComponent(phone), { cache: "no-store" }); } catch (e) {}
 }
 
 // ---------- နောက်ဆုံးအခြေအနေ ပြန်လည် ရယူခြင်း ----------
@@ -2256,20 +2176,6 @@ async function refreshRiderInfo() {
         document.getElementById("curStatus").style.color = "";
       }
     }
-    // 问题3：服务端已记录的三个前置状态键，按顺序回填为「已完成」——
-    // 换手机 / 清缓存 / 重装后，骑手照样能按顺序把剩下的状态点完，然后才能确认或取消。
-    var _sIdx = STATUS_ORDER.indexOf(_st);
-    if (_sIdx >= 0 && !_isFinal) {
-      if (!state.confirmedStatuses) state.confirmedStatuses = [];
-      var _needFill = false;
-      for (var _si = 0; _si <= _sIdx; _si++) {
-        if (state.confirmedStatuses.indexOf(STATUS_ORDER[_si]) < 0) {
-          state.confirmedStatuses.push(STATUS_ORDER[_si]);
-          _needFill = true;
-        }
-      }
-      if (_needFill) { try { lockStatusButtons(); } catch (e) {} }
-    }
     // 跨设备终态同步：另一台设备（电脑/另一部手机）已完成或已取消，本端必须立刻跟上，
     // 不能停留在旧状态继续上报位置，否则商家端会一直显示「配送中」。
     if (_isFinal && state.__finalSynced !== ((j.order_no || "") + "|" + _st)) {
@@ -2285,10 +2191,8 @@ async function refreshRiderInfo() {
       saveLockLocal();
       document.getElementById("gpsBtn").disabled = true;
       document.getElementById("gpsBtn").textContent = "GPS ပိတ်ထားသည်";
-      // 问题4：服务端已是终态 → 记下互斥标记，确认/取消按键双向永久禁用
-      if (j.order_no) _finalMarks[j.order_no] = (_st === "လက်ခံပြီးပါပြီ") ? "confirm" : "cancel";
-      try { applyFinalButtons(); } catch (e) {}
       if (_st === "လက်ခံပြီးပါပြီ") {
+        document.getElementById("confirmDeliveredBtn").disabled = true;
         showInfo("ဤအမှာစာကို အခြားတစ်နေရာမှ လက်ခံပြီးပါပြီ。状态已同步完成");
       } else {
         showInfo("ဤအမှာစာကို ပယ်ဖျက်ပြီးပါပြီ。状态已同步取消");
@@ -2691,14 +2595,10 @@ checkLogin();
     // 还没绑定订单、且服务端返回 rider_empty（该骑手当天没有任何自己的数量）时，
     // 一律显示 "-"，不显示 0/-，避免"骑手还没下单却显示 0"的误解
     var _noOrderEmpty = (j.scope === "rider_empty") && !((window.state && state.orderNo) || "");
-    // 该骑手这一单还没有任何数量（分母 0 且没送出/退回）时，一律显示 "-"，
-    // 不再显示 "0 / -"（新建订单后那种半截数字会被误认为数据出问题）
-    var _hasB = (parseInt(j.baozi_remaining, 10) || 0) > 0 || (parseInt(j.baozi_received, 10) || 0) > 0;
-    var _hasS = (parseInt(j.shop_remaining, 10) || 0) > 0 || (parseInt(j.shop_received, 10) || 0) > 0;
-    if (g("rtBaozi")) g("rtBaozi").textContent = (_noOrderEmpty || (_denB === 0 && !_hasB)) ? "-" :
+    if (g("rtBaozi")) g("rtBaozi").textContent = _noOrderEmpty ? "-" :
       (((j.baozi_remaining !== undefined && j.baozi_remaining !== null) ? j.baozi_remaining : "-") +
       " / " + (_denB || "-"));
-    if (g("rtShop")) g("rtShop").textContent = (_noOrderEmpty || (_denS === 0 && !_hasS)) ? "-" :
+    if (g("rtShop")) g("rtShop").textContent = _noOrderEmpty ? "-" :
       (((j.shop_remaining !== undefined && j.shop_remaining !== null) ? j.shop_remaining : "-") +
       " / " + (_denS || "-"));
     if (g("rtReturn")) g("rtReturn").textContent = ((j.baozi_returned !== undefined && j.baozi_returned !== null) ? j.baozi_returned : 0);
@@ -2791,7 +2691,17 @@ checkLogin();
         pr.then(function (r) {
           r.clone().json().then(function (j) {
             if (!j || !j.ok) return;
+            // 问题2：取消里填写的退回数量必须立刻显示在「ပြန်အပ်သောပေါက်စီအရေအတွက်」，
+            // 与确认里填写的退回量一起累计（服务端已把两者相加后返回）。
+            try {
+              var _rr = document.getElementById("rtReturn");
+              if (_rr && j.baozi_returned !== undefined && j.baozi_returned !== null) {
+                _rr.textContent = j.baozi_returned;
+              }
+              if (window.__remain) window.__remain.baoziReturned = j.baozi_returned;
+            } catch (e) {}
             loadRemain(snapPhone, snapOrder);
+            if (window.syncActionGate) window.syncActionGate();
             speakEn("Order number " + orderNoToWords(snapOrder) + " cancelled");
           }).catch(function () {});
         }).catch(function () {});
@@ -3383,6 +3293,111 @@ checkLogin();
       if (window.loadRemain) window.loadRemain(ph, no);
     } catch (e) {}
   }, 3000);
+})();
+</script>
+<script>
+// ================= v6：确认 / 取消 互锁 + 三状态顺序门禁（问题3、问题4） =================
+// 规则：
+//  1) 必须先把 အစားအစာယူရန် စောင့်ဆိုင်း → ပို့ဆောင်နေသည် → ရောက်ရှိပြီး 三个状态按键按顺序点完，
+//     「လက်ခံပြီးပါပြီ」和「အော်ဒါ ပယ်ဖျက်မည် ❌」才可以点击；
+//  2) 取消不需要先确认；但订单一旦确认（Completed），取消键永久禁用；
+//  3) 订单一旦取消（Cancelled），确认键永久禁用（服务端同样拦截，刷新/换设备也生效）。
+(function () {
+  var ORDER = ["အစားအစာယူရန် စောင့်ဆိုင်း", "ပို့ဆောင်နေသည်", "ရောက်ရှိပြီး"];
+
+  function cs() {
+    try { return (window.state && state.confirmedStatuses) || []; } catch (e) { return []; }
+  }
+  function curStatus() {
+    try { return (window.state && state.status) || ""; } catch (e) { return ""; }
+  }
+  function curOrder() {
+    try { return (window.state && state.orderNo) || window.__activeOrderNo || ""; } catch (e) { return window.__activeOrderNo || ""; }
+  }
+  // 三个状态按键是否已按顺序推到位（取已确认状态里最靠后的一位，前面必然已经点过）
+  function statusSeqDone() {
+    var c = cs(), maxIdx = -1;
+    for (var i = 0; i < ORDER.length; i++) { if (c.indexOf(ORDER[i]) >= 0 && i > maxIdx) maxIdx = i; }
+    var st = curStatus();
+    var si = ORDER.indexOf(st);
+    // 服务端最新状态也作为依据：刷新 / 换设备重绑时，已推进到第 3 个状态的订单不该被重新锁死
+    try {
+      var sv = (window.__remain && window.__remain.status) || "";
+      var sj = ORDER.indexOf(sv);
+      if (sj > si) si = sj;
+    } catch (e) {}
+    if (si > maxIdx) maxIdx = si;
+    return maxIdx >= ORDER.length - 1;
+  }
+  // 终态判定：Completed / Cancelled（本地即时锁 + 服务端状态双判定）
+  function terminal() {
+    var st = curStatus();
+    try { if (window.__remain && window.__remain.status) st = window.__remain.status; } catch (e) {}
+    var lk = window.__finalLock;
+    var no = curOrder();
+    if (lk && lk.no && no && lk.no === no && (Date.now() - lk.ts) < 6 * 3600 * 1000) {
+      if (lk.en === "Completed") return "completed";
+      if (lk.en === "Cancelled") return "cancelled";
+    }
+    if (st === "လက်ခံပြီးပါပြီ") return "completed";
+    if (st === "ပယ်ဖျက်ထားသည်") return "cancelled";
+    var c = cs();
+    if (c.indexOf("လက်ခံပြီးပါပြီ") >= 0) return "completed";
+    if (c.indexOf("ပယ်ဖျက်ထားသည်") >= 0) return "cancelled";
+    return "";
+  }
+  function paint(btn, enabled) {
+    if (!btn) return;
+    btn.disabled = !enabled;
+    btn.style.opacity = enabled ? "" : "0.45";
+    btn.style.cursor = enabled ? "pointer" : "not-allowed";
+  }
+  function apply() {
+    var t = terminal();
+    var ready = !!curOrder() && statusSeqDone() && !t;
+    paint(document.getElementById("confirmDeliveredBtn"), ready);
+    paint(document.getElementById("cancelOrderBtn"), ready);
+  }
+  window.syncActionGate = apply;
+  setInterval(apply, 200);
+  document.addEventListener("DOMContentLoaded", apply);
+
+  function msgFor(kind) {
+    if (kind === "confirm") {
+      if (terminal() === "cancelled") return "ဤအမှာစာကို ပယ်ဖျက်ထားပြီဖြစ်ပါသည်။ လက်ခံ၍ မရပါ（订单已取消，禁止确认）";
+      if (!statusSeqDone()) return "အစားအစာယူရန် → ပို့ဆောင်နေသည် → ရောက်ရှိပြီး အစဉ်လိုက် နှိပ်ပြီးမှ လက်ခံနိုင်ပါသည်（请先按顺序点完三个状态键）";
+    } else {
+      if (terminal() === "completed") return "ဤအမှာစာကို လက်ခံပြီးဖြစ်ပါသည်။ ပယ်ဖျက်၍ မရပါ（订单已确认，禁止取消）";
+      if (!statusSeqDone()) return "အစားအစာယူရန် → ပို့ဆောင်နေသည် → ရောက်ရှိပြီး အစဉ်လိုက် နှိပ်ပြီးမှ ပယ်ဖျက်နိုင်ပါသည်（请先按顺序点完三个状态键）";
+    }
+    return "";
+  }
+  function blockIfNeeded(kind) {
+    var t = terminal();
+    if (kind === "confirm" && (t === "cancelled" || t === "completed")) { showInfo(msgFor("confirm")); return true; }
+    if (kind === "cancel" && (t === "completed" || t === "cancelled")) { showInfo(msgFor("cancel")); return true; }
+    if (!statusSeqDone()) { showInfo(msgFor(kind)); return true; }
+    return false;
+  }
+  // 入口函数双保险（按钮是 inline onclick，同时包一层内部执行函数，任何路径调用都拦得住）
+  ["confirmDelivered", "confirmCancelOrder", "doConfirmDelivered", "doCancelOrder"].forEach(function (fn) {
+    var orig = window[fn];
+    if (typeof orig !== "function") return;
+    var kind = (fn.indexOf("ancel") >= 0 || fn.indexOf("Cancel") >= 0) ? "cancel" : "confirm";
+    window[fn] = function () {
+      if (blockIfNeeded(kind)) return;
+      return orig.apply(this, arguments);
+    };
+  });
+
+  // 点击任何一个状态键后立即重新评估一次（不必等 200ms 轮询）
+  document.addEventListener("click", function (ev) {
+    var t = ev.target;
+    while (t && t !== document) {
+      if (t.id === "statusBox" || (t.parentNode && t.parentNode.id === "statusBox")) { setTimeout(apply, 30); break; }
+      t = t.parentNode;
+    }
+  }, true);
 })();
 </script>
 

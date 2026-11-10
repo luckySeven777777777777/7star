@@ -188,7 +188,7 @@
     </div>
     </div>
     <input type="file" id="avatarInput" accept="image/*" style="display:none">
-    <h2>📍 ပို့ဆောင်သူ တည်နေရာ ရှာဖွေခြင်း</h2>
+    <h2>📍查询骑手定位管理后台</h2>
     <div class="sub">Order Number + ပို့ဆောင်သူ ဖုန်းနံပါတ် + ပို့ဆောင်သူအမည် ထည့်၍ မည်သည့်နေရာရောက်နေသည်ကို အချိန်နှင့်တပြေးညီ ကြည့်ပါ</div>
   </div>
 
@@ -1888,8 +1888,14 @@ startBellPolling();
             .bindPopup((isDone ? "✅ <b>Completed</b><br>Order：<b>" : "❌ <b>Cancelled</b><br>Order：<b>") + (o.order_no || "") + "</b>" +
                        (o.rider_name ? "<br>Rider: " + o.rider_name : "") + (o.time ? "<br>" + o.time : ""));
         }
-        (j.done || []).forEach(function (o) { addMark(o, true); });
+        // ❌ 取消优先：先画取消，再画完成，同一订单已被标为取消时绝不回退成 ✅ Completed
+        var _canKeys = {};
+        (j.cancelled || []).forEach(function (o) { if (o.order_no) _canKeys[String(o.order_no)] = 1; });
         (j.cancelled || []).forEach(function (o) { addMark(o, false); });
+        (j.done || []).forEach(function (o) {
+          if (o.order_no && _canKeys[String(o.order_no)]) return;
+          addMark(o, true);
+        });
         _marksOnce = true;
       })
       .catch(function () {});
@@ -1901,7 +1907,7 @@ startBellPolling();
   setInterval(function () {
     if (!window.map) return;
     drawTodayMarks();
-  }, 5000);
+  }, 2000);
   setTimeout(drawTodayMarks, 1200);
 
   /* ---------------- 通知面板：手机上不出屏 ---------------- */

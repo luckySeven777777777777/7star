@@ -226,6 +226,7 @@
     </div>
     <div class="rt-row"><span class="rt-label">ပေါက်စီကျန်ရှိအလုံးရေ</span><span class="rt-val" id="rtBaozi">- / -</span></div>
     <div class="rt-row"><span class="rt-label">ဆိုင် ကျန်ရှိအရေအတွက်</span><span class="rt-val" id="rtShop">- / -</span></div>
+    <div class="rt-row"><span class="rt-label">ပြန်အပ်သောပေါက်စီအရေအတွက်</span><span class="rt-val" id="rtReturn">0</span></div>
     <div class="rt-sub">Updated：<span id="rtTime">-</span></div>
   </div>
 
@@ -338,6 +339,8 @@
       <input id="confirmBaozi" type="number" min="0" placeholder="အရေအတွက် ထည့်ပါ">
       <label>လက်ခံရရှိဆိုင်လိပ်စာ</label>
       <input id="confirmAddress" placeholder="ဆိုင်လိပ်စာ ထည့်ပါ">
+      <label>ပြန်အပ်သော ပေါက်စီအရေအတွက်</label>
+      <input id="confirmReturn" type="number" min="0" placeholder="ပြန်အပ်သော အရေအတွက် ထည့်ပါ">
       <label>Please select payment method</label>
       <input type="hidden" id="confirmPayment" value="">
       <div class="pay-select" id="paySelect" onclick="togglePayMenu(event)">
@@ -380,9 +383,13 @@
       <div class="confirm-icon">✕</div>
       <h3>အော်ဒါ ပယ်ဖျက်မည်</h3>
       <p class="info-text" id="cancelOrderText"></p>
+      <label>ပယ်ဖျက်သော ပေါက်စီအရေအတွက်</label>
+      <input id="cancelBaozi" type="number" min="0" placeholder="အရေအတွက် ထည့်ပါ">
+      <label>ပယ်ဖျက်ရသည့် အကြောင်းအရာ</label>
+      <input id="cancelReason" placeholder="အကြောင်းအရာ ထည့်ပါ">
       <div class="row2">
-        <button class="btn btn-danger" onclick="doCancelOrder()">ပယ်ဖျက်မည် ✅</button>
-        <button class="btn btn-gray" onclick="closeCancelOrder()">Cancel ❌</button>
+        <button class="btn btn-danger" onclick="doCancelOrder()">Confirm ✅</button>
+        <button class="btn btn-gray" onclick="closeCancelOrder()">Close ❌</button>
       </div>
     </div>
   </div>
@@ -1704,6 +1711,7 @@ function confirmDelivered() {
   document.getElementById("confirmModal").style.display = "flex";
   document.getElementById("confirmBaozi").value = "";
   document.getElementById("confirmAddress").value = "";
+  if (document.getElementById("confirmReturn")) document.getElementById("confirmReturn").value = "";
   document.getElementById("confirmAmount").value = "";
   resetPaySelect();
   resetProof();
@@ -1792,6 +1800,7 @@ async function doConfirmDelivered() {
   if (state.orderNo && _confirmDoneOrders[state.orderNo]) return;
   if (!proofUploaded) { showInfo("Please upload / take photo first"); return; }
   var baozi = parseInt(document.getElementById("confirmBaozi").value) || 0;
+  var retBaozi = parseInt((document.getElementById("confirmReturn") || {}).value) || 0;
   var address = document.getElementById("confirmAddress").value.trim();
   var paymentMethod = document.getElementById("confirmPayment").value;
   var amount = document.getElementById("confirmAmount").value.trim();
@@ -1805,7 +1814,7 @@ async function doConfirmDelivered() {
     var r = await fetch("/api/rider/confirm", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({ order_no: state.orderNo, phone: state.phone, confirm_baozi: baozi, address: address, payment_method: paymentMethod, amount: amount, proof_url: proofUrl })
+      body: JSON.stringify({ order_no: state.orderNo, phone: state.phone, confirm_baozi: baozi, return_baozi: retBaozi, address: address, payment_method: paymentMethod, amount: amount, proof_url: proofUrl })
     });
     var j = await r.json();
     if (!j.ok) {
@@ -1851,6 +1860,8 @@ async function doConfirmDelivered() {
 // ---------- အော်ဒါ ပယ်ဖျက်ခြင်း ----------
 function confirmCancelOrder() {
   document.getElementById("cancelOrderText").textContent = "Order Number: " + (state.orderNo || "-");
+  if (document.getElementById("cancelBaozi")) document.getElementById("cancelBaozi").value = "";
+  if (document.getElementById("cancelReason")) document.getElementById("cancelReason").value = "";
   document.getElementById("cancelOrderModal").style.display = "flex";
 }
 function closeCancelOrder() {
@@ -1860,11 +1871,14 @@ async function doCancelOrder() {
   var orderNo = state.orderNo;
   var phone = state.phone;
   if (!orderNo || !phone) { closeCancelOrder(); showInfo("အမှာစာနံပါတ် သို့မဟုတ် ဖုန်းနံပါတ် မပါရှိပါ"); return; }
+  var cancelBaozi = parseInt((document.getElementById("cancelBaozi") || {}).value) || 0;
+  var cancelReason = ((document.getElementById("cancelReason") || {}).value || "").trim();
+  if (!cancelReason) { showInfo("ပယ်ဖျက်ရသည့် အကြောင်းအရာ ထည့်ပါ"); return; }
   try {
     var r = await fetch("/api/rider/cancel", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({order_no: orderNo, phone: phone})
+      body: JSON.stringify({order_no: orderNo, phone: phone, cancel_baozi: cancelBaozi, cancel_reason: cancelReason})
     });
     var j = await r.json();
     if (!j.ok) { showInfo(j.msg); return; }
@@ -2504,6 +2518,7 @@ checkLogin();
     return '<div class="rt-head"><span>Order：<b id="rtOrder">-</b></span><span>Status：<b id="rtStatus">-</b></span></div>' +
       '<div class="rt-row"><span class="rt-label">ပေါက်စီကျန်ရှိအလုံးရေ</span><span class="rt-val" id="rtBaozi">- / -</span></div>' +
       '<div class="rt-row"><span class="rt-label">ဆိုင် ကျန်ရှိအရေအတွက်</span><span class="rt-val" id="rtShop">- / -</span></div>' +
+'<div class="rt-row"><span class="rt-label">ပြန်အပ်သောပေါက်စီအရေအတွက်</span><span class="rt-val" id="rtReturn">0</span></div>' +
       '<div class="rt-sub">Updated：<span id="rtTime">-</span></div>';
   }
   function ensureRemainCard() {
@@ -2552,6 +2567,7 @@ checkLogin();
       " / " + (_denB || "-");
     if (g("rtShop")) g("rtShop").textContent = ((j.shop_remaining !== undefined && j.shop_remaining !== null) ? j.shop_remaining : "-") +
       " / " + (_denS || "-");
+    if (g("rtReturn")) g("rtReturn").textContent = ((j.baozi_returned !== undefined && j.baozi_returned !== null) ? j.baozi_returned : 0);
     if (g("rtTime")) {
       var now = new Date();
       g("rtTime").textContent = now.getHours() + ":" +

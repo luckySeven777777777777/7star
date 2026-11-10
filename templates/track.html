@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>ဖောက်သည်/ဆိုင် - ပို့ဆောင်သူ တည်နေရာ ရှာဖွေခြင်း</title>
+<title>查询骑手定位管理后台</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 <style>
   * { margin:0; padding:0; box-sizing:border-box; }
@@ -188,7 +188,7 @@
     </div>
     </div>
     <input type="file" id="avatarInput" accept="image/*" style="display:none">
-    <h2>📍 ပို့ဆောင်သူ တည်နေရာ ရှာဖွေခြင်း</h2>
+    <h2>📍 查询骑手定位管理后台</h2>
     <div class="sub">Order Number + ပို့ဆောင်သူ ဖုန်းနံပါတ် + ပို့ဆောင်သူအမည် ထည့်၍ မည်သည့်နေရာရောက်နေသည်ကို အချိန်နှင့်တပြေးညီ ကြည့်ပါ</div>
   </div>
 
@@ -461,7 +461,15 @@ async function search() {
   document.getElementById("searchBtn").disabled = false;
   document.getElementById("searchBtn").textContent = "တည်နေရာ ရှာမည်";
 
-  if (!j.ok) { showErr(j.msg || "ရှာဖွေမှု မအောင်မြင်ပါ"); return; }
+  if (!j.ok) {
+    showErr(j.msg || "ရှာဖွေမှု မအောင်မြင်ပါ");
+    // 取消/完成后骑手已解绑，接口会开始拒绝查询；连续失败必须清掉地图上的“配送中”实时元素，
+    // 否则商家端会一直停在旧状态（取消后地图不更新就是这个原因）。单次网络抖动不会误清。
+    window._trackFail = (window._trackFail || 0) + 1;
+    if (window._trackFail >= 2) clearRealtimeLayers();
+    return;
+  }
+  window._trackFail = 0;
 
   var isNewQuery = (orderNo !== currentOrderNo || phone !== currentPhone);
   if (isNewQuery) setMapPinned(false);  // 换了订单/骑手才重新自动框选视野，同一单不打断用户手动查看
@@ -477,6 +485,18 @@ async function search() {
   render(j);
 }
 
+// 查询失效/终态后清理“配送中”的实时图层（骑手小车、实时轨迹、商家引导线、ETA），
+// 保证取消或确认订单后地图状态与内容立刻同步，不残留旧画面
+function clearRealtimeLayers() {
+  if (marker) { try { map.removeLayer(marker); } catch (e) {} marker = null; }
+  if (trackLine) { try { map.removeLayer(trackLine); } catch (e) {} trackLine = null; }
+  if (shopMarker) { try { map.removeLayer(shopMarker); } catch (e) {} shopMarker = null; }
+  if (guideRoute) { try { map.removeLayer(guideRoute); } catch (e) {} guideRoute = null; }
+  if (guideSlowLine) { try { map.removeLayer(guideSlowLine); } catch (e) {} guideSlowLine = null; }
+  if (_guideEtaMarker) { try { map.removeLayer(_guideEtaMarker); } catch (e) {} _guideEtaMarker = null; }
+  try { updateRouteInfo(null); } catch (e) {}
+}
+
 function render(j) {
   var box = document.getElementById("result");
   box.style.display = "block";
@@ -487,8 +507,13 @@ function render(j) {
   document.getElementById("rTime").textContent = j.update_time || "-";
   document.getElementById("rCity").textContent = j.city || "-";
   document.getElementById("rLatest").textContent = j.latest ? (j.latest.address || (j.latest.lat.toFixed(6) + ", " + j.latest.lng.toFixed(6))) : "-";
-  document.getElementById("rBaozi").textContent = (j.baozi_remaining !== undefined && j.baozi_remaining !== null) ? (j.baozi_remaining + " / " + ((j.baozi_total_orig || j.baozi_total) || "-")) : "-";
-  document.getElementById("rShop").textContent = (j.shop_remaining !== undefined && j.shop_remaining !== null) ? (j.shop_remaining + " / " + ((j.shop_total_orig || j.shop_total) || "-")) : "-";
+  // 与骑手页面完全一致：分子 = 剩余（分母 - 已签收），分母 = 骑手当天第一次输入量（永不被扣减）
+  var _rb = (j.baozi_remaining !== undefined && j.baozi_remaining !== null) ? Math.max(parseInt(j.baozi_remaining, 10) || 0, 0) : null;
+  var _rbT = parseInt(j.baozi_total_orig || j.baozi_total || 0, 10) || 0;
+  document.getElementById("rBaozi").textContent = (_rb === null) ? "-" : (_rb + " / " + (_rbT > 0 ? _rbT : "-"));
+  var _rs = (j.shop_remaining !== undefined && j.shop_remaining !== null) ? Math.max(parseInt(j.shop_remaining, 10) || 0, 0) : null;
+  var _rsT = parseInt(j.shop_total_orig || j.shop_total || 0, 10) || 0;
+  document.getElementById("rShop").textContent = (_rs === null) ? "-" : (_rs + " / " + (_rsT > 0 ? _rsT : "-"));
   document.getElementById("rPayment").textContent = j.payment_method || "-";
   document.getElementById("rAmount").textContent = j.amount || "-";
   document.getElementById("rShopLocation").textContent = locDisplay(j);
@@ -967,8 +992,8 @@ function renderMulti(results, silent) {
         'Order：' + x.order_no + ' · City:' + (x.city || "-") + '<br>' +
         'ပို့ရမည့်လိပ်စာ：' + addrTxt + '<br>' +
         (_isCancel ? "❌ " : (_isDone ? "✅ " : "")) + stTagHtml(stTxt) + '<br>' +
-        'ကျန်ရှိသောပေါက်စီအလုံးအရေတွက်：' + (bt > 0 ? ((bt - br) + ' / ' + bt) : '-') + '<br>' +
-        'ကျန်ရှိသောဆိုင်အရေတွက်：' + (st > 0 ? ((st - sr) + ' / ' + st) : '-') + '<br>' +
+        'ကျန်ရှိသောပေါက်စီအလုံးအရေတွက်：' + (bt - br) + ' / ' + bt + '<br>' +
+        'ကျန်ရှိသောဆိုင်အရေတွက်：' + (st - sr) + ' / ' + st + '<br>' +
         'ငွေပေးချေမှုနည်းလမ်း：' + (x.payment_method || "-") + '<br>' +
         'Amount (MMK)：' + (x.amount || "-") + '<br>' +
         '📍 Location / Geographic Location：' + locDisplay(x) +
@@ -1197,8 +1222,8 @@ function renderHistory() {
       + '城市：<b>' + (h.city || "-") + '</b><br>'
       + 'ပို့ဆောင်သူ နောက်ဆုံးတည်နေရာ：<b>' + loc + '</b><br>'
       + 'ပို့ရမည့်ဆိုင်လိပ်စာ：<b>' + (h.delivery_address || "-") + '</b><br>'
-      + 'ကျန်ရှိသောပေါက်စီအလုံးအရေတွက်：<b>' + (((h.baozi_total_orig || h.baozi_total) > 0) ? (h.baozi_remaining + ' / ' + (h.baozi_total_orig || h.baozi_total)) : '-') + '</b><br>'
-      + 'ကျန်ရှိသောဆိုင်အရေတွက်：<b>' + (((h.shop_total_orig || h.shop_total) > 0) ? (h.shop_remaining + ' / ' + (h.shop_total_orig || h.shop_total)) : '-') + '</b><br>'
+      + 'ကျန်ရှိသောပေါက်စီအလုံးအရေတွက်：<b>' + h.baozi_remaining + ' / ' + (h.baozi_total_orig || h.baozi_total) + '</b><br>'
+      + 'ကျန်ရှိသောဆိုင်အရေတွက်：<b>' + h.shop_remaining + ' / ' + (h.shop_total_orig || h.shop_total) + '</b><br>'
       + 'ငွေပေးချေမှုနည်းလမ်း：<b>' + (h.payment_method || "-") + '</b><br>'
       + 'Amount (MMK)：<b>' + (h.amount || "-") + '</b><br>'
       + '📍 Location / Geographic Location：<b>' + locDisplay(h) + '</b><br>'

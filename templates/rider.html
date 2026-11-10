@@ -669,13 +669,8 @@ function saveDenomLock(all) {
 }
 function _denomNum(v) { var n = parseInt(v, 10); return isNaN(n) ? 0 : n; }
 function _denomToday() {
-  // 缅甸时间(UTC+6:30) 自然日：当天 23:59 过后（即 00:00）清零重算，与服务端 biz_day() 完全一致。
-  // 骑手 3-5 点来领包子时已经是新的一天，必须从当天第一次输入的数量重新开始算，
-  // 绝不能沿用前一天/前几天的旧数量。
-  var now = new Date();
-  var y = new Date(now.getTime() + (6 * 60 + 30) * 60000);
-  var p = function (n) { return (n < 10 ? "0" : "") + n; };
-  return y.getUTCFullYear() + "-" + p(y.getUTCMonth() + 1) + "-" + p(y.getUTCDate());
+  try { if (typeof yangonDateStr === "function") return yangonDateStr(); } catch (e) {}
+  return new Date().toISOString().slice(0, 10);
 }
 // 返回该订单被锁定的分母（= 骑手第一次输入的数量）
 // 规则：第一次输入后永久固定，第二次/第三次输入的任何数量都不会改动它；
@@ -687,7 +682,7 @@ function _denomKey(phone, orderNo) {
   // 分母按「骑手 + 当天」锁定：同一骑手当天的首次输入量跨订单保持（重下单仍是 600），
   // 不同骑手之间绝不混合
   if (p) return "rider:" + p + "|day:" + _denomToday();
-  if (o) return "order:" + o + "|day:" + _denomToday();
+  if (o) return "order:" + o;
   return "";
 }
 // 返回该骑手当天的分母（= 该骑手当天第一次输入的数量）

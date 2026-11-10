@@ -737,10 +737,10 @@ function lockDenom(phone, orderNo, baoziTotal, shopTotal) {
     // 本次给出的「该骑手本单」数字优先（可把历史上被订单级数字顶大的错误锁纠正回来，例如 60 → 20）；
     // 只有本次没给出数字时才沿用旧锁。
     // 问题5：同一天内首次锁定后，分母永久固定，第二次输入不再改变
-    // 【服务端当天分母优先】服务端返回的就是该骑手当天第一次输入量，第二次下单不会改变；
-    // 本机锁只在服务端没有数值时兜底，绝不用它顶掉服务端值（否则第二次输入又会把分母换掉）。
-    b = b || _denomNum(rec.baozi);
-    s = s || _denomNum(rec.shop);
+    // 【当天首次输入优先】键已按「骑手+当天」固定，本地锁就是当天第一次输入的量，
+    // 所以第二次下单（换订单号）也沿用它；服务端值只在本地无锁时兜底。
+    b = _denomNum(rec.baozi) || b;
+    s = _denomNum(rec.shop) || s;
   }
   if (b > 0 || s > 0) {
     all[key] = { baozi: b, shop: s, day: day };
@@ -1486,7 +1486,11 @@ async function bindOrder() {
       var _nb2 = Number(_rm.baozi), _ns2 = Number(_rm.shop);
       var _inB = parseInt(baoziTotal, 10), _inS = parseInt(shopTotal, 10);
       var _same2 = !(_rNo2 !== "" && orderNo !== "" && _rNo2 !== orderNo);
-      if (_same2 && _rm.baozi !== null && _rm.baozi !== undefined && _rm.shop !== null && _rm.shop !== undefined &&
+      // 豁免：该骑手在这单还没有自己的数量（firstInput）或服务端剩余为 0/0 时，属于「首次录入」，
+      // 不是「第二次输入必须等于剩余量」，不能拦截，否则新订单永远绑不上（会弹出 仅剩 0 / 0）
+      var _first2 = !!_rm.firstInput;
+      var _hasRem2 = !_first2 && ((!isNaN(_nb2) && _nb2 > 0) || (!isNaN(_ns2) && _ns2 > 0));
+      if (_same2 && _hasRem2 && _rm.baozi !== null && _rm.baozi !== undefined && _rm.shop !== null && _rm.shop !== undefined &&
           !isNaN(_nb2) && !isNaN(_ns2) && (!isNaN(_inB) && !isNaN(_inS)) && (_inB !== _nb2 || _inS !== _ns2)) {
         showInfo("အရေအတွက် မကိုက်ညီပါ — ကျန်ရှိသည် " + _nb2 + " / " + _ns2 + " သာ ဖြစ်သည်");
         return;
@@ -2603,18 +2607,23 @@ checkLogin();
       _denB = (isNaN(_srvB) ? 0 : _srvB) || _lkR.baozi || 0;
       _denS = (isNaN(_srvS) ? 0 : _srvS) || _lkR.shop || 0;
     }
-    if (g("rtBaozi")) g("rtBaozi").textContent = ((j.baozi_remaining !== undefined && j.baozi_remaining !== null) ? j.baozi_remaining : "-") +
-      " / " + (_denB || "-");
-    if (g("rtShop")) g("rtShop").textContent = ((j.shop_remaining !== undefined && j.shop_remaining !== null) ? j.shop_remaining : "-") +
-      " / " + (_denS || "-");
+    // 还没绑定订单、且服务端返回 rider_empty（该骑手当天没有任何自己的数量）时，
+    // 一律显示 "-"，不显示 0/-，避免"骑手还没下单却显示 0"的误解
+    var _noOrderEmpty = (j.scope === "rider_empty") && !((window.state && state.orderNo) || "");
+    if (g("rtBaozi")) g("rtBaozi").textContent = _noOrderEmpty ? "-" :
+      (((j.baozi_remaining !== undefined && j.baozi_remaining !== null) ? j.baozi_remaining : "-") +
+      " / " + (_denB || "-"));
+    if (g("rtShop")) g("rtShop").textContent = _noOrderEmpty ? "-" :
+      (((j.shop_remaining !== undefined && j.shop_remaining !== null) ? j.shop_remaining : "-") +
+      " / " + (_denS || "-"));
     if (g("rtReturn")) g("rtReturn").textContent = ((j.baozi_returned !== undefined && j.baozi_returned !== null) ? j.baozi_returned : 0);
     if (g("rtTime")) {
       var now = new Date();
       g("rtTime").textContent = now.getHours() + ":" +
         String(now.getMinutes()).padStart(2, "0") + ":" + String(now.getSeconds()).padStart(2, "0");
     }
-    window.__remain.baozi = (j.baozi_remaining !== undefined && j.baozi_remaining !== null) ? parseInt(j.baozi_remaining, 10) : null;
-    window.__remain.shop = (j.shop_remaining !== undefined && j.shop_remaining !== null) ? parseInt(j.shop_remaining, 10) : null;
+    window.__remain.baozi = _noOrderEmpty ? null : ((j.baozi_remaining !== undefined && j.baozi_remaining !== null) ? parseInt(j.baozi_remaining, 10) : null);
+    window.__remain.shop = _noOrderEmpty ? null : ((j.shop_remaining !== undefined && j.shop_remaining !== null) ? parseInt(j.shop_remaining, 10) : null);
     window.__remain.day = j.day || "";
     window.__remain.orderNo = j.order_no || "";
     window.__remain.status = j.status || "";

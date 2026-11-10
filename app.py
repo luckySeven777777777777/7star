@@ -109,36 +109,62 @@ def send_telegram_text(text):
         return False, str(e)
 
 
-def build_proof_caption(order_no, phone, order_dict, rider_name, latest):
-    """组装 Telegram 通知内容：订单信息 + 扣减后的剩余数量 + 最新位置（与订单记录一致）"""
-    baozi_total, baozi_received, shop_total, shop_received = order_counts(order_dict)
+def build_proof_caption(order_no, phone, order_dict, rider_name, latest, qty=None):
+    """组装 Telegram 通知内容（整单只发这一条，绝不重复）：骑手独立口径数量 + 最新位置 + 退回包子数量"""
+    if qty:
+        baozi_total = _to_int(qty.get("baozi_total"))
+        baozi_received = _to_int(qty.get("baozi_received"))
+        shop_total = _to_int(qty.get("shop_total"))
+        shop_received = _to_int(qty.get("shop_received"))
+        returned = _to_int(qty.get("baozi_returned"))
+    else:
+        baozi_total, baozi_received, shop_total, shop_received = order_counts(order_dict)
+        returned = 0
     loc_text = "-"
     if latest:
         loc_text = latest.get("address") or ("%.6f, %.6f" % (latest["lat"], latest["lng"]))
     return (
+        "✅ အော်ဒါ ပြီးဆုံးပါပြီ✅\n"
         "🚚 Delivery Proof\n"
         "📥Order: %s\n"
         "📲Rider Phone: %s\n"
         "👤Rider Name：%s\n"
         "🔍လက်ရှိအခြေအနေ：%s\n"
         "📍လက်ရှိနေရာ：%s\n"
-        "🍙ကျန်ရှိသောပေါက်စီအလုံးအရေတွက်：%s / %s\n"
-        "📝ကျန်ရှိသောဆိုင်အရေတွက်：%s / %s\n"
+        "🍙ကျန်ရှိသောပေါက်စီအလုံးအရေတွက်：%d / %d\n"
+        "📝ကျန်ရှိသောဆိုင်အရေအတွက်：%d / %d\n"
+        "‼️ပြန်အပ်သောပေါက်စီအရေအတွက်：%d\n"
         "💳ငွေပေးချေမှုနည်းလမ်း：%s\n"
         "💵Amount (MMK)：%s"
     ) % (
         order_no or "-",
         phone or "-",
-        rider_name,
-        order_dict.get("status", "") or "",
+        rider_name or "-",
+        order_dict.get("status", "") or "-",
         loc_text,
-        baozi_total - baozi_received,
+        max(baozi_total - baozi_received, 0),
         baozi_total,
-        shop_total - shop_received,
+        max(shop_total - shop_received, 0),
         shop_total,
-        order_dict.get("payment_method", "") or "",
-        order_dict.get("amount", "") or "",
+        returned,
+        order_dict.get("payment_method", "") or "-",
+        order_dict.get("amount", "") or "-",
     )
+
+
+def build_cancel_caption(order_no, phone, rider_name, loc_text, cancel_baozi, cancel_reason):
+    """骑手取消订单的 Telegram 通知（标签缅文，数量/原因中文）"""
+    return (
+        "🚚 Delivery Proof\n"
+        "❌️Order Cancel❌️\n"
+        "📥Order: %s\n"
+        "📲Rider Phone: %s\n"
+        "👤Rider Name：%s\n"
+        "📍လက်ရှိနေရာ：%s\n"
+        "🍙取消数量：%d\n"
+        "❌️取消原因：%s"
+    ) % (order_no or "-", phone or "-", rider_name or "-", loc_text or "-",
+         _to_int(cancel_baozi), cancel_reason or "-")
 
 
 # ==================== 数据库连接 ====================
@@ -554,6 +580,15 @@ def _ensure_qty_table(cur):
                 baozi_orig INTEGER DEFAULT 0, shop_orig INTEGER DEFAULT 0,
                 baozi_received INTEGER DEFAULT 0, shop_received INTEGER DEFAULT 0,
                 updated_at TEXT, UNIQUE(phone, order_no))"""))
+        for _col_sql in (
+            "ALTER TABLE rider_order_qty ADD COLUMN baozi_returned INTEGER DEFAULT 0",
+            "ALTER TABLE rider_order_qty ADD COLUMN cancel_baozi INTEGER DEFAULT 0",
+            "ALTER TABLE rider_order_qty ADD COLUMN cancel_reason TEXT",
+        ):
+            try:
+                cur.execute(_q(_col_sql))
+            except Exception:
+                pass
         _QTY_TABLE_READY = True
         return True
     except Exception as e:
@@ -659,12 +694,17 @@ def rider_qty_lock(cur, phone, order_no, baozi_in, shop_in):
     if rec:
         b = _to_int(rec.get("baozi_orig"))
         s = _to_int(rec.get("shop_orig"))
-        # 【纠正】本单还没送出任何数量时，以骑手这一次输入为准：
-        # 旧记录可能是上一版跨订单聚合算出来的 60，必须能让它回到骑手真正输入的 20。
-        if b_in > 0 and _to_int(rec.get("baozi_received")) <= 0 and b_in != b:
-            b = b_in
-        if s_in > 0 and _to_int(rec.get("shop_received")) <= 0 and s_in != s:
-            s = s_in
+        # 【严格锁定】分母 = 该骑手该单「第一次输入的数量」，之后无论再输入多少次都绝不改写。
+        rec_day = (rec.get("day") or "").strip()
+        if rec_day and rec_day != day:
+            # 跨天（每天 23:59 之后）：昨日口径作废，以今天第一次输入重新锁定，送出/退回自动清零
+            nb, ns = b_in, s_in
+            try:
+                cur.execute(_q("UPDATE rider_order_qty SET day=?, baozi_orig=?, shop_orig=?, baozi_received=0, shop_received=0, baozi_returned=0, updated_at=? WHERE phone=? AND order_no=?"),
+                            (day, nb, ns, now_str(), phone, order_no))
+            except Exception:
+                pass
+            return nb, ns
         if b <= 0:
             b = b_in
         if s <= 0:
@@ -690,10 +730,11 @@ def rider_qty_lock(cur, phone, order_no, baozi_in, shop_in):
     return b_new, s_new
 
 
-def rider_qty_add(cur, phone, order_no, baozi_add, shop_add):
+def rider_qty_add(cur, phone, order_no, baozi_add, shop_add, returned_add=0):
     """把本次送出的数量累加到「该骑手在该订单」名下，其他骑手 / 其他订单完全不受影响"""
     b_add = max(_to_int(baozi_add), 0)
     s_add = max(_to_int(shop_add), 0)
+    r_add = max(_to_int(returned_add), 0)
     phone = _rq_key(phone)
     if not phone or not order_no:
         return None
@@ -707,8 +748,9 @@ def rider_qty_add(cur, phone, order_no, baozi_add, shop_add):
             pass
         return rider_qty_get(cur, phone, order_no)
     try:
-        cur.execute(_q("UPDATE rider_order_qty SET baozi_received=?, shop_received=?, updated_at=? WHERE phone=? AND order_no=?"),
+        cur.execute(_q("UPDATE rider_order_qty SET baozi_received=?, shop_received=?, baozi_returned=?, updated_at=? WHERE phone=? AND order_no=?"),
                     (_to_int(rec.get("baozi_received")) + b_add, _to_int(rec.get("shop_received")) + s_add,
+                     _to_int(rec.get("baozi_returned")) + r_add,
                      now_str(), phone, order_no))
     except Exception:
         pass
@@ -729,6 +771,8 @@ def rider_qty_view(cur, phone, order_dict=None, order_no=None):
         # 【严格隔离】只读「该骑手 + 该订单」这一条记录，绝不跨订单、跨骑手聚合，
         # 否则本骑手当天别的订单（或别的骑手）的数字会把本单分母顶大（输入 20 却显示 60）。
         rec = rider_qty_get(cur, phone, order_no) if order_no else None
+        if rec and (rec.get("day") or "").strip() and (rec.get("day") or "").strip() != day:
+            rec = None  # 跨天自动清零：昨天锁定的分母不许带到今天
         if rec:
             bo = _to_int(rec.get("baozi_orig"))
             so = _to_int(rec.get("shop_orig"))
@@ -738,6 +782,7 @@ def rider_qty_view(cur, phone, order_dict=None, order_no=None):
                 return {
                     "scope": "rider_order", "day": day, "order_no": order_no,
                     "baozi_total": bo, "baozi_received": br, "baozi_remaining": max(bo - br, 0),
+                    "baozi_returned": _to_int(rec.get("baozi_returned")),
                     "shop_total": so, "shop_received": sr, "shop_remaining": max(so - sr, 0),
                 }
         # 本骑手在这一单还没有自己的数量记录：返回「待首次输入」，绝不用订单级数字冒充
@@ -745,9 +790,19 @@ def rider_qty_view(cur, phone, order_dict=None, order_no=None):
             return {
                 "scope": "rider_empty", "day": day, "order_no": order_no,
                 "baozi_total": 0, "baozi_received": 0, "baozi_remaining": 0,
+                "baozi_returned": 0,
                 "shop_total": 0, "shop_received": 0, "shop_remaining": 0,
             }
     if order_dict:
+        if phone:
+            # 【硬规则】只要请求带了骑手手机号，就绝不用订单级数字兜底：
+            # 订单级数字是所有骑手共享的，一旦兜底，A 的数就会显示在 B 身上（串号）。
+            return {
+                "scope": "rider_empty", "day": day, "order_no": order_no,
+                "baozi_total": 0, "baozi_received": 0, "baozi_remaining": 0,
+                "baozi_returned": 0,
+                "shop_total": 0, "shop_received": 0, "shop_remaining": 0,
+            }
         # 隔离保护：只要这个订单下已经有任何骑手自己的数量记录，就禁止再用「订单口径」兜底，
         # 否则没有自己记录的那个骑手会把别人的数字当自己的显示 → 看起来各骑手数量同步。
         _has_rider_rec = False
@@ -764,17 +819,20 @@ def rider_qty_view(cur, phone, order_dict=None, order_no=None):
             return {
                 "scope": "rider_empty", "day": day, "order_no": order_no,
                 "baozi_total": 0, "baozi_received": 0, "baozi_remaining": 0,
+                "baozi_returned": 0,
                 "shop_total": 0, "shop_received": 0, "shop_remaining": 0,
             }
         bt, br, st, sr = order_counts(order_dict)
         return {
             "scope": "order", "day": day, "order_no": order_no,
             "baozi_total": bt, "baozi_received": br, "baozi_remaining": max(bt - br, 0),
+            "baozi_returned": 0,
             "shop_total": st, "shop_received": sr, "shop_remaining": max(st - sr, 0),
         }
     return {
         "scope": "none", "day": day, "order_no": order_no,
         "baozi_total": 0, "baozi_received": 0, "baozi_remaining": 0,
+        "baozi_returned": 0,
         "shop_total": 0, "shop_received": 0, "shop_remaining": 0,
     }
 
@@ -1542,9 +1600,15 @@ def rider_bind():
         rider_qty = {"scope": "order", "day": today,
                      "baozi_total": _o_bt, "baozi_received": _o_br, "baozi_remaining": max(_o_bt - _o_br, 0),
                      "shop_total": _o_st, "shop_received": _o_sr, "shop_remaining": max(_o_st - _o_sr, 0)}
+    # 【多骑手保护】该订单已被多个骑手用过时，绝不改写订单级数量字段，否则会把 A 骑手的数写成 B 骑手的数
+    _multi = order_rider_count(cur, order_no) > 1
+    _upd_bt = old_bt_orig if _multi else baozi_total
+    _upd_st = old_st_orig if _multi else shop_total
+    _upd_bo = old_bt_orig if _multi else baozi_orig
+    _upd_so = old_st_orig if _multi else shop_orig
     cur.execute(
         _q("UPDATE orders SET delivery_address=?, baozi_total=?, shop_total=?, baozi_total_orig=?, shop_total_orig=?, qty_lock_day=?, city=?, gps_enabled=1, shop_lat=?, shop_lng=?, shop_link=? WHERE order_no=?"),
-        (delivery_address, baozi_total, shop_total, baozi_orig, shop_orig, lock_day, city, shop_lat, shop_lng, shop_link, order_no),
+        (delivery_address, _upd_bt, _upd_st, _upd_bo, _upd_so, lock_day, city, shop_lat, shop_lng, shop_link, order_no),
     )
     # 永久订单历史：每次绑定订单都记入 order_history（不因刷新/重绑丢失）
     cur.execute(_q("SELECT id FROM order_history WHERE order_no=? AND rider_phone=?"), (order_no, phone))
@@ -1748,6 +1812,10 @@ def rider_confirm():
         confirm_baozi = int(data.get("confirm_baozi") or 0)
     except (TypeError, ValueError):
         confirm_baozi = 0
+    try:
+        return_baozi = max(int(data.get("return_baozi") or 0), 0)
+    except (TypeError, ValueError):
+        return_baozi = 0
     address = (data.get("address") or "").strip()
     payment_method = (data.get("payment_method") or "").strip()
     amount = (data.get("amount") or "").strip()
@@ -1809,7 +1877,7 @@ def rider_confirm():
     cur.execute(_q("INSERT INTO notifications (order_no, phone, type, message, created_at) VALUES (?,?,?,?,?)"),
                 (order_no, phone, "done", "订单已完成：" + order_no + "（骑手 " + (rider_name or phone) + "）", utc_iso_now()))
     conn.commit()
-    tg_ok, tg_msg = False, "no photo"
+    tg_ok, tg_msg = False, "not sent"
     text_sent = False
     if TELEGRAM_BOT_TOKEN:
         cur.execute(_q("SELECT * FROM orders WHERE order_no=?"), (order_no,))
@@ -1822,27 +1890,41 @@ def rider_confirm():
         if lt_row:
             latest = _row_to_dict(cur, lt_row)
             latest["address"] = reverse_geocode(latest["lat"], latest["lng"])
-        text_caption = ("✅ အော်ဒါ ပြီးဆုံးပါပြီ\n"
-                        "📥Order: %s\n📲Rider Phone: %s\n👤Rider Name: %s\n"
-                        "📍လိပ်စာ: %s\n💵Amount (MMK): %s") % (
-            order_no or "-", phone or "-", rider_name or "-",
-            (od.get("delivery_address") or od.get("address") or "-"),
-            (od.get("amount") or "-"))
-        t_ok, t_msg = send_telegram_text(text_caption)
-        text_sent = t_ok
+        # 【只发一条】本次送出/退回数量先并入口径，避免通知里的剩余数量滞后一条
+        _qv = rider_qty_view(cur, phone, od, order_no)
+        _qcap = {
+            "baozi_total": _to_int(_qv.get("baozi_total")),
+            "baozi_received": _to_int(_qv.get("baozi_received")) + confirm_baozi,
+            "baozi_returned": _to_int(_qv.get("baozi_returned")) + return_baozi,
+            "shop_total": _to_int(_qv.get("shop_total")),
+            "shop_received": _to_int(_qv.get("shop_received")) + 1,
+        }
+        if _to_int(_qcap.get("baozi_total")) <= 0:
+            # 该骑手还没填过首次数量：通知里退回订单口径总量，避免出现 0 / 0
+            _obt, _obr, _ost, _osr = order_counts(od)
+            _qcap["baozi_total"] = _obt
+            _qcap["shop_total"] = _ost
+            if _to_int(_qcap.get("baozi_received")) <= _obr:
+                _qcap["baozi_received"] = _obr + confirm_baozi
+            if _to_int(_qcap.get("shop_received")) <= _osr:
+                _qcap["shop_received"] = _osr + 1
+        caption = build_proof_caption(order_no, phone, od, rider_name, latest, _qcap)
+        photo_path = ""
         if proof_url:
             photo_rel = proof_url.lstrip("/")
-            photo_path = os.path.join(BASE_DIR, photo_rel.replace("/", os.sep))
-            if os.path.exists(photo_path):
-                caption = build_proof_caption(order_no, phone, od, rider_name, latest)
-                tg_ok, tg_msg = send_telegram_photo(photo_path, caption)
-            else:
-                tg_ok, tg_msg = False, "photo file missing"
+            _pp = os.path.join(BASE_DIR, photo_rel.replace("/", os.sep))
+            if os.path.exists(_pp):
+                photo_path = _pp
+        if photo_path:
+            tg_ok, tg_msg = send_telegram_photo(photo_path, caption)
+        else:
+            tg_ok, tg_msg = send_telegram_text(caption)
+        text_sent = bool(tg_ok)
     if not tg_ok and text_sent:
         tg_ok, tg_msg = True, "text sent"
     # 送出的数量只累加到「这个骑手自己」名下：其他骑手的数量完全不受影响
     _day = now_str()[:10]
-    rider_qty_add(cur, phone, order_no, confirm_baozi, 1)
+    rider_qty_add(cur, phone, order_no, confirm_baozi, 1, return_baozi)
     conn.commit()
     _rvC = rider_qty_view(cur, phone, order_dict, order_no)
     conn.close()
@@ -1859,31 +1941,51 @@ def rider_confirm():
                     "shop_received": _rvC["shop_received"], "shop_remaining": _rvC["shop_remaining"],
                     "shop_total_orig": _rvC["shop_total"],
                     "scope": _rvC["scope"], "day": _day,
+                    "baozi_returned": _to_int(_rvC.get("baozi_returned")),
                     "payment_method": payment_method, "amount": amount,
                     "telegram": tg_ok, "telegram_msg": tg_msg})
 
 
 @app.route("/api/rider/cancel", methods=["POST"])
 def rider_cancel():
-    """骑手取消订单：标记订单已取消并解除骑手绑定，保留订单历史记录（不扣减任何数量字段）"""
+    """骑手取消订单：记录取消数量与原因，立即置为已取消并推送 Telegram 通知"""
     data = request.get_json(silent=True) or {}
     order_no = (data.get("order_no") or "").strip()
     phone = (data.get("phone") or "").strip()
+    cancel_baozi = max(_to_int(data.get("cancel_baozi") or 0), 0)
+    cancel_reason = (data.get("cancel_reason") or "").strip()
     if not order_no or not phone:
         return jsonify({"ok": False, "msg": "အမှာစာနံပါတ် သို့မဟုတ် ဖုန်းနံပါတ် မပါရှိပါ"}), 400
     conn = get_db()
     cur = conn.cursor()
     rider = rider_row_by_phone(cur, phone, order_no)
-    rider_name = ""
+    rider_name = (data.get("rider_name") or "").strip()
     if rider:
         rd = _row_to_dict(cur, rider)
-        rider_name = rd.get("rider_name", "") or ""
+        rider_name = rd.get("rider_name", "") or rider_name
     else:
-        # 无当前绑定：若该手机号历史确有此订单（已解绑残留），仍允许取消以解除死锁
-        cur.execute(_q("SELECT id FROM order_history WHERE order_no=? AND rider_phone=?"), (order_no, phone))
+        # 该订单必须存在；不再因为「绑定已解除」而拒绝取消，
+        # 否则骑手点了取消却静默失败，页面上仍停留在 ✅ Completed。
+        cur.execute(_q("SELECT order_no FROM orders WHERE order_no=?"), (order_no,))
         if not cur.fetchone():
             conn.close()
-            return jsonify({"ok": False, "msg": "ဤဖုန်းနံပါတ်သည် ဤအမှာစာနှင့် ချိတ်ဆက်မထားပါ"}), 403
+            return jsonify({"ok": False, "msg": "အမှာစာ မတွေ့ပါ"}), 404
+    if not rider_name:
+        cur.execute(_q("SELECT rider_name FROM order_history WHERE order_no=? AND rider_phone=? ORDER BY id DESC LIMIT 1"),
+                    (order_no, phone))
+        _hr = cur.fetchone()
+        if _hr:
+            rider_name = _row_to_dict(cur, _hr).get("rider_name", "") or ""
+    # 最新位置（写进通知，与地图一致）
+    loc_text = "-"
+    cur.execute(_q("SELECT lat, lng FROM locations WHERE order_no=? AND is_sim=0 ORDER BY id DESC LIMIT 1"), (order_no,))
+    _lr = cur.fetchone()
+    if _lr:
+        _ld = _row_to_dict(cur, _lr)
+        try:
+            loc_text = reverse_geocode(_ld.get("lat"), _ld.get("lng")) or "-"
+        except Exception:
+            loc_text = "%.6f, %.6f" % (_to_int(_ld.get("lat")), _to_int(_ld.get("lng")))
     cur.execute(_q("UPDATE orders SET status='ပယ်ဖျက်ထားသည်', completed_at=? WHERE order_no=?"), (now_str(), order_no))
     cur.execute(_q("UPDATE riders SET order_no='', rider_name='' WHERE phone=? AND order_no=?"), (phone, order_no))
     # 保留订单历史：存在则更新骑手名与绑定时间，不存在则补记一条
@@ -1898,11 +2000,27 @@ def rider_cancel():
             _q("INSERT INTO order_history (order_no, rider_phone, rider_name, bind_time) VALUES (?,?,?,?)"),
             (order_no, phone, rider_name, now_str()),
         )
+    # 取消数量/原因留档（只动本骑手本单这一条，绝不扣减任何送出量）
+    try:
+        cur.execute(_q("UPDATE rider_order_qty SET cancel_baozi=?, cancel_reason=?, updated_at=? WHERE phone=? AND order_no=?"),
+                    (cancel_baozi, cancel_reason, now_str(), _rq_key(phone), order_no))
+    except Exception:
+        pass
+    _msg = "订单已取消：%s（骑手 %s）取消数量 %d 原因 %s" % (order_no, rider_name or phone, cancel_baozi, cancel_reason or "-")
     cur.execute(_q("INSERT INTO notifications (order_no, phone, type, message, created_at) VALUES (?,?,?,?,?)"),
-                (order_no, phone, "cancel", "订单已取消：" + order_no + "（骑手 " + (rider_name or phone) + "）", utc_iso_now()))
+                (order_no, phone, "cancel", _msg, utc_iso_now()))
     conn.commit()
     conn.close()
-    return jsonify({"ok": True, "msg": "အော်ဒါ ပယ်ဖျက်ပြီးပါပြီ", "status": "ပယ်ဖျက်ထားသည်"})
+    # 取消通知：与确认同样推送到 Telegram 群
+    tg_ok, tg_msg = False, "telegram disabled"
+    if TELEGRAM_BOT_TOKEN:
+        try:
+            tg_ok, tg_msg = send_telegram_text(build_cancel_caption(order_no, phone, rider_name, loc_text, cancel_baozi, cancel_reason))
+        except Exception as e:
+            tg_ok, tg_msg = False, str(e)
+    return jsonify({"ok": True, "msg": "အော်ဒါ ပယ်ဖျက်ပြီးပါပြီ", "status": "ပယ်ဖျက်ထားသည်",
+                    "cancel_baozi": cancel_baozi, "cancel_reason": cancel_reason,
+                    "telegram": tg_ok, "telegram_msg": tg_msg})
 
 
 @app.route("/api/rider/info", methods=["GET"])

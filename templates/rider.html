@@ -418,6 +418,14 @@
     </div>
   </div>
 
+<script>
+// __remain 惰性容器：任何时刻都不会是 null，避免绑单重置后赋值报
+// "Cannot set properties of null (setting 'baozi')" 把后续流程全部打断
+window._rem = window._rem || function () {
+  if (!window.__remain || typeof window.__remain !== "object") { window.__remain = {}; }
+  return window.__remain;
+};
+</script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
 var state = {
@@ -1525,8 +1533,10 @@ async function bindOrder() {
       // 豁免：该骑手在这单还没有自己的数量（firstInput）或服务端剩余为 0/0 时，属于「首次录入」，
       // 不是「第二次输入必须等于剩余量」，不能拦截，否则新订单永远绑不上（会弹出 仅剩 0 / 0）
       var _first2 = !!_rm.firstInput;
+      // 未送出前（hasProgress=false）允许改填任意数量，绝不拦截
+      var _prog2 = !!_rm.hasProgress;
       var _hasRem2 = !_first2 && ((!isNaN(_nb2) && _nb2 > 0) || (!isNaN(_ns2) && _ns2 > 0));
-      if (_same2 && _hasRem2 && _rm.baozi !== null && _rm.baozi !== undefined && _rm.shop !== null && _rm.shop !== undefined &&
+      if (_same2 && _prog2 && _hasRem2 && _rm.baozi !== null && _rm.baozi !== undefined && _rm.shop !== null && _rm.shop !== undefined &&
           !isNaN(_nb2) && !isNaN(_ns2) && (!isNaN(_inB) && !isNaN(_inS)) && (_inB !== _nb2 || _inS !== _ns2)) {
         showInfo("အရေအတွက် မကိုက်ညီပါ — ကျန်ရှိသည် " + _nb2 + " / " + _ns2 + " သာ ဖြစ်သည်");
         return;
@@ -1555,7 +1565,7 @@ async function bindOrder() {
     state.confirmedStatuses = [];
     state.__finalSynced = "";
     // 问题1：绑定新单时彻底清空上一单的数量缓存 / 终态锁，防止老订单（或别的骑手）的数字残留到新单
-    window.__remain = null;
+    window.__remain = {};
     window.__finalLock = null;
     document.querySelectorAll("#statusBox button").forEach(function(btn) { btn.disabled = false; });
     // 问题4：绑定后仍按顺序放开，只有「အစားအစာယူရန်」可先点
@@ -1574,10 +1584,11 @@ async function bindOrder() {
     if (window.updateGetNewOrderState) window.updateGetNewOrderState();
     // 绑定/创建成功：先用骑手输入的数量本地刷新顶部剩余卡片（Order/Status/两个数量），避免成功后长时间空白
     if (window.applyRemainLocal) {
-      window.applyRemainLocal(orderNo, state.status || "ပို့ဆောင်နေသည်", baoziTotal, shopTotal);
+      try { window.applyRemainLocal(orderNo, state.status || "ပို့ဆောင်နေသည်", baoziTotal, shopTotal); }
+      catch (er1) { console.error("applyRemainLocal error", er1); }
     }
     // 再异步向服务端校正真实剩余量（失败也不影响本地已显示的值）
-    if (window.loadRemain) window.loadRemain(phone, orderNo);
+    if (window.loadRemain) { try { window.loadRemain(phone, orderNo); } catch (er2) { console.error("loadRemain error", er2); } }
     // 绑定已成功：先强制开 GPS（路线必须有骑手起点，不能等地图画完），再画地图
     try {
       document.getElementById("gpsBtn").disabled = true;
@@ -2016,7 +2027,7 @@ async function doConfirmDelivered() {
     resetAfterCompletion();
     // 问题1：退回包子数量立刻显示累计总量
     if (_doneRet !== null) {
-      try { if (window.__remain) window.__remain.baoziReturned = _doneRet; } catch (e) {}
+      try { if (window.__remain) window._rem().baoziReturned = _doneRet; } catch (e) {}
       var _rtEl = document.getElementById("rtReturn");
       if (_rtEl) _rtEl.textContent = _doneRet;
     }
@@ -2093,7 +2104,7 @@ async function doCancelOrder() {
     try {
       if (j.baozi_returned !== undefined && j.baozi_returned !== null) {
         window.__remain = window.__remain || {};
-        window.__remain.baoziReturned = parseInt(j.baozi_returned, 10) || 0;
+        window._rem().baoziReturned = parseInt(j.baozi_returned, 10) || 0;
         var _rtEl = document.getElementById("rtReturn");
         if (_rtEl) _rtEl.textContent = parseInt(j.baozi_returned, 10) || 0;
       }
@@ -2810,17 +2821,18 @@ checkLogin();
       g("rtTime").textContent = now.getHours() + ":" +
         String(now.getMinutes()).padStart(2, "0") + ":" + String(now.getSeconds()).padStart(2, "0");
     }
-    window.__remain.baozi = _noOrderEmpty ? null : ((j.baozi_remaining !== undefined && j.baozi_remaining !== null) ? parseInt(j.baozi_remaining, 10) : null);
-    window.__remain.shop = _noOrderEmpty ? null : ((j.shop_remaining !== undefined && j.shop_remaining !== null) ? parseInt(j.shop_remaining, 10) : null);
-    window.__remain.day = j.day || "";
-    window.__remain.orderNo = j.order_no || "";
-    window.__remain.status = j.status || "";
+    window._rem().baozi = _noOrderEmpty ? null : ((j.baozi_remaining !== undefined && j.baozi_remaining !== null) ? parseInt(j.baozi_remaining, 10) : null);
+    window._rem().shop = _noOrderEmpty ? null : ((j.shop_remaining !== undefined && j.shop_remaining !== null) ? parseInt(j.shop_remaining, 10) : null);
+    window._rem().day = j.day || "";
+    window._rem().orderNo = j.order_no || "";
+    window._rem().status = j.status || "";
     // 首次输入标记：该骑手在这单还没有自己的数量记录（不是把别人的数量当自己的）
-    window.__remain.firstInput = !!j.first_input;
+    window._rem().firstInput = !!j.first_input;
+window._rem().hasProgress = !!j.has_progress;
     // 分母（骑手第一次输入量）也记下来，供数量校验使用：允许填「首次数」或「当前剩余」，
     // 这样重新下单时不会被强制改写成剩余量，分母永远是 600。
-    window.__remain.baoziOrig = _denB || (j.baozi_total_orig !== undefined ? j.baozi_total_orig : null);
-    window.__remain.shopOrig = _denS || (j.shop_total_orig !== undefined ? j.shop_total_orig : null);
+    window._rem().baoziOrig = _denB || (j.baozi_total_orig !== undefined ? j.baozi_total_orig : null);
+    window._rem().shopOrig = _denS || (j.shop_total_orig !== undefined ? j.shop_total_orig : null);
     d.style.display = "block";
     if (window.validateCountInputs) window.validateCountInputs();
   }
@@ -2847,12 +2859,13 @@ checkLogin();
       g("rtTime").textContent = now.getHours() + ":" +
         String(now.getMinutes()).padStart(2, "0") + ":" + String(now.getSeconds()).padStart(2, "0");
     }
-    window.__remain.baozi = isNaN(b) ? null : b;
-    window.__remain.shop = isNaN(s) ? null : s;
-    window.__remain.orderNo = orderNo || "";
-    window.__remain.status = status || "";
-    window.__remain.baoziOrig = isNaN(b) ? null : (_lkL.baozi || b);
-    window.__remain.shopOrig = isNaN(s) ? null : (_lkL.shop || s);
+    window._rem().baozi = isNaN(b) ? null : b;
+    window._rem().shop = isNaN(s) ? null : s;
+    window._rem().orderNo = orderNo || "";
+  if (window._rem().hasProgress === undefined) window._rem().hasProgress = false;
+    window._rem().status = status || "";
+    window._rem().baoziOrig = isNaN(b) ? null : (_lkL.baozi || b);
+    window._rem().shopOrig = isNaN(s) ? null : (_lkL.shop || s);
     d.style.display = "block";
     if (window.validateCountInputs) window.validateCountInputs();
   }
@@ -2990,16 +3003,16 @@ checkLogin();
     var pRaw = pEl ? String(pEl.value || "").trim() : "";
     var bt = bRaw === "" ? NaN : parseInt(bRaw, 10);
     var st = sRaw === "" ? NaN : parseInt(sRaw, 10);
-    var rb = window.__remain ? window.__remain.baozi : null;
-    var rs = window.__remain ? window.__remain.shop : null;
+    var rb = window.__remain ? window._rem().baozi : null;
+    var rs = window.__remain ? window._rem().shop : null;
     var hasRemain = rb !== null && rb !== undefined && rs !== null && rs !== undefined &&
       !isNaN(Number(rb)) && !isNaN(Number(rs));
     // 该骑手在这单还没有自己的数量（first_input）时不做"必须等于剩余量"校验，
     // 否则会把别人的剩余量当成他的上限，导致他永远无法录入自己的数量。
-    if (window.__remain && window.__remain.firstInput) hasRemain = false;
+    if (!window._rem().hasProgress) hasRemain = false;
     // 该骑手在这单还没有自己的数量（首次输入/与别人无关）时，不做"必须等于剩余量"的校验，
     // 否则会显示别人的剩余量并把自己锁死，无法录入自己的数量。
-    if (window.__remain && window.__remain.firstInput) hasRemain = false;
+    if (!window._rem().hasProgress) hasRemain = false;
     // 剩余量缺失（新订单首次绑定）时不做一致性校验，仅要求手机号与两个数量已填且 > 0
     if (pRaw === "" || isNaN(bt) || bt <= 0 || isNaN(st) || st <= 0) {
       bind.disabled = true;
@@ -3011,8 +3024,8 @@ checkLogin();
     //    例如 600 → 送 100 → 剩 500，再填 600 一律拒绝，只有 500 能下单。
     // 2) 还没送过（剩余 = 首次输入量）时，允许填首次输入量本身，用于正常首次/新批次下单。
     if (hasRemain) {
-      var db = window.__remain ? Number(window.__remain.baoziOrig) : NaN;
-      var ds = window.__remain ? Number(window.__remain.shopOrig) : NaN;
+      var db = window.__remain ? Number(window._rem().baoziOrig) : NaN;
+      var ds = window.__remain ? Number(window._rem().shopOrig) : NaN;
       var nb = Number(rb), ns = Number(rs);
       var bPartial = (!isNaN(db) && db > 0 && nb < db);   // 已经送过一部分
       var sPartial = (!isNaN(ds) && ds > 0 && ns < ds);
@@ -3155,7 +3168,7 @@ checkLogin();
 
   // 1) 未完成 / 未取消的订单存在时，Get New Orders 一律禁用（刷新页面后依然生效）
   window.isOrderOpen = function () {
-    var st = (window.__remain && window.__remain.status) || (window.state && state.status) || "";
+    var st = (window.__remain && window._rem().status) || (window.state && state.status) || "";
     // 服务端已确认无未完成订单时，忽略本地遗留锁（旧部署/旧标签页残留），不再一打开就 Locked
     if (window.__activeChecked && !window.__activeOrderNo) return false;
     var no = window.__activeOrderNo || savedActiveNo() || "";
@@ -3228,13 +3241,13 @@ checkLogin();
     var bRaw = bEl ? String(bEl.value || "").trim() : "";
     var sRaw = sEl ? String(sEl.value || "").trim() : "";
     var pRaw = pEl ? String(pEl.value || "").trim() : "";
-    var rb = window.__remain ? window.__remain.baozi : null;
-    var rs = window.__remain ? window.__remain.shop : null;
+    var rb = window.__remain ? window._rem().baozi : null;
+    var rs = window.__remain ? window._rem().shop : null;
     var hasRemain = rb !== null && rb !== undefined && rs !== null && rs !== undefined &&
       !isNaN(Number(rb)) && !isNaN(Number(rs));
     // 该骑手在这单还没有自己的数量（first_input）时不做"必须等于剩余量"校验，
     // 否则会把别人的剩余量当成他的上限，导致他永远无法录入自己的数量。
-    if (window.__remain && window.__remain.firstInput) hasRemain = false;
+    if (!window._rem().hasProgress) hasRemain = false;
     var bt = bRaw === "" ? NaN : parseInt(bRaw, 10);
     var st = sRaw === "" ? NaN : parseInt(sRaw, 10);
     // 剩余量缺失（新订单首次绑定本来就没有剩余量可参照）：绝不改文案、绝不因剩余量缺失而禁用，
@@ -3249,7 +3262,7 @@ checkLogin();
     // 只有输入一个全新的订单号时才算「第一次输入」，此时不做剩余量相等限制。
     var _tNoEl = document.getElementById("orderNo");
     var _tNo = _tNoEl ? String(_tNoEl.value || "").trim() : "";
-    var _rNo = window.__remain ? String(window.__remain.orderNo || "").trim() : "";
+    var _rNo = window.__remain ? String(window._rem().orderNo || "").trim() : "";
     var _sameOrder = !(_rNo !== "" && _tNo !== "" && _rNo !== _tNo);
     if (hasRemain && _sameOrder) {
       var nb = Number(rb), ns = Number(rs);

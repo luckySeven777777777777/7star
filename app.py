@@ -560,45 +560,61 @@ def _rq_key(phone):
     return ("n:" + raw) if raw else ""
 
 
-def _rq_okey(order_no):
-    """数量记录的订单键：去首尾空白，保证同一张订单只对应一条记录。"""
-    return str(order_no or "").strip()
+def _rq_day_key(day=None):
+    """「骑手当天」主记录的存储键：与订单号无关，同一天所有订单共用一条记录。"""
+    return "__DAY__" + (day or now_str()[:10])
 
 
-def rider_qty_rec(cur, phone, order_no, create=False):
-    """取「该骑手 + 该订单」的唯一数量主记录（每个骑手、每一单各一份）。
-    【关键】已彻底废弃「按天合并 / 跨订单共用一条」的旧口径——那正是两个骑手数量同步、
-    新订单显示上一单（或上一个骑手）数量的根源。这里绝不做任何跨单合并与兜底。"""
+def rider_qty_dayrec(cur, phone, day=None):
+    """取该骑手「当天」的数量主记录（跨订单共用一条）。
+    若当天只有旧版按订单存的记录，则就地合并成一条当天记录（orig 取最大、已送/退回求和），
+    保证第二天不会因为旧 key 而出现重复累加。"""
+    day = day or now_str()[:10]
     phone = _rq_key(phone)
-    okey = _rq_okey(order_no)
-    if not phone or not okey:
+    if not phone:
         return None
     _ensure_qty_table(cur)
+    key = _rq_day_key(day)
     try:
-        cur.execute(_q("SELECT * FROM rider_order_qty WHERE phone=? AND order_no=?"), (phone, okey))
+        cur.execute(_q("SELECT * FROM rider_order_qty WHERE phone=? AND order_no=?"), (phone, key))
         row = cur.fetchone()
         if row:
             return _row_to_dict(cur, row)
     except Exception:
         return None
-    if not create:
-        return None
     try:
-        cur.execute(_q("INSERT INTO rider_order_qty (phone, order_no, day, baozi_orig, shop_orig, baozi_received, shop_received, updated_at) "
-                       "VALUES (?,?,?,0,0,0,0,?)"), (phone, okey, now_str()[:10], now_str()))
+        cur.execute(_q("SELECT * FROM rider_order_qty WHERE phone=? AND day=?"), (phone, day))
+        rows = cur.fetchall() or []
     except Exception:
         return None
+    if not rows:
+        return None
+    bo = so = br = sr = rt = 0
+    ids = []
+    for row in rows:
+        d = _row_to_dict(cur, row) or {}
+        bo = max(bo, _to_int(d.get("baozi_orig")))
+        so = max(so, _to_int(d.get("shop_orig")))
+        br += _to_int(d.get("baozi_received"))
+        sr += _to_int(d.get("shop_received"))
+        rt += _to_int(d.get("baozi_returned"))
+        ids.append(d.get("id"))
     try:
-        cur.execute(_q("SELECT * FROM rider_order_qty WHERE phone=? AND order_no=?"), (phone, okey))
+        cur.execute(_q("INSERT INTO rider_order_qty (phone, order_no, day, baozi_orig, shop_orig, baozi_received, shop_received, baozi_returned, updated_at) "
+                       "VALUES (?,?,?,?,?,?,?,?,?)"), (phone, key, day, bo, so, br, sr, rt, now_str()))
+    except Exception:
+        return None
+    for _id in ids:
+        try:
+            cur.execute(_q("DELETE FROM rider_order_qty WHERE id=?"), (_id,))
+        except Exception:
+            pass
+    try:
+        cur.execute(_q("SELECT * FROM rider_order_qty WHERE phone=? AND order_no=?"), (phone, key))
         row = cur.fetchone()
         return _row_to_dict(cur, row) if row else None
     except Exception:
         return None
-
-
-def rider_qty_dayrec(cur, phone, day=None):
-    """【兼容占位】按天合并的记录口径已废弃（会串号），一律返回 None。"""
-    return None
 
 def _ensure_qty_table(cur):
     """惰性建表兜底：无论启动迁移是否成功（线上库/新库/迁移被跳过），
@@ -691,91 +707,111 @@ def rider_qty_get(cur, phone, order_no=None, day=None):
         return None
 
 
-def rider_order_totals(cur, phone, order_no):
-    """该骑手在「这一张订单」上的数量口径（与其它订单、其它骑手完全隔离）。
-    返回 (baozi_orig, shop_orig, baozi_received, shop_received)"""
-    rec = rider_qty_rec(cur, phone, order_no)
-    if not rec:
-        return 0, 0, 0, 0
-    return (_to_int(rec.get("baozi_orig")), _to_int(rec.get("shop_orig")),
-            _to_int(rec.get("baozi_received")), _to_int(rec.get("shop_received")))
-
-
 def rider_day_totals(cur, phone, day=None):
-    """【兼容占位】不再提供跨订单汇总（会串号），返回全 0。"""
-    return 0, 0, 0, 0
+    """该骑手「当天」的汇总口径（每个骑手各自独立，绝不与其他骑手混合）：
+    分母 = 当天首次输入量（各单 orig 的最大值，即第一次输入的那个数，如 600）；
+    已送 = 当天各单累加（如 100）。这样重下单后仍显示 600 / 剩 500。
+    返回 (baozi_orig, shop_orig, baozi_received, shop_received)"""
+    day = day or now_str()[:10]
+    phone = _rq_key(phone)
+    if not phone:
+        return 0, 0, 0, 0
+    _ensure_qty_table(cur)
+    rows = []
+    try:
+        cur.execute(_q("SELECT baozi_orig, shop_orig, baozi_received, shop_received FROM rider_order_qty WHERE phone=? AND day=?"), (phone, day))
+        rows = cur.fetchall() or []
+    except Exception:
+        return 0, 0, 0, 0
+    bo = so = br = sr = 0
+    for r in rows:
+        d = _row_to_dict(cur, r)
+        bo = max(bo, _to_int(d.get("baozi_orig")))
+        so = max(so, _to_int(d.get("shop_orig")))
+        br += _to_int(d.get("baozi_received"))
+        sr += _to_int(d.get("shop_received"))
+    return bo, so, br, sr
 
 
 def rider_qty_lock(cur, phone, order_no, baozi_in, shop_in):
-    """【骑手 + 订单 锁定】分母 = 该骑手在这一单第一次输入的数量。
-    同一单内重复输入 / 重新绑定都不会改写分母；每一张新订单都从自己的首次输入开始，
-    绝不继承上一单或别的骑手的分母（这是「新单显示老骑手数量」的根治点）。"""
+    """【按天锁定】分母 = 该骑手当天第一次输入的数量，当天内无论下多少次单、第几次输入都不会改变；
+    跨天（缅甸时间 0 点后）自动重新锁定，已送/退回自动清零。各骑手完全独立，互不影响。"""
     b_in = max(_to_int(baozi_in), 0)
     s_in = max(_to_int(shop_in), 0)
     phone = _rq_key(phone)
-    okey = _rq_okey(order_no)
-    if not phone or not okey:
+    if not phone:
         return b_in, s_in
-    rec = rider_qty_rec(cur, phone, okey, create=True)
+    _ensure_qty_table(cur)
+    day = now_str()[:10]
+    key = _rq_day_key(day)
+    rec = rider_qty_dayrec(cur, phone, day)
     if rec:
-        nb = _to_int(rec.get("baozi_orig"))
-        ns = _to_int(rec.get("shop_orig"))
+        b = _to_int(rec.get("baozi_orig"))
+        s = _to_int(rec.get("shop_orig"))
+        nb, ns = b, s
         if nb <= 0 and b_in > 0:
             nb = b_in
         if ns <= 0 and s_in > 0:
             ns = s_in
         try:
-            cur.execute(_q("UPDATE rider_order_qty SET day=?, baozi_orig=?, shop_orig=?, updated_at=? WHERE phone=? AND order_no=?"),
-                        (now_str()[:10], nb, ns, now_str(), phone, okey))
+            cur.execute(_q("UPDATE rider_order_qty SET order_no=?, day=?, baozi_orig=?, shop_orig=?, updated_at=? WHERE phone=? AND id=?"),
+                        (key, day, nb, ns, now_str(), phone, rec.get("id")))
         except Exception:
             pass
         return nb, ns
+    try:
+        cur.execute(_q("INSERT INTO rider_order_qty (phone, order_no, day, baozi_orig, shop_orig, baozi_received, shop_received, updated_at) "
+                       "VALUES (?,?,?,?,?,0,0,?)"), (phone, key, day, b_in, s_in, now_str()))
+    except Exception:
+        pass
     return b_in, s_in
 
 
 def rider_qty_add(cur, phone, order_no, baozi_add, shop_add, returned_add=0):
-    """把本次送出 / 退回（确认里填写的退回量 + 取消里填写的退回量）累加到
-    「该骑手 + 该订单」名下：不同骑手、不同订单永不相加，绝不串号。"""
+    """把本次送出 / 退回的数量累加到「该骑手当天」名下：
+    同一骑手当天所有订单累计（第二次下单不清零），不同骑手完全独立，凌晨 0 点自动归零。"""
     b_add = max(_to_int(baozi_add), 0)
     s_add = max(_to_int(shop_add), 0)
     r_add = max(_to_int(returned_add), 0)
     phone = _rq_key(phone)
-    okey = _rq_okey(order_no)
-    if not phone or not okey:
+    if not phone:
         return None
-    rec = rider_qty_rec(cur, phone, okey, create=True)
+    _ensure_qty_table(cur)
+    day = now_str()[:10]
+    key = _rq_day_key(day)
+    rec = rider_qty_dayrec(cur, phone, day)
     if not rec:
-        return None
+        try:
+            cur.execute(_q("INSERT INTO rider_order_qty (phone, order_no, day, baozi_orig, shop_orig, baozi_received, shop_received, updated_at) "
+                           "VALUES (?,?,?,0,0,?,?,?)"), (phone, key, day, b_add, s_add, now_str()))
+        except Exception:
+            pass
+        return rider_qty_dayrec(cur, phone, day)
     try:
-        cur.execute(_q("UPDATE rider_order_qty SET day=?, baozi_received=?, shop_received=?, baozi_returned=?, updated_at=? WHERE phone=? AND order_no=?"),
-                    (now_str()[:10],
-                     _to_int(rec.get("baozi_received")) + b_add,
-                     _to_int(rec.get("shop_received")) + s_add,
-                     _to_int(rec.get("baozi_returned")) + r_add,
-                     now_str(), phone, okey))
+        cur.execute(_q("UPDATE rider_order_qty SET order_no=?, day=?, baozi_received=?, shop_received=?, baozi_returned=?, updated_at=? WHERE phone=? AND id=?"),
+                    (key, day, _to_int(rec.get("baozi_received")) + b_add, _to_int(rec.get("shop_received")) + s_add,
+                     _to_int(rec.get("baozi_returned")) + r_add, now_str(), phone, rec.get("id")))
     except Exception:
         pass
-    return rider_qty_rec(cur, phone, okey)
+    return rider_qty_dayrec(cur, phone, day)
 
 
 def rider_qty_view(cur, phone, order_dict=None, order_no=None):
-    """数量统一口径：严格按「骑手 + 订单」独立统计。
-    分母 = 该骑手在这一单第一次输入的量；已送 / 退回 = 该骑手在这一单的累计；
-    退回量 = 确认里填写的退回量 + 取消里填写的退回量。
-    没有记录时一律返回 rider_empty（全 0），绝不用订单级 / 别的骑手 / 别的订单的数字冒充。"""
+    """数量统一口径：按「骑手 + 当天」独立统计。
+    分母 = 该骑手当天第一次输入量（第二次下单不改变），已送/退回 = 当天累计（跨订单），
+    凌晨 0 点自动归零；没有该骑手记录时返回 rider_empty，绝不用订单级数字冒充。"""
+    day = now_str()[:10]
     if order_no is None and order_dict:
         order_no = (order_dict.get("order_no") or "").strip()
-    day = now_str()[:10]
     phone = _rq_key(phone)
-    okey = _rq_okey(order_no)
-    if phone and okey:
-        rec = rider_qty_rec(cur, phone, okey)
+    if phone:
+        rec = rider_qty_dayrec(cur, phone, day)
         if rec:
             bo = _to_int(rec.get("baozi_orig"))
             so = _to_int(rec.get("shop_orig"))
             br = _to_int(rec.get("baozi_received"))
             sr = _to_int(rec.get("shop_received"))
-            rt = _to_int(rec.get("baozi_returned")) + _to_int(rec.get("cancel_baozi"))
+            rt = _to_int(rec.get("baozi_returned"))
             if bo > 0 or so > 0 or br > 0 or sr > 0 or rt > 0:
                 return {
                     "scope": "rider_order", "day": day, "order_no": order_no,
@@ -785,13 +821,6 @@ def rider_qty_view(cur, phone, order_dict=None, order_no=None):
                 }
         return {
             "scope": "rider_empty", "day": day, "order_no": order_no,
-            "baozi_total": 0, "baozi_received": 0, "baozi_remaining": 0, "baozi_returned": 0,
-            "shop_total": 0, "shop_received": 0, "shop_remaining": 0,
-        }
-    if phone:
-        # 有手机号但拿不到具体订单号：绝不退化成任何汇总口径（那会串单），直接返回空
-        return {
-            "scope": "rider_empty", "day": day, "order_no": order_no or "",
             "baozi_total": 0, "baozi_received": 0, "baozi_remaining": 0, "baozi_returned": 0,
             "shop_total": 0, "shop_received": 0, "shop_remaining": 0,
         }
@@ -1515,7 +1544,7 @@ def rider_bind():
     # 否则等于把已经送掉的量重复下单。
     # 【数量校验】按「该骑手当天」的真实剩余量校验（不再只看本订单记录）：
     # 首次输入 600、送掉 100 后剩 500，之后不管换不换订单号，再输入 600 都必须被拒绝，只能输入 ≤500。
-    _day_bo, _day_so, _day_br, _day_sr = rider_order_totals(cur, phone, order_no)
+    _day_bo, _day_so, _day_br, _day_sr = rider_day_totals(cur, phone)
     _rem_bt = max(_day_bo - _day_br, 0)
     _rem_st = max(_day_so - _day_sr, 0)
     if _day_br > 0 and 0 < _rem_bt < _day_bo and baozi_total > _rem_bt:
@@ -1536,7 +1565,7 @@ def rider_bind():
             if baozi_total != _sv_rb or shop_total != _sv_rs:
                 conn.close()
                 return jsonify({"ok": False, "msg": "အရေအတွက် မကိုက်ညီပါ — ကျန်ရှိသည် ပေါက်စီ %d / ဆိုင် %d သာ ဖြစ်သည်။ ကျန်ရှိသော အရေအတွက်အတိုင်းသာ ထည့်ပါ" % (_sv_rb, _sv_rs)}), 400
-    _prev_rec = rider_qty_rec(cur, phone, order_no)
+    _prev_rec = rider_qty_dayrec(cur, phone)
     if _prev_rec:
         _pv_bt = _to_int(_prev_rec.get("baozi_orig"))
         _pv_br = _to_int(_prev_rec.get("baozi_received"))
@@ -1791,36 +1820,12 @@ def rider_confirm():
         return_baozi = 0
     address = (data.get("address") or "").strip()
     payment_method = (data.get("payment_method") or "").strip()
-    amount = str(data.get("amount") or "").strip()
-    proof_url = str(data.get("proof_url") or "").strip()
+    amount = (data.get("amount") or "").strip()
+    proof_url = (data.get("proof_url") or "").strip()
     if not order_no or not phone:
         return jsonify({"ok": False, "msg": "အမှာစာနံပါတ် သို့မဟုတ် ဖုန်းနံပါတ် မပါရှိပါ"}), 400
     conn = get_db()
     cur = conn.cursor()
-    # 问题4：先按「订单状态」拦截，再校验绑定关系。
-    # 订单取消/确认后骑手绑定会被清空，若先校验绑定就会误报「未绑定」，
-    # 骑手看到的原因就不对了（应该是已取消禁止确认 / 已确认禁止取消）。
-    cur.execute(_q("SELECT * FROM orders WHERE order_no=?"), (order_no,))
-    _pre_row = cur.fetchone()
-    _pre = _row_to_dict(cur, _pre_row) if _pre_row else {}
-    _pre_st = (_pre.get("status") or "").strip()
-    if _pre_st == u"ပယ်ဖျက်ထားသည်":
-        _rvP = rider_qty_view(cur, phone, _pre, order_no)
-        conn.close()
-        return jsonify({"ok": False, "status": u"ပယ်ဖျက်ထားသည်",
-                        "msg": u"ဤအမှာစာကို ပယ်ဖျက်ပြီးဖြစ်ပါသည်။ Confirm လုပ်၍ မရပါ (Order already cancelled)",
-                        "baozi_returned": _to_int(_rvP.get("baozi_returned"))})
-    if _pre_st == u"လက်ခံပြီးပါပြီ":
-        _rvP = rider_qty_view(cur, phone, _pre, order_no)
-        conn.close()
-        return jsonify({"ok": True, "already": True, "msg": u"ဤအမှာစာ လက်ခံပြီးသားဖြစ်ပါသည်",
-                        "status": u"လက်ခံပြီးပါပြီ",
-                        "baozi_received": _rvP["baozi_received"], "baozi_remaining": _rvP["baozi_remaining"],
-                        "baozi_total_orig": _rvP["baozi_total"], "shop_received": _rvP["shop_received"],
-                        "shop_remaining": _rvP["shop_remaining"], "shop_total_orig": _rvP["shop_total"],
-                        "baozi_returned": _to_int(_rvP.get("baozi_returned")),
-                        "scope": _rvP["scope"], "day": _rvP["day"],
-                        "telegram": False, "telegram_msg": "duplicate ignored"})
     rider = rider_row_by_phone(cur, phone, order_no)
     if not rider:
         conn.close()
@@ -1984,21 +1989,7 @@ def rider_cancel():
         try:
             loc_text = reverse_geocode(_ld.get("lat"), _ld.get("lng")) or "-"
         except Exception:
-            loc_text = "%.6f, %.6f" % (float(_ld.get("lat") or 0), float(_ld.get("lng") or 0))
-    # 问题4：只要订单已经确认（လက်ခံပြီးပါပြီ），一律禁止再取消
-    cur.execute(_q("SELECT status FROM orders WHERE order_no=?"), (order_no,))
-    _st_row = cur.fetchone()
-    _st_now_c = (_row_to_dict(cur, _st_row).get("status") or "") if _st_row else ""
-    if _st_now_c == u"ပယ်ဖျက်ထားသည်":
-        # 幂等：重复取消不再改写 cancel_baozi、不再重复推送通知
-        _rvC0 = rider_qty_view(cur, phone, None, order_no)
-        conn.close()
-        return jsonify({"ok": True, "already": True, "status": u"ပယ်ဖျက်ထားသည်",
-                        "msg": u"ဤအမှာစာ ပယ်ဖျက်ပြီးသားဖြစ်ပါသည်",
-                        "baozi_returned": _to_int(_rvC0.get("baozi_returned"))})
-    if _st_now_c == u"လက်ခံပြီးပါပြီ":
-        conn.close()
-        return jsonify({"ok": False, "msg": u"ဤအမှာစာကို လက်ခံပြီးဖြစ်ပါသည်။ ပယ်ဖျက်၍ မရပါ (Order already confirmed)"}), 400
+            loc_text = "%.6f, %.6f" % (_to_int(_ld.get("lat")), _to_int(_ld.get("lng")))
     cur.execute(_q("UPDATE orders SET status='ပယ်ဖျက်ထားသည်', completed_at=? WHERE order_no=?"), (now_str(), order_no))
     cur.execute(_q("UPDATE riders SET order_no='', rider_name='' WHERE phone=? AND order_no=?"), (phone, order_no))
     # 保留订单历史：存在则更新骑手名与绑定时间，不存在则补记一条
@@ -2013,16 +2004,12 @@ def rider_cancel():
             _q("INSERT INTO order_history (order_no, rider_phone, rider_name, bind_time) VALUES (?,?,?,?)"),
             (order_no, phone, rider_name, now_str()),
         )
-    # 取消数量/原因留档（只写「本骑手 + 本单」那一条，绝不扣减任何送出量）
-    # 问题2：取消里填写的退回数量必须计入「ပြန်အပ်သောပေါက်စီအရေအတွက်」，
-    # 与确认里填写的退回量一起累计显示（用 cancel_baozi 单独存，读取时相加，避免重复累加）。
-    _ret_total = 0
+    # 取消数量/原因留档（只写本骑手「当天」那一条，绝不扣减任何送出量）
     try:
-        _cr = rider_qty_rec(cur, phone, order_no, create=True)
+        _cr = rider_qty_dayrec(cur, phone, now_str()[:10])
         if _cr and _cr.get("id"):
-            cur.execute(_q("UPDATE rider_order_qty SET day=?, cancel_baozi=?, cancel_reason=?, updated_at=? WHERE id=?"),
-                        (now_str()[:10], cancel_baozi, cancel_reason, now_str(), _cr.get("id")))
-            _ret_total = _to_int(_cr.get("baozi_returned")) + cancel_baozi
+            cur.execute(_q("UPDATE rider_order_qty SET cancel_baozi=?, cancel_reason=?, updated_at=? WHERE id=?"),
+                        (cancel_baozi, cancel_reason, now_str(), _cr.get("id")))
     except Exception:
         pass
     _msg = "订单已取消：%s（骑手 %s）取消数量 %d 原因 %s" % (order_no, rider_name or phone, cancel_baozi, cancel_reason or "-")
@@ -2039,7 +2026,6 @@ def rider_cancel():
             tg_ok, tg_msg = False, str(e)
     return jsonify({"ok": True, "msg": "အော်ဒါ ပယ်ဖျက်ပြီးပါပြီ", "status": "ပယ်ဖျက်ထားသည်",
                     "cancel_baozi": cancel_baozi, "cancel_reason": cancel_reason,
-                    "baozi_returned": _ret_total,
                     "telegram": tg_ok, "telegram_msg": tg_msg})
 
 

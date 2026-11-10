@@ -1444,10 +1444,19 @@ async function createOrder() {
       try {
         document.getElementById("baoziCount").value = "";
         document.getElementById("shopCount").value = "";
-        if (window.__remain) { window.__remain = null; }
+        // 关键：__remain 只能重置成"空对象"，绝不能置 null。
+        // 置 null 后 paintRemain / applyRemainLocal 里对 __remain.xxx 的赋值会抛 TypeError，
+        // 面板刷新就此中断，界面永远停在 0 / -（本次"创建订单就变成这样"的根因）。
+        window.__remain = { baozi: null, shop: null, day: "", orderNo: j.order_no || "", status: "" };
         var _rt = document.getElementById("rtReturn"); if (_rt) _rt.textContent = "0";
-        var _rtt = document.getElementById("rtTotal"); if (_rtt) _rtt.textContent = "-";
-        var _rtr = document.getElementById("rtRemain"); if (_rtr) _rtr.textContent = "-";
+        var _ra = document.getElementById("rtBaozi"); if (_ra) _ra.textContent = "-";
+        var _rb = document.getElementById("rtShop"); if (_rb) _rb.textContent = "-";
+        var _ro = document.getElementById("rtOrder"); if (_ro) _ro.textContent = j.order_no || "-";
+        var _rs = document.getElementById("rtStatus"); if (_rs) _rs.textContent = "-";
+        var _rtm = document.getElementById("rtTime"); if (_rtm) _rtm.textContent = "-";
+        // 新单还没绑定，锁状态以服务端「是否有未完成订单」为准，避免本地残留锁把 Get New Orders 永远锁死
+        try { if (typeof checkActiveLock === "function") checkActiveLock(); } catch (e2) {}
+        try { if (window.updateGetNewOrderState) window.updateGetNewOrderState(); } catch (e3) {}
       } catch (e) {}
     } else {
       showInfo(j.msg || "ဖန်တီးမှု မအောင်မြင်ပါ");
@@ -2682,10 +2691,14 @@ checkLogin();
     // 还没绑定订单、且服务端返回 rider_empty（该骑手当天没有任何自己的数量）时，
     // 一律显示 "-"，不显示 0/-，避免"骑手还没下单却显示 0"的误解
     var _noOrderEmpty = (j.scope === "rider_empty") && !((window.state && state.orderNo) || "");
-    if (g("rtBaozi")) g("rtBaozi").textContent = _noOrderEmpty ? "-" :
+    // 该骑手这一单还没有任何数量（分母 0 且没送出/退回）时，一律显示 "-"，
+    // 不再显示 "0 / -"（新建订单后那种半截数字会被误认为数据出问题）
+    var _hasB = (parseInt(j.baozi_remaining, 10) || 0) > 0 || (parseInt(j.baozi_received, 10) || 0) > 0;
+    var _hasS = (parseInt(j.shop_remaining, 10) || 0) > 0 || (parseInt(j.shop_received, 10) || 0) > 0;
+    if (g("rtBaozi")) g("rtBaozi").textContent = (_noOrderEmpty || (_denB === 0 && !_hasB)) ? "-" :
       (((j.baozi_remaining !== undefined && j.baozi_remaining !== null) ? j.baozi_remaining : "-") +
       " / " + (_denB || "-"));
-    if (g("rtShop")) g("rtShop").textContent = _noOrderEmpty ? "-" :
+    if (g("rtShop")) g("rtShop").textContent = (_noOrderEmpty || (_denS === 0 && !_hasS)) ? "-" :
       (((j.shop_remaining !== undefined && j.shop_remaining !== null) ? j.shop_remaining : "-") +
       " / " + (_denS || "-"));
     if (g("rtReturn")) g("rtReturn").textContent = ((j.baozi_returned !== undefined && j.baozi_returned !== null) ? j.baozi_returned : 0);

@@ -21,6 +21,7 @@ import os
 import sqlite3
 import json
 import uuid
+import random
 import urllib.request
 import urllib.parse
 import re
@@ -560,27 +561,37 @@ def _rq_key(phone):
     return ("n:" + raw) if raw else ""
 
 
-def _rq_day_key(day=None):
-    """「骑手当天」主记录的存储键：与订单号无关，同一天所有订单共用一条记录。"""
-    return "__DAY__" + (day or now_str()[:10])
+def _rq_day_key(day=None, order_no=None):
+    """数量记录存储键：按「骑手 + 订单 + 当天」各占一行。
+    加入订单维度后，同一骑手换新订单不会沿用上一单的数字（这是「输入 1200 地图却显示 2000」的根因）；
+    键里带日期，跨天自然生成新行，等于缅甸时间凌晨 0 点自动归零。"""
+    day = day or now_str()[:10]
+    on = (order_no or "").strip()
+    if on:
+        return "__O__" + on + "|" + day
+    return "__DAY__" + day
 
 
-def rider_qty_dayrec(cur, phone, day=None):
-    """取该骑手「当天」的数量主记录（跨订单共用一条）。
-    若当天只有旧版按订单存的记录，则就地合并成一条当天记录（orig 取最大、已送/退回求和），
-    保证第二天不会因为旧 key 而出现重复累加。"""
+def rider_qty_dayrec(cur, phone, day=None, order_no=None):
+    """取该骑手「当天」的数量记录。
+    传 order_no 时按「骑手+订单+当天」精确取（页面显示的就是这一单自己的数）；
+    不传 order_no 时才退回旧的「骑手+当天」合并记录（仅兼容旧数据，页面逻辑不再使用）。"""
     day = day or now_str()[:10]
     phone = _rq_key(phone)
     if not phone:
         return None
     _ensure_qty_table(cur)
-    key = _rq_day_key(day)
+    order_no = (order_no or "").strip()
+    key = _rq_day_key(day, order_no)
     try:
         cur.execute(_q("SELECT * FROM rider_order_qty WHERE phone=? AND order_no=?"), (phone, key))
         row = cur.fetchone()
         if row:
             return _row_to_dict(cur, row)
     except Exception:
+        return None
+    if order_no:
+        # 本单今天还没有自己的记录：返回 None，绝不借用其它订单 / 其它天的数字
         return None
     try:
         cur.execute(_q("SELECT * FROM rider_order_qty WHERE phone=? AND day=?"), (phone, day))
@@ -615,6 +626,7 @@ def rider_qty_dayrec(cur, phone, day=None):
         return _row_to_dict(cur, row) if row else None
     except Exception:
         return None
+
 
 def _ensure_qty_table(cur):
     """惰性建表兜底：无论启动迁移是否成功（线上库/新库/迁移被跳过），
@@ -734,8 +746,8 @@ def rider_day_totals(cur, phone, day=None):
 
 
 def rider_qty_lock(cur, phone, order_no, baozi_in, shop_in):
-    """【按天锁定】分母 = 该骑手当天第一次输入的数量，当天内无论下多少次单、第几次输入都不会改变；
-    跨天（缅甸时间 0 点后）自动重新锁定，已送/退回自动清零。各骑手完全独立，互不影响。"""
+    """锁定「该骑手 + 该订单」的分母：本单第一次输入即分母，之后重复绑定 / 改填都不改变；
+    换新订单号则是新的一单，用新的输入量。跨天（缅甸时间 0 点后）自动重新锁定并清零。"""
     b_in = max(_to_int(baozi_in), 0)
     s_in = max(_to_int(shop_in), 0)
     phone = _rq_key(phone)
@@ -743,16 +755,26 @@ def rider_qty_lock(cur, phone, order_no, baozi_in, shop_in):
         return b_in, s_in
     _ensure_qty_table(cur)
     day = now_str()[:10]
-    key = _rq_day_key(day)
-    rec = rider_qty_dayrec(cur, phone, day)
+    key = _rq_day_key(day, order_no)
+    rec = rider_qty_dayrec(cur, phone, day, order_no)
     if rec:
         b = _to_int(rec.get("baozi_orig"))
         s = _to_int(rec.get("shop_orig"))
         nb, ns = b, s
-        if nb <= 0 and b_in > 0:
-            nb = b_in
-        if ns <= 0 and s_in > 0:
-            ns = s_in
+        # 本单还没有任何送出/退回进度时：分母 = 最新输入（输入多少就显示多少），
+        # 避免「骑手改填 1200，页面和地图仍显示第一次输入的 2000」。
+        _prog = (_to_int(rec.get("baozi_received")) + _to_int(rec.get("shop_received"))
+                 + _to_int(rec.get("baozi_returned")) + _to_int(rec.get("cancel_baozi")))
+        if _prog <= 0:
+            if b_in > 0:
+                nb = b_in
+            if s_in > 0:
+                ns = s_in
+        else:
+            if nb <= 0 and b_in > 0:
+                nb = b_in
+            if ns <= 0 and s_in > 0:
+                ns = s_in
         try:
             cur.execute(_q("UPDATE rider_order_qty SET order_no=?, day=?, baozi_orig=?, shop_orig=?, updated_at=? WHERE phone=? AND id=?"),
                         (key, day, nb, ns, now_str(), phone, rec.get("id")))
@@ -768,8 +790,8 @@ def rider_qty_lock(cur, phone, order_no, baozi_in, shop_in):
 
 
 def rider_qty_add(cur, phone, order_no, baozi_add, shop_add, returned_add=0):
-    """把本次送出 / 退回的数量累加到「该骑手当天」名下：
-    同一骑手当天所有订单累计（第二次下单不清零），不同骑手完全独立，凌晨 0 点自动归零。"""
+    """把本次送出 / 退回 / 取消退回累加到「该骑手 + 该订单 + 今天」这一行；
+    不同骑手、不同订单互不影响，跨天自动归零。"""
     b_add = max(_to_int(baozi_add), 0)
     s_add = max(_to_int(shop_add), 0)
     r_add = max(_to_int(returned_add), 0)
@@ -778,22 +800,24 @@ def rider_qty_add(cur, phone, order_no, baozi_add, shop_add, returned_add=0):
         return None
     _ensure_qty_table(cur)
     day = now_str()[:10]
-    key = _rq_day_key(day)
-    rec = rider_qty_dayrec(cur, phone, day)
+    key = _rq_day_key(day, order_no)
+    rec = rider_qty_dayrec(cur, phone, day, order_no)
     if not rec:
         try:
             cur.execute(_q("INSERT INTO rider_order_qty (phone, order_no, day, baozi_orig, shop_orig, baozi_received, shop_received, baozi_returned, updated_at) "
                            "VALUES (?,?,?,0,0,?,?,?,?)"), (phone, key, day, b_add, s_add, r_add, now_str()))
         except Exception:
             pass
-        return rider_qty_dayrec(cur, phone, day)
+        return rider_qty_dayrec(cur, phone, day, order_no)
     try:
         cur.execute(_q("UPDATE rider_order_qty SET order_no=?, day=?, baozi_received=?, shop_received=?, baozi_returned=?, updated_at=? WHERE phone=? AND id=?"),
-                    (key, day, _to_int(rec.get("baozi_received")) + b_add, _to_int(rec.get("shop_received")) + s_add,
-                     _to_int(rec.get("baozi_returned")) + r_add, now_str(), phone, rec.get("id")))
+                    (key, day, _to_int(rec.get("baozi_received")) + b_add,
+                     _to_int(rec.get("shop_received")) + s_add,
+                     _to_int(rec.get("baozi_returned")) + r_add,
+                     now_str(), phone, rec.get("id")))
     except Exception:
         pass
-    return rider_qty_dayrec(cur, phone, day)
+    return rider_qty_dayrec(cur, phone, day, order_no)
 
 
 def rider_qty_view(cur, phone, order_dict=None, order_no=None):
@@ -805,7 +829,7 @@ def rider_qty_view(cur, phone, order_dict=None, order_no=None):
         order_no = (order_dict.get("order_no") or "").strip()
     phone = _rq_key(phone)
     if phone:
-        rec = rider_qty_dayrec(cur, phone, day)
+        rec = rider_qty_dayrec(cur, phone, day, order_no)
         if rec:
             bo = _to_int(rec.get("baozi_orig"))
             so = _to_int(rec.get("shop_orig"))
@@ -1619,16 +1643,52 @@ def create_order():
     data = request.get_json(silent=True) or {}
     customer_name = (data.get("customer_name") or "").strip()
     address = (data.get("address") or "").strip()
-    order_no = "BZ" + datetime.now().strftime("%m%d%H%M%S")
     conn = get_db()
     cur = conn.cursor()
-    cur.execute(
-        _q("INSERT INTO orders (order_no, customer_name, address, status, created_at) VALUES (?,?,?,?,?)"),
-        (order_no, customer_name, address, "待取餐", now_str()),
-    )
-    cur.execute(_q("INSERT INTO notifications (order_no, phone, type, message, created_at) VALUES (?,?,?,?,?)"),
-                (order_no, "", "order", "新订单：" + order_no + "（客户 " + (customer_name or "-") + "）", utc_iso_now()))
-    conn.commit()
+    # 订单号曾用「秒级时间戳」，同一秒内重复点击/多人同时下单会撞主键，
+    # 直接抛 UNIQUE 约束异常 → 500 → 前端误报「服务未启动」。
+    # 现在加 3 位随机后缀，并做冲突自动重试，彻底消除该 500。
+    order_no = None
+    last_err = None
+    for _try in range(8):
+        cand = "BZ" + datetime.now().strftime("%m%d%H%M%S") + str(random.randint(100, 999))
+        try:
+            cur.execute(
+                _q("INSERT INTO orders (order_no, customer_name, address, status, created_at) VALUES (?,?,?,?,?)"),
+                (cand, customer_name, address, "待取餐", now_str()),
+            )
+            order_no = cand
+            break
+        except Exception as _e:  # 主键冲突等：回滚后换号重试
+            last_err = _e
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+    if not order_no:
+        conn.close()
+        return jsonify({"ok": False,
+                        "msg": "အမှာစာနံပါတ် ဖန်တီး၍ မရပါ၊ ထပ်မံကြိုးစားပါ (订单号生成冲突，请重试)",
+                        "err": str(last_err)[:120]}), 500
+    try:
+        cur.execute(_q("INSERT INTO notifications (order_no, phone, type, message, created_at) VALUES (?,?,?,?,?)"),
+                    (order_no, "", "order", "新订单：" + order_no + "（客户 " + (customer_name or "-") + "）", utc_iso_now()))
+        conn.commit()
+    except Exception:
+        # 通知写失败不能连带把订单判为失败
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        try:
+            conn2 = get_db()
+            cur2 = conn2.cursor()
+            cur2.execute(_q("INSERT INTO orders (order_no, customer_name, address, status, created_at) VALUES (?,?,?,?,?)"),
+                         (order_no, customer_name, address, "待取餐", now_str()))
+            conn2.commit()
+            conn2.close()
+        except Exception:
+            pass
     conn.close()
     return jsonify({"ok": True, "order_no": order_no, "msg": "အမှာစာ ဖန်တီးမှု အောင်မြင်ပါသည်"})
 
@@ -1693,24 +1753,11 @@ def rider_bind():
     # 数量口径（严格锁定）：分母 = 骑手第一次输入的数量，同一天内第二次/第三次输入任何值都不改动；
     # 跨天（缅甸时间凌晨 0 点）自动清零，允许按新的第一次输入重新锁定。
     old = _row_to_dict(cur, order)
-    # 【数量校验】已经送过一部分后重新输入总量时，输入值绝不能大于「剩余量」：
-    # 首次输入 600、送掉 100 后剩 500，此时再输入 600 必须被拒绝（只能输入 ≤500），
-    # 否则等于把已经送掉的量重复下单。
-    # 【数量校验】按「该骑手当天」的真实剩余量校验（不再只看本订单记录）：
-    # 首次输入 600、送掉 100 后剩 500，之后不管换不换订单号，再输入 600 都必须被拒绝，只能输入 ≤500。
-    _day_bo, _day_so, _day_br, _day_sr = rider_day_totals(cur, phone)
-    _rem_bt = max(_day_bo - _day_br, 0)
-    _rem_st = max(_day_so - _day_sr, 0)
-    if _day_br > 0 and 0 < _rem_bt < _day_bo and baozi_total > _rem_bt:
-        conn.close()
-        return jsonify({"ok": False, "msg": "ပေါက်စီ အရေအတွက် မမှန်ပါ — ကျန်ရှိသည် %d သာ ဖြစ်သည်။ %d ထည့်၍ မရပါ။ ကျန်ရှိသော အရေအတွက်ကိုသာ ထည့်ပါ" % (_rem_bt, baozi_total)}), 400
-    if _day_sr > 0 and 0 < _rem_st < _day_so and shop_total > _rem_st:
-        conn.close()
-        return jsonify({"ok": False, "msg": "ဆိုင် အရေအတွက် မမှန်ပါ — ကျန်ရှိသည် %d သာ ဖြစ်သည်။ %d ထည့်၍ မရပါ။ ကျန်ရှိသော အရေအတွက်ကိုသာ ထည့်ပါ" % (_rem_st, shop_total)}), 400
-    # 【严格一致】只要这位骑手当天已经有送出记录，第二次输入必须与「当前剩余量」完全一致：
-    # 首次 600、送出 100、剩余 500 时再输入 600（第一次的总量）一律拒绝，禁止继续下单。
+    # 【数量校验】一切按「这个骑手 + 这个订单」自己的数字判断：
+    # 同一单已经送出过一部分后再填写，输入值必须等于剩余量；
+    # 换了新订单号则属于这一单的首次录入，允许填写新的数量（不再被上一单的数字拦住）。
     _sv = rider_qty_view(cur, phone, None, order_no)
-    if _sv.get("scope") in ("rider_order", "rider_empty"):
+    if _sv.get("scope") == "rider_order":
         _sv_br = _to_int(_sv.get("baozi_received"))
         _sv_sr = _to_int(_sv.get("shop_received"))
         if _sv_br > 0 or _sv_sr > 0:
@@ -1719,26 +1766,20 @@ def rider_bind():
             if baozi_total != _sv_rb or shop_total != _sv_rs:
                 conn.close()
                 return jsonify({"ok": False, "msg": "အရေအတွက် မကိုက်ညီပါ — ကျန်ရှိသည် ပေါက်စီ %d / ဆိုင် %d သာ ဖြစ်သည်။ ကျန်ရှိသော အရေအတွက်အတိုင်းသာ ထည့်ပါ" % (_sv_rb, _sv_rs)}), 400
-    _prev_rec = rider_qty_dayrec(cur, phone)
-    if _prev_rec:
-        _pv_bt = _to_int(_prev_rec.get("baozi_orig"))
-        _pv_br = _to_int(_prev_rec.get("baozi_received"))
-        _pv_st = _to_int(_prev_rec.get("shop_orig"))
-        _pv_sr = _to_int(_prev_rec.get("shop_received"))
-        _p_rem_bt = max(_pv_bt - _pv_br, 0)
-        _p_rem_st = max(_pv_st - _pv_sr, 0)
-        if _pv_br > 0 and 0 < _p_rem_bt < _pv_bt and baozi_total > _p_rem_bt:
-            conn.close()
-            return jsonify({"ok": False, "msg": "ပေါက်စီ အရေအတွက် မမှန်ပါ — ကျန်ရှိသည် %d သာ ဖြစ်သည်။ %d ထည့်၍ မရပါ။ ကျန်ရှိသော အရေအတွက်ကိုသာ ထည့်ပါ" % (_p_rem_bt, baozi_total)}), 400
-        if _pv_sr > 0 and 0 < _p_rem_st < _pv_st and shop_total > _p_rem_st:
-            conn.close()
-            return jsonify({"ok": False, "msg": "ဆိုင် အရေအတွက် မမှန်ပါ — ကျန်ရှိသည် %d သာ ဖြစ်သည်။ %d ထည့်၍ မရပါ။ ကျန်ရှိသော အရေအတွက်ကိုသာ ထည့်ပါ" % (_p_rem_st, shop_total)}), 400
     _in_bt, _in_st = baozi_total, shop_total
     old_bt_orig = int(old.get("baozi_total_orig") or 0)
     old_st_orig = int(old.get("shop_total_orig") or 0)
     today = now_str()[:10]
     lock_day = (old.get("qty_lock_day") or "").strip()
     locked = bool(lock_day) and lock_day == today and (old_bt_orig > 0 or old_st_orig > 0)
+    if locked:
+        # 本单还没送出过任何数量时，最新输入即分母（否则地图端永远显示第一次输入的旧数）
+        try:
+            _p_bt, _p_br, _p_st, _p_sr = order_counts(old)
+        except Exception:
+            _p_br, _p_sr = 0, 0
+        if _p_br <= 0 and _p_sr <= 0:
+            locked = False
     if locked:
         baozi_orig, shop_orig = old_bt_orig, old_st_orig
     else:
@@ -2192,7 +2233,7 @@ def rider_cancel():
     _ret_total = 0
     try:
         _day = now_str()[:10]
-        _cr = rider_qty_dayrec(cur, phone, _day)
+        _cr = rider_qty_dayrec(cur, phone, _day, order_no)
         if _cr and _cr.get("id"):
             _cb_old = _to_int(_cr.get("cancel_baozi"))
             cur.execute(_q("UPDATE rider_order_qty SET cancel_baozi=?, cancel_reason=?, updated_at=? WHERE id=?"),
@@ -2201,7 +2242,7 @@ def rider_cancel():
         elif cancel_baozi > 0:
             cur.execute(_q("INSERT INTO rider_order_qty (phone, order_no, day, baozi_orig, shop_orig, baozi_received, shop_received, baozi_returned, cancel_baozi, cancel_reason, updated_at) "
                            "VALUES (?,?,?,0,0,0,0,0,?,?,?)"),
-                        (phone, _rq_day_key(_day), _day, cancel_baozi, cancel_reason, now_str()))
+                        (phone, _rq_day_key(_day, order_no), _day, cancel_baozi, cancel_reason, now_str()))
             _ret_total = cancel_baozi
     except Exception:
         pass
@@ -2485,11 +2526,22 @@ def track():
     # 只算这个骑手自己的已送量，绝不与其它骑手或其它订单混算（与骑手页面完全一致）
     try:
         _rv = rider_qty_view(cur, phone, None, order_no)
-        if _rv.get("scope") in ("rider_order", "rider_empty"):
+        if _rv.get("scope") == "rider_order":
             _d_bt = _to_int(_rv.get("baozi_total"))
             _d_br = _to_int(_rv.get("baozi_received"))
             _d_st = _to_int(_rv.get("shop_total"))
             _d_sr = _to_int(_rv.get("shop_received"))
+        elif _rv.get("scope") == "rider_empty":
+            # 该骑手在本单还没有独立记录：如果这单只有一个骑手，订单级数字就是他自己的数，
+            # 直接用（避免地图端突兀显示 0/0）；若出现过多骑手，保持 0，不用别人的量冒充。
+            try:
+                _cnt = order_rider_count(cur, order_no)
+            except Exception:
+                _cnt = 9
+            if _cnt <= 1:
+                _d_bt, _d_br, _d_st, _d_sr = order_counts(order_dict)
+            else:
+                _d_bt = _d_br = _d_st = _d_sr = 0
     except Exception as _e_rv:
         print("[track] rider qty view failed: %s" % _e_rv)
     # 说明：上面的 rider_qty_view 已严格按「本骑手+本单/本天」取值，无记录即 rider_empty(0)，

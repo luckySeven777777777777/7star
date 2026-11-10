@@ -2278,6 +2278,16 @@ async function refreshRiderInfo() {
       .then(function (r) { return r.json().then(function (j) { return {r: r, j: j}; }); })
       .then(function (res) {
         if (!res.j.ok) { if (res.r.status === 403) { handleUnbound(res.j.msg); return; } return; }
+        // 本地锁定的订单若在服务端已是终态（已完成 / 已取消），立刻清除死锁，允许接新单
+        var _sts = res.j.status || "";
+        if (_sts === "လက်ခံပြီးပါပြီ" || _sts === "ပယ်ဖျက်ထားသည်") {
+          try { localStorage.removeItem("riderLock_" + phone); } catch (e) {}
+          try { if (typeof resetAfterCompletion === "function") resetAfterCompletion(); } catch (e) {}
+          setTimeout(function () {
+            showInfo("ယခင် Order သည် ပြီးဆုံး/ပယ်ဖျက်ပြီး ဖြစ်သောကြောင့် လော့ခ်ဖွင့်ပြီးပါပြီ။ Order အသစ် ချိတ်ဆက်နိုင်ပါပြီ");
+          }, 150);
+          return;
+        }
         showRiderMap();
         startGps();
         refreshRiderInfo();

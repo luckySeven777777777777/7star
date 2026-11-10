@@ -1429,24 +1429,60 @@ function updateRiderMarker() {
   }
 }
 
+
+// ---------- 统一请求：网络抖动自动重试一次，失败时把真实原因暴露出来（不再一律说「服务未启动」） ----------
+async function apiPost(url, payload, retry) {
+  var lastErr = null;
+  var tries = (retry === false) ? 1 : 2;
+  for (var i = 0; i < tries; i++) {
+    try {
+      var r = await fetch(url, {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(payload || {})
+      });
+      var _raw = await r.text();
+      var j = null;
+      try { j = JSON.parse(_raw); } catch (pe) {
+        throw new Error("HTTP " + r.status + " — " + String(_raw || "").replace(/\s+/g, " ").slice(0, 120));
+      }
+      return { resp: r, json: j };
+    } catch (e) {
+      lastErr = e;
+      if (i + 1 < tries) {
+        await new Promise(function (res) { setTimeout(res, 1200); });
+      }
+    }
+  }
+  throw lastErr || new Error("unknown");
+}
+
 // ---------- ဆိုင်က အမှာစာ ဖန်တီးခြင်း ----------
 async function createOrder() {
+  // 防连点：同一秒内点两次会命中同一个订单号，导致后端 500、前端误报「服务未启动」
+  var _btn = document.getElementById("getNewOrdersBtn");
+  if (_btn && _btn.disabled) return;
+  if (_btn) { _btn.disabled = true; _btn.textContent = "ဖန်တီးနေသည်..."; }
   try {
-    var r = await fetch("/api/order/create", {
-      method: "POST",
-      headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({ customer_name: "ဖောက်သည်", address: "ဥပမာလိပ်စာ ၈၈" })
-    });
-    var j = await r.json();
-    if (j.ok) {
+    await _createOrder();
+  } finally {
+    if (_btn) { _btn.disabled = false; _btn.textContent = "Get New Orders"; }
+  }
+}
+
+async function _createOrder() {
+  try {
+    var _cr = await apiPost("/api/order/create", { customer_name: "ဖောက်သည်", address: "ဥပမာလိပ်စာ ၈၈" });
+    var j = _cr.json;
+    if (j && j.ok) {
       document.getElementById("newOrder").textContent = j.order_no;
       document.getElementById("orderBox").style.display = "block";
       document.getElementById("orderNo").value = j.order_no;
     } else {
-      showInfo(j.msg || "ဖန်တီးမှု မအောင်မြင်ပါ");
+      showInfo((j && j.msg) || "ဖန်တီးမှု မအောင်မြင်ပါ");
     }
   } catch (e) {
-    showInfo("ဆာဗာနှင့် ချိတ်ဆက်၍ မရပါ။ ဝန်ဆောင်မှု စတင်ထားခြင်း ရှိမရှိ စစ်ဆေးပါ（请检查后端服务是否已启动，并用 http:// 地址访问）");
+    showErr("အမှာစာ ဖန်တီး၍ မရပါ", e);
   }
 }
 
@@ -1498,19 +1534,15 @@ async function bindOrder() {
     } catch (e) {}
     // Plus Code 不在前端强行转坐标：统一交给服务端权威解析，
     // 保证手机端与电脑端用同一套算法，定位结果完全一致（前端仅在服务端解析失败时兜底）
-    var r = await fetch("/api/rider/bind", {
-      method: "POST",
-      headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({
-        name: name, phone: phone, order_no: orderNo,
-        rider_name: name, baozi_total: baoziTotal || 0,
-        shop_total: shopTotal || 0, delivery_address: deliveryAddress,
-        city: city, shop_location_link: shopLocationLink, shop_location_coords: shopLocationCoords,
-        shop_location_plus_code: shopLocationPlusCode
-      })
+    var _br = await apiPost("/api/rider/bind", {
+      name: name, phone: phone, order_no: orderNo,
+      rider_name: name, baozi_total: baoziTotal || 0,
+      shop_total: shopTotal || 0, delivery_address: deliveryAddress,
+      city: city, shop_location_link: shopLocationLink, shop_location_coords: shopLocationCoords,
+      shop_location_plus_code: shopLocationPlusCode
     });
-    var j = await r.json();
-    if (!j.ok) { showInfo(j.msg); return; }
+    var j = _br.json || {};
+    if (!j.ok) { showInfo(j.msg || "ချိတ်ဆက်မှု မအောင်မြင်ပါ"); return; }
 
     localStorage.setItem("riderPhoneSaved", phone);
     state.orderNo = orderNo;
@@ -1546,35 +1578,40 @@ async function bindOrder() {
     }
     // 再异步向服务端校正真实剩余量（失败也不影响本地已显示的值）
     if (window.loadRemain) window.loadRemain(phone, orderNo);
+    // 绑定已成功：先强制开 GPS（路线必须有骑手起点，不能等地图画完），再画地图
+    try {
+      document.getElementById("gpsBtn").disabled = true;
+      document.getElementById("gpsBtn").textContent = "GPS ဖွင့်ထားသည်";
+      startGps();
+    } catch (eg) { console.error("startGps error", eg); }
     // 显示骑手端地图：商家位置 + 骑手自身位置 + 绿色路线
-    showRiderMap();
-    if (j.shop_lat !== null && j.shop_lat !== undefined) {
-      setShop(j.shop_lat, j.shop_lng, j.shop_link || "");
-      document.getElementById("shopHint").style.display = "none";
-    } else {
-      var shopC = resolveShopLocation();
-      if (shopC) {
-        setShop(shopC[0], shopC[1], shopLocationLink);
+    // 任何地图绘制异常都只记录日志，绝不吞掉「已绑定成功」这一事实，也不阻断 GPS 上报
+    try {
+      showRiderMap();
+      if (j.shop_lat !== null && j.shop_lat !== undefined) {
+        setShop(j.shop_lat, j.shop_lng, j.shop_link || "");
         document.getElementById("shopHint").style.display = "none";
       } else {
-        document.getElementById("shopHint").style.display = "block";
+        var shopC = resolveShopLocation();
+        if (shopC) {
+          setShop(shopC[0], shopC[1], shopLocationLink);
+          document.getElementById("shopHint").style.display = "none";
+        } else {
+          document.getElementById("shopHint").style.display = "block";
+        }
       }
-    }
+    } catch (em) { console.error("map init error", em); }
     showInfo("ချိတ်ဆက်မှု အောင်မြင်ပါသည်။ GPS ဖွင့်ပြီး တည်နေရာ တင်နေပါသည်"
       + (j.shop_warn ? " ⚠ " + j.shop_warn : ""));
     // 取消订单键启用
     // 问题3：恢复现场时取消❌ 仍需三个状态按顺序点完才放开
     try { if (window.syncActionButtons) window.syncActionButtons(); } catch (e) {}
-    // GPS 强制开启：绑定成功后自动开启，快递员端不可关闭（仅 track 商家页可关）
-    document.getElementById("gpsBtn").disabled = true;
-    document.getElementById("gpsBtn").textContent = "GPS ဖွင့်ထားသည်";
-    startGps();
-    refreshRiderInfo();
+    try { refreshRiderInfo(); } catch (e) { console.error("refreshRiderInfo error", e); }
     // 定期检查商家是否关闭 GPS（商家关闭后本端立即停止上报）
     if (state.refreshTimer) clearInterval(state.refreshTimer);
     state.refreshTimer = setInterval(refreshRiderInfo, 2000);
   } catch (e) {
-    showInfo("ဆာဗာနှင့် ချိတ်ဆက်၍ မရပါ။ ဝန်ဆောင်မှု စတင်ထားခြင်း ရှိမရှိ စစ်ဆေးပါ（请检查后端服务是否已启动，并用 http:// 地址访问）");
+    showErr("ချိတ်ဆက်မှု မအောင်မြင်ပါ", e);
   }
 }
 
@@ -2169,6 +2206,14 @@ async function loadRemaining(phone) {
 
 // ---------- နောက်ဆုံးအခြေအနေ ပြန်လည် ရယူခြင်း ----------
 // 专业提示弹窗（替代原生 alert）
+// 统一错误提示：把真实原因（HTTP 状态 / 服务端原文 / 网络错误）显示出来，方便定位
+function showErr(title, e) {
+  var m = (e && (e.stack || e.message)) ? (e.message || e.stack) : String(e);
+  m = String(m || "").replace(/\s+/g, " ").slice(0, 160);
+  showInfo(title + "（" + m + "）");
+  console.error(title, e);
+}
+
 function showInfo(msg) {
   document.getElementById("infoText").textContent = msg;
   document.getElementById("infoModal").style.display = "flex";

@@ -539,6 +539,34 @@ function parseLinkCoords(text) {
   }
   return null;
 }
+// 手机端专用：只采信「精确定位点」（!3d!4d / ?q= / /place/lat,lng / /search/lat,lng）。
+// @lat,lng 只是地图视野中心，手机端分享链接里用它会偏到旁边几十~几百米，所以这里绝不用它。
+function parseLinkCoordsPrecise(text) {
+  if (!text) return null;
+  var s = String(text);
+  s = s.replace(/&amp;/gi, "&").replace(/\\u0026/gi, "&").replace(/&#38;/g, "&");
+  try { if (/%[0-9A-Fa-f]{2}/.test(s)) s = decodeURIComponent(s); } catch (e) {}
+  var m2 = s.match(/!2d(-?\d{1,3}\.\d+)!3d(-?\d{1,3}\.\d+)/i);
+  if (m2) {
+    var rc = [parseFloat(m2[2]), parseFloat(m2[1])];
+    if (inRegion(rc[0], rc[1])) return rc;
+  }
+  var pats = [
+    /!3d(-?\d{1,3}\.\d+)!4d(-?\d{1,3}\.\d+)/,
+    /[?&](?:q|query|ll|daddr|destination|center|sll|viewpoint|location)=(-?\d{1,3}\.\d+)\s*,\s*(-?\d{1,3}\.\d+)/,
+    /\/place\/(-?\d{1,3}\.\d+),(-?\d{1,3}\.\d+)/,
+    /\/search\/(-?\d{1,3}\.\d+),(-?\d{1,3}\.\d+)/
+  ];
+  for (var i = 0; i < pats.length; i++) {
+    var m = s.match(pats[i]);
+    if (m) {
+      var c = [parseFloat(m[1]), parseFloat(m[2])];
+      if (inRegion(c[0], c[1])) return c;
+    }
+  }
+  return null;
+}
+window.parseLinkCoordsPrecise = parseLinkCoordsPrecise;
 var PLUS_ALPHABET = "23456789CFGHJMPQRVWX";
 function plusCodeValue(ch) { return PLUS_ALPHABET.indexOf(ch); }
 // 官方 Open Location Code 位值加权解码（与 Google 地图/官方库一致）
@@ -679,8 +707,9 @@ function _denomToday() {
 function _denomKey(phone, orderNo) {
   var p = String(phone || "").trim();
   var o = String(orderNo || "").trim();
-  // 分母按「骑手 + 当天」锁定：同一骑手当天的首次输入量跨订单保持（重下单仍是 600），
-  // 不同骑手之间绝不混合
+  // 分母按「骑手 + 订单」锁定：每个骑手每一单各自一份，骑手之间不混合、不同订单也不混，
+  // 这是「两个骑手数量串在一起」和「输入 20 却显示 60」的根源，绝不能再按 rider+day 混算。
+  if (p && o) return "rider:" + p + "|order:" + o;
   if (p) return "rider:" + p + "|day:" + _denomToday();
   if (o) return "order:" + o;
   return "";
@@ -698,10 +727,10 @@ function lockDenom(phone, orderNo, baoziTotal, shopTotal) {
   // 跨天（凌晨 0 点后）自动清零：丢弃前一天的锁
   if (rec && rec.day && rec.day !== day) rec = null;
   if (rec) {
-    // 只升不降：已锁定的分母优先，但旧版本误锁成 500 的记录会被本次的 600 纠正回来，
-    // 首次输入量永不被后续数字（剩余量/改单量）覆盖
-    b = Math.max(_denomNum(rec.baozi), b);
-    s = Math.max(_denomNum(rec.shop), s);
+    // 本次给出的「该骑手本单」数字优先（可把历史上被订单级数字顶大的错误锁纠正回来，例如 60 → 20）；
+    // 只有本次没给出数字时才沿用旧锁。
+    b = (b > 0) ? b : _denomNum(rec.baozi);
+    s = (s > 0) ? s : _denomNum(rec.shop);
   }
   if (b > 0 || s > 0) {
     all[key] = { baozi: b, shop: s, day: day };
@@ -718,7 +747,7 @@ window.lockDenom = lockDenom;
 function resolveShopLocation() {
   var c = parseCoordsText(document.getElementById("shopLocationCoords").value);
   if (c && inRegion(c[0], c[1])) return c;
-  c = parseLinkCoords(document.getElementById("shopLocationLink").value);
+  c = (window.parseLinkCoordsPrecise || parseLinkCoords)(document.getElementById("shopLocationLink").value);
   if (c && inRegion(c[0], c[1])) return c;
   var pc = decodePlusCode(document.getElementById("shopLocationPlusCode").value);
   if (pc && inRegion(pc[0], pc[1])) return pc;
@@ -792,7 +821,7 @@ async function updateShopLocation() {
   }
   // 长链接可直接在前端解析出坐标，避免手机端因网络/短链重定向失败
   if (!coords && link) {
-    var lc = parseLinkCoords(link);
+    var lc = window.parseLinkCoordsPrecise ? window.parseLinkCoordsPrecise(link) : null;
     if (lc && inRegion(lc[0], lc[1])) { coords = lc[0].toFixed(6) + ", " + lc[1].toFixed(6); }
   }
   if (!coords && !link) {
@@ -1522,7 +1551,7 @@ async function bindOrder() {
     refreshRiderInfo();
     // 定期检查商家是否关闭 GPS（商家关闭后本端立即停止上报）
     if (state.refreshTimer) clearInterval(state.refreshTimer);
-    state.refreshTimer = setInterval(refreshRiderInfo, 5000);
+    state.refreshTimer = setInterval(refreshRiderInfo, 2000);
   } catch (e) {
     showInfo("ဆာဗာနှင့် ချိတ်ဆက်၍ မရပါ။ ဝန်ဆောင်မှု စတင်ထားခြင်း ရှိမရှိ စစ်ဆေးပါ（请检查后端服务是否已启动，并用 http:// 地址访问）");
   }
@@ -2210,7 +2239,7 @@ async function refreshRiderInfo() {
         startGps();
         refreshRiderInfo();
         if (state.refreshTimer) clearInterval(state.refreshTimer);
-        state.refreshTimer = setInterval(refreshRiderInfo, 5000);
+        state.refreshTimer = setInterval(refreshRiderInfo, 2000);
       })
       .catch(function () {});
   } else if (phone) {
@@ -2282,7 +2311,7 @@ function restoreActiveOrder(act, phone) {
   startGps();
   refreshRiderInfo();
   if (state.refreshTimer) clearInterval(state.refreshTimer);
-  state.refreshTimer = setInterval(refreshRiderInfo, 5000);
+  state.refreshTimer = setInterval(refreshRiderInfo, 2000);
   showInfo("Active order restored: " + act.order_no);
 }
 
@@ -2500,18 +2529,29 @@ checkLogin();
     var _cur = (window.state && state.orderNo) || "";
     var _ret = j.order_no || "";
     if (_cur && _ret && _cur !== _ret) return;
+    // 刚刚确认/取消的订单：20 秒内只接受这一单的数据，避免被"最近订单"的旧状态顶回去
+    var _lkF = window.__finalLock;
+    if (_lkF && (Date.now() - _lkF.ts) < 20000 && _ret && _ret !== _lkF.no) return;
     var d = ensureRemainCard();
     function g(id) { return document.getElementById(id); }
     if (g("rtOrder")) g("rtOrder").textContent = j.order_no || "-";
     if (g("rtStatus")) g("rtStatus").textContent = statusEn(j.status || "");
-    // 分母恒为「该骑手今天第一次输入的数量」（lockDenom 只增不减），刷新 / 重新下单都不会变小
-    var _lkR = lockDenom((window.state && state.phone) || "", j.order_no || (window.state && state.orderNo) || "",
-      (j.baozi_total_orig !== undefined ? j.baozi_total_orig : j.baozi_total),
-      (j.shop_total_orig !== undefined ? j.shop_total_orig : j.shop_total));
+    // 分母只认服务端返回的「该骑手 + 该订单」自己的数量（scope=rider_order 且非首次输入）；
+    // 订单级数字（整单 60）绝不参与显示 —— 这是骑手输入 20 却被显示成 60 的根源。
+    var _isRiderScope = (j.scope === "rider_order") && !j.first_input;
+    var _srvB = (j.baozi_total_orig !== undefined && j.baozi_total_orig !== null) ? parseInt(j.baozi_total_orig, 10) : 0;
+    var _srvS = (j.shop_total_orig !== undefined && j.shop_total_orig !== null) ? parseInt(j.shop_total_orig, 10) : 0;
+    var _denB = 0, _denS = 0;
+    if (_isRiderScope) {
+      var _lkR = lockDenom((window.state && state.phone) || "", j.order_no || (window.state && state.orderNo) || "",
+        isNaN(_srvB) ? 0 : _srvB, isNaN(_srvS) ? 0 : _srvS);
+      _denB = (isNaN(_srvB) ? 0 : _srvB) || _lkR.baozi || 0;
+      _denS = (isNaN(_srvS) ? 0 : _srvS) || _lkR.shop || 0;
+    }
     if (g("rtBaozi")) g("rtBaozi").textContent = ((j.baozi_remaining !== undefined && j.baozi_remaining !== null) ? j.baozi_remaining : "-") +
-      " / " + (_lkR.baozi || "-");
+      " / " + (_denB || "-");
     if (g("rtShop")) g("rtShop").textContent = ((j.shop_remaining !== undefined && j.shop_remaining !== null) ? j.shop_remaining : "-") +
-      " / " + (_lkR.shop || "-");
+      " / " + (_denS || "-");
     if (g("rtTime")) {
       var now = new Date();
       g("rtTime").textContent = now.getHours() + ":" +
@@ -2526,8 +2566,8 @@ checkLogin();
     window.__remain.firstInput = !!j.first_input;
     // 分母（骑手第一次输入量）也记下来，供数量校验使用：允许填「首次数」或「当前剩余」，
     // 这样重新下单时不会被强制改写成剩余量，分母永远是 600。
-    window.__remain.baoziOrig = _lkR.baozi || (j.baozi_total_orig !== undefined ? j.baozi_total_orig : null);
-    window.__remain.shopOrig = _lkR.shop || (j.shop_total_orig !== undefined ? j.shop_total_orig : null);
+    window.__remain.baoziOrig = _denB || (j.baozi_total_orig !== undefined ? j.baozi_total_orig : null);
+    window.__remain.shopOrig = _denS || (j.shop_total_orig !== undefined ? j.shop_total_orig : null);
     d.style.display = "block";
     if (window.validateCountInputs) window.validateCountInputs();
   }
@@ -3094,6 +3134,105 @@ checkLogin();
   });
   window.addEventListener("pageshow", function () { syncNow(); });
   window.addEventListener("focus", function () { syncNow(); });
+})();
+
+/* ===== 2026-11-10 修复 v5：确认 / 取消后 1~2 秒内即时更新状态与数量（无需刷新页面） ===== */
+(function () {
+  window.__finalLock = window.__finalLock || null;
+
+  function setStatusNow(orderNo, myStatus, en) {
+    try { if (document.getElementById("rtOrder")) document.getElementById("rtOrder").textContent = orderNo || "-"; } catch (e) {}
+    try { if (document.getElementById("rtStatus")) document.getElementById("rtStatus").textContent = en; } catch (e) {}
+    try {
+      var cs = document.getElementById("curStatus");
+      if (cs) {
+        cs.textContent = myStatus;
+        cs.style.color = (en === "Completed") ? "#2e7d32" : (en === "Cancelled" ? "#c62828" : "");
+      }
+      document.querySelectorAll("#statusBox button").forEach(function (b) { b.classList.remove("active"); });
+    } catch (e) {}
+  }
+
+  function riderPhone() {
+    var ph = "";
+    try {
+      ph = (window.state && state.phone) ||
+        (document.getElementById("riderPhone").value || "").trim() ||
+        (localStorage.getItem("riderPhoneSaved") || "").trim();
+    } catch (e) {}
+    return ph;
+  }
+
+  // 用「这一单的单号」去拉数量，绝不发起只有 phone 的查询（那会取到上一单/最近订单，状态就永远显示 Completed）
+  function pull(orderNo) {
+    var ph = riderPhone();
+    if (!ph || !orderNo) return;
+    try { if (window.loadRemain) window.loadRemain(ph, orderNo); } catch (e) {}
+    [400, 1000, 1600].forEach(function (ms) {
+      setTimeout(function () { try { if (window.loadRemain) window.loadRemain(ph, orderNo); } catch (e) {} }, ms);
+    });
+  }
+
+  var _fetchV5 = window.fetch;
+  window.fetch = function (url, opts) {
+    var u = (typeof url === "string") ? url : ((url && url.url) || "");
+    var no = "";
+    try { no = (window.state && state.orderNo) || window.__activeOrderNo || (localStorage.getItem("riderActiveOrderNo") || ""); } catch (e) {}
+    var pr = _fetchV5.apply(this, arguments);
+    try {
+      if (/\/api\/rider\/cancel(\?|$)/.test(u)) {
+        pr.then(function (r) {
+          r.clone().json().then(function (j) {
+            if (!j || !j.ok) return;
+            var n = no || (j.order_no || "");
+            window.__finalLock = { no: n, en: "Cancelled", ts: Date.now() };
+            setStatusNow(n, "ပယ်ဖျက်ထားသည်", "Cancelled");
+            pull(n);
+          }).catch(function () {});
+        }).catch(function () {});
+      } else if (/\/api\/rider\/confirm(\?|$)/.test(u) || /\/api\/rider\/deliver(\?|$)/.test(u)) {
+        pr.then(function (r) {
+          r.clone().json().then(function (j) {
+            if (!j || !j.ok) return;
+            var n = no || (j.order_no || "");
+            window.__finalLock = { no: n, en: "Completed", ts: Date.now() };
+            setStatusNow(n, "လက်ခံပြီးပါပြီ", "Completed");
+            pull(n);
+          }).catch(function () {});
+        }).catch(function () {});
+      }
+    } catch (e) {}
+    return pr;
+  };
+
+  // loadRemain 回填后用终态锁再盖一次状态文字，防止异步返回把「已取消」覆盖回「Completed」
+  var _lrV5 = window.loadRemain;
+  if (typeof _lrV5 === "function") {
+    window.loadRemain = function (phone, orderNo) {
+      var r = _lrV5.apply(this, arguments);
+      try {
+        var lk = window.__finalLock;
+        if (lk && (Date.now() - lk.ts) < 20000 && (orderNo || "") === lk.no) {
+          setTimeout(function () {
+            try { if (document.getElementById("rtStatus")) document.getElementById("rtStatus").textContent = lk.en; } catch (e) {}
+          }, 60);
+        }
+      } catch (e) {}
+      return r;
+    };
+  }
+
+  // 数量每 3 秒自动对一次「本骑手本单」的数，别再等整页刷新
+  setInterval(function () {
+    try {
+      var ph = riderPhone();
+      var no = (window.state && state.orderNo) || window.__activeOrderNo || "";
+      if (!ph || !no) return;
+      var lk2 = window.__finalLock;
+      if (lk2 && (Date.now() - lk2.ts) < 20000 && no !== lk2.no) return;
+      if (window.loadRemain) window.loadRemain(ph, no);
+    } catch (e) {}
+  }, 3000);
 })();
 </script>
 

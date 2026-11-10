@@ -487,8 +487,8 @@ function render(j) {
   document.getElementById("rTime").textContent = j.update_time || "-";
   document.getElementById("rCity").textContent = j.city || "-";
   document.getElementById("rLatest").textContent = j.latest ? (j.latest.address || (j.latest.lat.toFixed(6) + ", " + j.latest.lng.toFixed(6))) : "-";
-  document.getElementById("rBaozi").textContent = (j.baozi_remaining !== undefined && j.baozi_remaining !== null) ? (j.baozi_remaining + " / " + (j.baozi_total_orig || j.baozi_total || 0)) : "-";
-  document.getElementById("rShop").textContent = (j.shop_remaining !== undefined && j.shop_remaining !== null) ? (j.shop_remaining + " / " + (j.shop_total_orig || j.shop_total || 0)) : "-";
+  document.getElementById("rBaozi").textContent = (j.baozi_remaining !== undefined && j.baozi_remaining !== null) ? (j.baozi_remaining + " / " + ((j.baozi_total_orig || j.baozi_total) || "-")) : "-";
+  document.getElementById("rShop").textContent = (j.shop_remaining !== undefined && j.shop_remaining !== null) ? (j.shop_remaining + " / " + ((j.shop_total_orig || j.shop_total) || "-")) : "-";
   document.getElementById("rPayment").textContent = j.payment_method || "-";
   document.getElementById("rAmount").textContent = j.amount || "-";
   document.getElementById("rShopLocation").textContent = locDisplay(j);
@@ -967,8 +967,8 @@ function renderMulti(results, silent) {
         'Order：' + x.order_no + ' · City:' + (x.city || "-") + '<br>' +
         'ပို့ရမည့်လိပ်စာ：' + addrTxt + '<br>' +
         (_isCancel ? "❌ " : (_isDone ? "✅ " : "")) + stTagHtml(stTxt) + '<br>' +
-        'ကျန်ရှိသောပေါက်စီအလုံးအရေတွက်：' + (bt - br) + ' / ' + bt + '<br>' +
-        'ကျန်ရှိသောဆိုင်အရေတွက်：' + (st - sr) + ' / ' + st + '<br>' +
+        'ကျန်ရှိသောပေါက်စီအလုံးအရေတွက်：' + (bt > 0 ? ((bt - br) + ' / ' + bt) : '-') + '<br>' +
+        'ကျန်ရှိသောဆိုင်အရေတွက်：' + (st > 0 ? ((st - sr) + ' / ' + st) : '-') + '<br>' +
         'ငွေပေးချေမှုနည်းလမ်း：' + (x.payment_method || "-") + '<br>' +
         'Amount (MMK)：' + (x.amount || "-") + '<br>' +
         '📍 Location / Geographic Location：' + locDisplay(x) +
@@ -1197,8 +1197,8 @@ function renderHistory() {
       + '城市：<b>' + (h.city || "-") + '</b><br>'
       + 'ပို့ဆောင်သူ နောက်ဆုံးတည်နေရာ：<b>' + loc + '</b><br>'
       + 'ပို့ရမည့်ဆိုင်လိပ်စာ：<b>' + (h.delivery_address || "-") + '</b><br>'
-      + 'ကျန်ရှိသောပေါက်စီအလုံးအရေတွက်：<b>' + h.baozi_remaining + ' / ' + (h.baozi_total_orig || h.baozi_total) + '</b><br>'
-      + 'ကျန်ရှိသောဆိုင်အရေတွက်：<b>' + h.shop_remaining + ' / ' + (h.shop_total_orig || h.shop_total) + '</b><br>'
+      + 'ကျန်ရှိသောပေါက်စီအလုံးအရေတွက်：<b>' + (((h.baozi_total_orig || h.baozi_total) > 0) ? (h.baozi_remaining + ' / ' + (h.baozi_total_orig || h.baozi_total)) : '-') + '</b><br>'
+      + 'ကျန်ရှိသောဆိုင်အရေတွက်：<b>' + (((h.shop_total_orig || h.shop_total) > 0) ? (h.shop_remaining + ' / ' + (h.shop_total_orig || h.shop_total)) : '-') + '</b><br>'
       + 'ငွေပေးချေမှုနည်းလမ်း：<b>' + (h.payment_method || "-") + '</b><br>'
       + 'Amount (MMK)：<b>' + (h.amount || "-") + '</b><br>'
       + '📍 Location / Geographic Location：<b>' + locDisplay(h) + '</b><br>'

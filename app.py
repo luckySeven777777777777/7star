@@ -2004,10 +2004,12 @@ def rider_cancel():
             _q("INSERT INTO order_history (order_no, rider_phone, rider_name, bind_time) VALUES (?,?,?,?)"),
             (order_no, phone, rider_name, now_str()),
         )
-    # 取消数量/原因留档（只动本骑手本单这一条，绝不扣减任何送出量）
+    # 取消数量/原因留档（只写本骑手「当天」那一条，绝不扣减任何送出量）
     try:
-        cur.execute(_q("UPDATE rider_order_qty SET cancel_baozi=?, cancel_reason=?, updated_at=? WHERE phone=? AND order_no=?"),
-                    (cancel_baozi, cancel_reason, now_str(), _rq_key(phone), order_no))
+        _cr = rider_qty_dayrec(cur, phone, now_str()[:10])
+        if _cr and _cr.get("id"):
+            cur.execute(_q("UPDATE rider_order_qty SET cancel_baozi=?, cancel_reason=?, updated_at=? WHERE id=?"),
+                        (cancel_baozi, cancel_reason, now_str(), _cr.get("id")))
     except Exception:
         pass
     _msg = "订单已取消：%s（骑手 %s）取消数量 %d 原因 %s" % (order_no, rider_name or phone, cancel_baozi, cancel_reason or "-")
@@ -2238,9 +2240,8 @@ def track():
             _d_sr = _to_int(_rv.get("shop_received"))
     except Exception as _e_rv:
         print("[track] rider qty view failed: %s" % _e_rv)
-    # 同一订单多骑手：禁止订单口径兜底，避免显示别人的数量
-    if phone and order_rider_count(cur, order_no) > 1:
-        _d_bt = _d_br = _d_st = _d_sr = 0
+    # 说明：上面的 rider_qty_view 已严格按「本骑手+本单/本天」取值，无记录即 rider_empty(0)，
+    # 不存在订单口径兜底，因此这里不能再对同单多骑手做清零——否则会误把本骑手自己的数量清成 0。
     conn.close()
     if latest:
         latest["address"] = reverse_geocode(latest["lat"], latest["lng"])

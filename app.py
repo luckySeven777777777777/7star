@@ -1935,6 +1935,8 @@ def rider_confirm():
             "baozi_total": _bt_all, "baozi_received": new_baozi, "baozi_remaining": max(_bt_all - new_baozi, 0),
             "shop_total": _st_all, "shop_received": new_shop, "shop_remaining": max(_st_all - new_shop, 0),
         })
+    # 问题1：退回数量必须回传真实值，绝不显示 0
+    _rvC["baozi_returned"] = max(_to_int(_rvC.get("baozi_returned")), return_baozi)
     return jsonify({"ok": True, "msg": "လက်ခံပြီးပါပြီ", "status": "လက်ခံပြီးပါပြီ", "completed_at": now_str(),
                     "baozi_received": _rvC["baozi_received"], "baozi_remaining": _rvC["baozi_remaining"],
                     "baozi_total_orig": _rvC["baozi_total"],
@@ -2072,6 +2074,7 @@ def rider_info():
             "shop_remaining": _rv["shop_remaining"],
             "baozi_total_orig": _rv["baozi_total"],
             "shop_total_orig": _rv["shop_total"],
+            "baozi_returned": _to_int(_rv.get("baozi_returned")),
             "gps_enabled": order_dict.get("gps_enabled", 1),
             "latest": latest,
         }
@@ -2129,7 +2132,7 @@ def order_history_api():
                 "shop_received": _h_sr,
                 "baozi_remaining": max(_h_bt - _h_br, 0),
                 "shop_remaining": max(_h_st - _h_sr, 0),
-                "baozi_total_orig": _h_bt,
+                "baozi_returned": _to_int(_hrv.get("baozi_returned")), "baozi_total_orig": _h_bt,
                 "shop_total_orig": _h_st,
                 "shop_link": od.get("shop_link", "") or "",
                 "shop_lat": od.get("shop_lat"),
@@ -2807,6 +2810,7 @@ def _patch_rider_remaining():
         "completed_at": (od or {}).get("completed_at") or "",
         "baozi_total_orig": bt, "baozi_received": br_day, "baozi_remaining": max(bt - br_day, 0),
         "shop_total_orig": st, "shop_received": sr_day, "shop_remaining": max(st - sr_day, 0),
+        "baozi_returned": _to_int(rv.get("baozi_returned")),
         "server_time": now_str(),
     })
 

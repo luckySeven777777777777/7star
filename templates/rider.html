@@ -722,16 +722,15 @@ function _denomToday() {
 function _denomKey(phone, orderNo) {
   var p = String(phone || "").trim();
   var o = String(orderNo || "").trim();
-  // 分母按「骑手 + 订单」锁定：每个骑手每一单各自一份，骑手之间不混合、不同订单也不混，
-  // 这是「两个骑手数量串在一起」和「输入 20 却显示 60」的根源，绝不能再按 rider+day 混算。
-  // 【按天锁定】同一骑手当天所有订单共用一份分母（第二次下单不改变），不同骑手各锁各的，绝不混合。
-  if (p) return "rider:" + p + "|day:" + _denomToday();
+  // 分母按「骑手 + 订单」锁定：每个骑手每一单各自一份，骑手之间不混合、不同订单也不混。
+  // 服务端已把分母按「骑手+订单」永久固定，这里加订单号是为了让 A/B 两个骑手绝不共用一份。
+  if (p && o) return "rider:" + p + "|order:" + o;
+  if (p) return "rider:" + p;
   if (o) return "order:" + o;
   return "";
 }
-// 返回该骑手当天的分母（= 该骑手当天第一次输入的数量）
-// 规则：同一骑手同一天内，无论重新下单、换订单号、改输入，分母都保持首次输入量，
-//       绝不会被 500 覆盖掉 600；缅甸时间凌晨 0 点自动清零，新一天重新锁。
+// 返回该骑手在该订单的分母（= 这个骑手在这一单第一次输入的数量）
+// 规则：第一次输入后永久固定，重复登录、重复输入都不会改变它。
 function lockDenom(phone, orderNo, baoziTotal, shopTotal) {
   var b = _denomNum(baoziTotal), s = _denomNum(shopTotal);
   var key = _denomKey(phone, orderNo);
@@ -739,14 +738,9 @@ function lockDenom(phone, orderNo, baoziTotal, shopTotal) {
   if (!key) return { baozi: b, shop: s };
   var all = loadDenomLock();
   var rec = all[key];
-  // 跨天（凌晨 0 点后）自动清零：丢弃前一天的锁
-  if (rec && rec.day && rec.day !== day) rec = null;
-  if (rec) {
-    // 本次给出的「该骑手本单」数字优先（可把历史上被订单级数字顶大的错误锁纠正回来，例如 60 → 20）；
-    // 只有本次没给出数字时才沿用旧锁。
-    // 问题5：同一天内首次锁定后，分母永久固定，第二次输入不再改变
-    // 【当天首次输入优先】键已按「骑手+当天」固定，本地锁就是当天第一次输入的量，
-    // 所以第二次下单（换订单号）也沿用它；服务端值只在本地无锁时兜底。
+  // 服务端给出的本人分母优先级最高：本地旧锁只用于服务端暂时取不到数字时兜底，
+  // 否则 B 骑手本地记着别人的 30 就永远纠正不回来（这就是「两个骑手显示同一个数字」）。
+  if (rec && !(b > 0 || s > 0)) {
     b = _denomNum(rec.baozi) || b;
     s = _denomNum(rec.shop) || s;
   }
@@ -760,6 +754,7 @@ function lockDenom(phone, orderNo, baoziTotal, shopTotal) {
   }
   return { baozi: b, shop: s };
 }
+
 window.lockDenom = lockDenom;
 // 商家位置解析（与后端同优先级）：坐标文本 → 链接 → Plus Code，且只接受业务区域内的结果
 function resolveShopLocation() {
@@ -1583,10 +1578,24 @@ async function bindOrder() {
     window.__activeOrderNo = orderNo;
     if (window.updateGetNewOrderState) window.updateGetNewOrderState();
     // 绑定/创建成功：先用骑手输入的数量本地刷新顶部剩余卡片（Order/Status/两个数量），避免成功后长时间空白
-    if (window.applyRemainLocal) {
-      try { window.applyRemainLocal(orderNo, state.status || "ပို့ဆောင်နေသည်", baoziTotal, shopTotal); }
-      catch (er1) { console.error("applyRemainLocal error", er1); }
-    }
+    // 绑定/创建成功：服务端返回的 baozi_total_orig / shop_total_orig 就是「该骑手在这单的固定分母」，
+    // 直接用它渲染，绝不拿本次输入当分母 —— 否则第二次输入 99 就显示 99 / 99（分母被改掉的假象）。
+    try {
+      if (window.paintRemain && j && (j.baozi_total_orig !== undefined || j.shop_total_orig !== undefined)) {
+        window.paintRemain({
+          ok: true, phone: phone, order_no: j.order_no || orderNo,
+          status: j.status || state.status || "ပို့ဆောင်နေသည်",
+          day: j.day || "", scope: j.scope || "rider_order",
+          baozi_total_orig: j.baozi_total_orig, shop_total_orig: j.shop_total_orig,
+          baozi_received: j.baozi_received, shop_received: j.shop_received,
+          baozi_remaining: j.baozi_remaining, shop_remaining: j.shop_remaining,
+          baozi_returned: j.baozi_returned || 0,
+          first_input: false, has_progress: true
+        });
+      } else if (window.applyRemainLocal) {
+        window.applyRemainLocal(orderNo, state.status || "ပို့ဆောင်နေသည်", baoziTotal, shopTotal);
+      }
+    } catch (er1) { console.error("paintRemain after bind error", er1); }
     // 再异步向服务端校正真实剩余量（失败也不影响本地已显示的值）
     if (window.loadRemain) { try { window.loadRemain(phone, orderNo); } catch (er2) { console.error("loadRemain error", er2); } }
     // 绑定已成功：先强制开 GPS（路线必须有骑手起点，不能等地图画完），再画地图
@@ -2185,12 +2194,15 @@ function handleUnbound(msg) {
 }
 
 // ---------- ကျန်ရှိသော အရေအတွက် အလိုအလျောက် ဖြည့်ခြင်း ----------
-async function loadRemaining(phone) {
+async function loadRemaining(phone, orderNo) {
   if (!phone) return;
-  // 输入框回填的是「这个骑手今天第一次输入的量」（不是扣减后的剩余量）：
-  // 首次 600 送了 100 只剩 500 时，重新下单仍回填 600，分母不会被越扣越小。
+  // 只查「这个骑手 + 这一单」自己的数量：带上 order_no，服务端按骑手+订单隔离取数，
+  // 绝不回落到订单级数字（那会把 A 骑手的 30 显示给 B 骑手）。
+  var _on = String(orderNo || (window.state && state.orderNo) || window.__activeOrderNo || "").trim();
   try {
-    var r0 = await fetch("/api/rider/remaining?phone=" + encodeURIComponent(phone), { cache: "no-store" });
+    var _q = "/api/rider/remaining?phone=" + encodeURIComponent(phone);
+    if (_on) _q += "&order_no=" + encodeURIComponent(_on);
+    var r0 = await fetch(_q, { cache: "no-store" });
     var j0 = await r0.json();
     if (j0 && j0.ok && j0.baozi_total_orig > 0) {
       document.getElementById("baoziCount").value = j0.baozi_total_orig;
@@ -2198,22 +2210,8 @@ async function loadRemaining(phone) {
       return;
     }
   } catch (e) {}
-  try {
-    var r = await fetch("/api/order/history?phone=" + encodeURIComponent(phone));
-    var j = await r.json();
-    if (!j.ok || !j.history || j.history.length === 0) return;
-    var h = j.history[0];
-    // 输入框提交的是「原始总量」，必须回填 total；绝不能用扣减后的 remaining 覆盖，否则分母会被越扣越小
-    var bt = (h.baozi_total !== undefined && h.baozi_total !== null && h.baozi_total !== "") ? h.baozi_total : h.baozi_remaining;
-    var st = (h.shop_total !== undefined && h.shop_total !== null && h.shop_total !== "") ? h.shop_total : h.shop_remaining;
-    if (bt !== undefined && bt !== null && bt !== "") {
-      document.getElementById("baoziCount").value = bt;
-    }
-    if (st !== undefined && st !== null && st !== "") {
-      document.getElementById("shopCount").value = st;
-    }
-  } catch (e) {}
 }
+
 
 // ---------- နောက်ဆုံးအခြေအနေ ပြန်လည် ရယူခြင်း ----------
 // 专业提示弹窗（替代原生 alert）
@@ -2796,15 +2794,22 @@ checkLogin();
     if (g("rtStatus")) g("rtStatus").textContent = statusEn(j.status || "");
     // 分母只认服务端返回的「该骑手 + 该订单」自己的数量（scope=rider_order 且非首次输入）；
     // 订单级数字（整单 60）绝不参与显示 —— 这是骑手输入 20 却被显示成 60 的根源。
-    var _isRiderScope = (j.scope === "rider_order") && !j.first_input;
+    // 分母只认服务端返回的「该骑手 + 该订单」自己的数量。
+    // 判断条件只看「服务端有没有给出这个骑手自己的分母(>0)」，
+    // 绝不再依赖 first_input（首次数为 0 时会导致分母显示成 "-" 或回落到本次输入值，
+    // 表现为「第二次输入分母就变了」）。
     var _srvB = (j.baozi_total_orig !== undefined && j.baozi_total_orig !== null) ? parseInt(j.baozi_total_orig, 10) : 0;
     var _srvS = (j.shop_total_orig !== undefined && j.shop_total_orig !== null) ? parseInt(j.shop_total_orig, 10) : 0;
+    if (isNaN(_srvB)) _srvB = 0;
+    if (isNaN(_srvS)) _srvS = 0;
+    var _isRiderScope = (j.scope === "rider_order" || j.scope === "rider_empty") && (_srvB > 0 || _srvS > 0);
     var _denB = 0, _denS = 0;
     if (_isRiderScope) {
       var _lkR = lockDenom((window.state && state.phone) || "", j.order_no || (window.state && state.orderNo) || "",
-        isNaN(_srvB) ? 0 : _srvB, isNaN(_srvS) ? 0 : _srvS);
-      _denB = (isNaN(_srvB) ? 0 : _srvB) || _lkR.baozi || 0;
-      _denS = (isNaN(_srvS) ? 0 : _srvS) || _lkR.shop || 0;
+        _srvB, _srvS);
+      // 服务端分母优先，且服务端给了值就立刻覆盖本地旧锁 —— 分母从此永久固定
+      _denB = _srvB || _lkR.baozi || 0;
+      _denS = _srvS || _lkR.shop || 0;
     }
     // 还没绑定订单、且服务端返回 rider_empty（该骑手当天没有任何自己的数量）时，
     // 一律显示 "-"，不显示 0/-，避免"骑手还没下单却显示 0"的误解
@@ -2851,9 +2856,16 @@ window._rem().hasProgress = !!j.has_progress;
       if (status) stTxt = window.statusEn ? window.statusEn(status) : status;
       g("rtStatus").textContent = stTxt;
     }
-    var _lkL = lockDenom((window.state && state.phone) || "", orderNo || "", b, s);
-    if (g("rtBaozi")) g("rtBaozi").textContent = bTxt + " / " + (isNaN(b) ? "-" : (_lkL.baozi || "-"));
-    if (g("rtShop")) g("rtShop").textContent = sTxt + " / " + (isNaN(s) ? "-" : (_lkL.shop || "-"));
+    // 【关键修复】分母绝不取「本次输入」：只读取已经锁定的分母（服务端下发的首次数）。
+    // 之前这里把本次输入写进本地锁并当分母显示，导致第二次输入 99 就显示 99 / 99 ——
+    // 这就是「分母第二次输入就变了」的直接原因。现在锁不到就显示 "-"，等 loadRemain 校正。
+    var _lkL = lockDenom((window.state && state.phone) || "", orderNo || "", 0, 0);
+    var _denB = _lkL.baozi || 0, _denS = _lkL.shop || 0;
+    // 分子（剩余）不允许大于分母：本次输入的 99 不能显示成「99 / 30」
+    var _showB = (!isNaN(b) && _denB > 0 && b > _denB) ? _denB : b;
+    var _showS = (!isNaN(s) && _denS > 0 && s > _denS) ? _denS : s;
+    if (g("rtBaozi")) g("rtBaozi").textContent = (isNaN(_showB) ? "-" : _showB) + " / " + (_denB > 0 ? _denB : "-");
+    if (g("rtShop")) g("rtShop").textContent = (isNaN(_showS) ? "-" : _showS) + " / " + (_denS > 0 ? _denS : "-");
     if (g("rtTime")) {
       var now = new Date();
       g("rtTime").textContent = now.getHours() + ":" +
@@ -2870,16 +2882,28 @@ window._rem().hasProgress = !!j.has_progress;
     if (window.validateCountInputs) window.validateCountInputs();
   }
   window.applyRemainLocal = applyRemainLocal;
+  window.paintRemain = paintRemain;
 
   function loadRemain(phone, orderNo) {
     if (!phone && !orderNo) return;
+    var _reqPhone = String(phone || "").trim();
+    var _reqOrder = String(orderNo || "").trim();
     var q = [];
     if (phone) q.push("phone=" + encodeURIComponent(phone));
     if (orderNo) q.push("order_no=" + encodeURIComponent(orderNo));
     var _raw = window.__rawFetch || window.fetch;
     _raw.call(window, "/api/rider/remaining?" + q.join("&"), { cache: "no-store" })
       .then(function (r) { return r.json(); })
-      .then(function (j) { if (j && j.ok) paintRemain(j); })
+      .then(function (j) {
+        if (!j || !j.ok) return;
+        // 竞态隔离（骑手「看到别人数量」的另一半原因）：
+        // 请求发出后手机可能已经换号/换单，慢响应回来时若已不是同一个骑手/同一单，直接丢弃。
+        var _np = String((window.state && state.phone) || "").trim();
+        var _no = String((window.state && state.orderNo) || "").trim();
+        if (_reqPhone && _np && _reqPhone !== _np) return;
+        if (_reqOrder && _no && _reqOrder !== _no) return;
+        paintRemain(j);
+      })
       .catch(function () {});
   }
   window.loadRemain = loadRemain;
@@ -3518,6 +3542,24 @@ window._rem().hasProgress = !!j.has_progress;
     var needGate = !three || !!fin;
     if (needGate && ((ok && !ok.disabled) || (no && !no.disabled))) gate();
   }, 1000);
+})();
+</script>
+
+<!-- 版本水印：手机端可一眼确认「跑的是不是最新页面」。
+     若这里显示的版本与服务器 /api/version 不一致，说明手机浏览器仍在用缓存旧页面，
+     需要下拉刷新或清理浏览器缓存 —— 这是「后端改了、手机却没变化」的常见原因。 -->
+<div id="appVerBadge" style="position:fixed;right:6px;bottom:4px;z-index:99999;font-size:10px;color:#8a94a6;opacity:.75;pointer-events:none;">v…</div>
+<script>
+(function () {
+  try {
+    fetch("/api/version", { cache: "no-store" })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        var el = document.getElementById("appVerBadge");
+        if (el && j && j.version) el.textContent = "v" + j.version;
+      })
+      .catch(function () {});
+  } catch (e) {}
 })();
 </script>
 

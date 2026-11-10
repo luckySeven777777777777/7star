@@ -529,6 +529,10 @@ def _rq_key(phone):
     if p:
         return p
     raw = str(phone or "").strip().lower()
+    if raw.startswith("n:"):
+        # 已经是归一化后的键（内部函数会拿归一键再次调用），必须原样返回，
+        # 否则会变成 n:n:abc 而永远查不到记录 → 退回订单级数字 → 两个骑手数量串在一起
+        return raw
     return ("n:" + raw) if raw else ""
 
 
@@ -751,6 +755,14 @@ def rider_qty_view(cur, phone, order_dict=None, order_no=None):
                 "baozi_total": bo, "baozi_received": br, "baozi_remaining": max(bo - br, 0),
                 "shop_total": so, "shop_received": sr, "shop_remaining": max(so - sr, 0),
             }
+    if phone and order_dict:
+        # 【各骑手各算各的】只要查询里带了骑手手机号，就绝不允许使用「订单级数字」兜底。
+        # 该骑手当天/该单没有自己的记录时一律返回 0，避免 A 骑手的数量被 B 骑手看到（串号）。
+        return {
+            "scope": "rider_empty", "day": day, "order_no": order_no,
+            "baozi_total": 0, "baozi_received": 0, "baozi_remaining": 0,
+            "shop_total": 0, "shop_received": 0, "shop_remaining": 0,
+        }
     if order_dict:
         # 隔离保护：只要这个订单下已经有任何骑手自己的数量记录，就禁止再用「订单口径」兜底，
         # 否则没有自己记录的那个骑手会把别人的数字当自己的显示 → 看起来各骑手数量同步。
@@ -2124,7 +2136,7 @@ def track():
         print("[track] rider qty view failed: %s" % _e_rv)
     # 同一订单多骑手：仅当该骑手「自己没有数量记录」时才禁止订单口径兜底，
     # 已有自己记录的必须照常显示他自己的数字（与骑手页面完全一致，绝不归零）。
-    if phone and _rv_scope not in ("rider_order", "rider_empty") and order_rider_count(cur, order_no) > 1:
+    if phone and _rv_scope not in ("rider_order", "rider_empty"):
         _d_bt = _d_br = _d_st = _d_sr = 0
     conn.close()
     if latest:
@@ -2297,11 +2309,14 @@ def track_multi():
         _m_bt, _m_br, _m_st, _m_sr = order_counts(order_dict)
         try:
             _rvm = rider_qty_view(cur, phone, order_dict, order_no)
-            if _rvm.get("scope") in ("rider_order", "rider_empty"):
+            if _rvm.get("scope") == "rider_order":
                 _m_bt = _to_int(_rvm.get("baozi_total"))
                 _m_br = _to_int(_rvm.get("baozi_received"))
                 _m_st = _to_int(_rvm.get("shop_total"))
                 _m_sr = _to_int(_rvm.get("shop_received"))
+            elif phone:
+                # 该骑手自己没有记录时显示 0，绝不套用订单级数字，避免多骑手列表里多人数字一模一样
+                _m_bt = _m_br = _m_st = _m_sr = 0
         except Exception as _e_m:
             print("[track/multi] rider qty view failed: %s" % _e_m)
         results.append(
@@ -2710,7 +2725,7 @@ def _patch_rider_remaining():
     # 隔离兜底：同一订单有多个骑手时，绝不允许把订单级数字（别人的量）当成这个骑手的量。
     # 但只对"订单级兜底"（scope=order）生效——骑手自己已有记录时（scope=rider_order）
     # 那本来就是他自己的数，一律保留，绝不归零。
-    if phone and _multi_rider > 1 and rv["scope"] == "order":
+    if phone and rv["scope"] not in ("rider_order", "rider_empty"):
         bt, br_day, st, sr_day = 0, 0, 0, 0
     return jsonify({
         "ok": True,

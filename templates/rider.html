@@ -736,8 +736,9 @@ function lockDenom(phone, orderNo, baoziTotal, shopTotal) {
   if (rec) {
     // 本次给出的「该骑手本单」数字优先（可把历史上被订单级数字顶大的错误锁纠正回来，例如 60 → 20）；
     // 只有本次没给出数字时才沿用旧锁。
-    b = (b > 0) ? b : _denomNum(rec.baozi);
-    s = (s > 0) ? s : _denomNum(rec.shop);
+    // 问题5：同一天内首次锁定后，分母永久固定，第二次输入不再改变
+    b = _denomNum(rec.baozi) || b;
+    s = _denomNum(rec.shop) || s;
   }
   if (b > 0 || s > 0) {
     all[key] = { baozi: b, shop: s, day: day };
@@ -1516,6 +1517,8 @@ async function bindOrder() {
     state.confirmedStatuses = [];
     state.__finalSynced = "";
     document.querySelectorAll("#statusBox button").forEach(function(btn) { btn.disabled = false; });
+    // 问题4：绑定后仍按顺序放开，只有「အစားအစာယူရန်」可先点
+    try { if (window.applyStatusOrder) window.applyStatusOrder(); } catch (e) {}
     document.getElementById("confirmDeliveredBtn").disabled = false;
     document.getElementById("reportPanel").style.display = "block";
     document.getElementById("curOrder").textContent = orderNo;
@@ -1583,6 +1586,7 @@ async function doConfirmState() {
   state.statusLocked = true;
   if (!state.confirmedStatuses) state.confirmedStatuses = [];
   if (state.confirmedStatuses.indexOf(state.pendingStatus) < 0) state.confirmedStatuses.push(state.pendingStatus);
+    try { if (window.applyStatusOrder) window.applyStatusOrder(); } catch (e) {}
   document.getElementById("curStatus").textContent = state.status;
   disableStatusButton(state.pendingStatus);
   saveLockLocal();
@@ -1596,8 +1600,27 @@ function disableStatusButton(status) {
     if (btn.getAttribute("data-status") === status) btn.disabled = true;
   });
 }
+// 问题4：三个状态键必须按顺序点击，前一个确认后才放开下一个
+var STATUS_ORDER = ["အစားအစာယူရန် စောင့်ဆိုင်း", "ပို့ဆောင်နေသည်", "ရောက်ရှိပြီး"];
+function applyStatusOrder() {
+  var box = document.getElementById("statusBox");
+  if (!box) return;
+  var conf = state.confirmedStatuses || [];
+  var unlocked = 0;
+  for (var i = 0; i < STATUS_ORDER.length; i++) { if (conf.indexOf(STATUS_ORDER[i]) >= 0) unlocked = i + 1; }
+  var btns = box.querySelectorAll("button");
+  for (var k = 0; k < btns.length; k++) {
+    var stt = btns[k].getAttribute("data-status");
+    var idx = STATUS_ORDER.indexOf(stt);
+    if (idx < 0) continue;
+    if (conf.indexOf(stt) >= 0) { btns[k].disabled = true; continue; }
+    btns[k].disabled = (idx > unlocked);
+  }
+}
+window.applyStatusOrder = applyStatusOrder;
 function lockStatusButtons() {
   (state.confirmedStatuses || []).forEach(function(s) { disableStatusButton(s); });
+  try { applyStatusOrder(); } catch (e) {}
   if ((state.confirmedStatuses || []).indexOf("လက်ခံပြီးပါပြီ") >= 0) {
     document.getElementById("confirmDeliveredBtn").disabled = true;
   }
@@ -1827,6 +1850,8 @@ async function doConfirmDelivered() {
       return;
     }
     if (state.orderNo) _confirmDoneOrders[state.orderNo] = true;
+    var _doneNo = state.orderNo, _donePh = state.phone;
+    var _doneRet = (j.baozi_returned !== undefined && j.baozi_returned !== null) ? (parseInt(j.baozi_returned, 10) || 0) : null;
     closeConfirmModal();
     addTodayDone(state.orderNo,
       (shopLat === null || shopLat === undefined) ? state.curLat : shopLat,
@@ -1844,6 +1869,13 @@ async function doConfirmDelivered() {
       : "လက်ခံပြီးပါပြီ။ ဤအမှာစာ ပြီးဆုံးပါပြီ။ အမှာစာအသစ် ချိတ်ဆက်/ဖန်တီးနိုင်ပါပြီ");
     // 订单完成后重置本端状态，允许重新ချိတ်ဆက် 新订单
     resetAfterCompletion();
+    // 问题1：退回包子数量立刻显示累计总量
+    if (_doneRet !== null) {
+      try { if (window.__remain) window.__remain.baoziReturned = _doneRet; } catch (e) {}
+      var _rtEl = document.getElementById("rtReturn");
+      if (_rtEl) _rtEl.textContent = _doneRet;
+    }
+    setTimeout(function () { try { loadRemain(_donePh, _doneNo); } catch (e) {} }, 250);
     window.__activeOrderNo = "";
     if (window.updateGetNewOrderState) window.updateGetNewOrderState();
     if (window.reloadTodayMarks) setTimeout(window.reloadTodayMarks, 300);
@@ -2095,6 +2127,7 @@ function renderHistory() {
       + 'ပို့ရမည့်ဆိုင်လိပ်စာ：<b>' + (h.delivery_address || "-") + '</b><br>'
       + 'ကျန်ရှိသောပေါက်စီအလုံးအရေတွက်：<b>' + h.baozi_remaining + ' / ' + (lockDenom(h.rider_phone || "", h.order_no || "", (h.baozi_total_orig || h.baozi_total), (h.shop_total_orig || h.shop_total)).baozi || "-") + '</b><br>'
       + 'ကျန်ရှိသောဆိုင်အရေတွက်：<b>' + h.shop_remaining + ' / ' + (lockDenom(h.rider_phone || "", h.order_no || "", (h.baozi_total_orig || h.baozi_total), (h.shop_total_orig || h.shop_total)).shop || "-") + '</b><br>'
+      + 'ပြန်အပ်သောပေါက်စီအရေအတွက်：<b>' + ((h.baozi_returned === undefined || h.baozi_returned === null) ? 0 : h.baozi_returned) + '</b><br>'
       + 'ငွေပေးချေမှုနည်းလမ်း：<b>' + (h.payment_method || "-") + '</b><br>'
       + 'Amount (MMK)：<b>' + (h.amount || "-") + '</b><br>'
       + '📍 Location / Geographic Location：<b>' + locDisplay(h) + '</b><br>'
@@ -2195,11 +2228,16 @@ async function refreshRiderInfo() {
     document.getElementById("curLocation").textContent = j.latest ? (j.latest.address || (j.latest.lat.toFixed(6) + ", " + j.latest.lng.toFixed(6))) : "-";
     document.getElementById("curCity").textContent = (j.city && j.city !== "") ? j.city : "-";
     // 分母锁定：分母永远取「这个骑手今天第一次输入的量」，只增不减（重新下单也不会变成 500）
+    // 问题3：只认「本骑手本人」的数字；没有本人记录时绝不用订单级数字冒充（否则所有骑手看到同一数字）
+    var _riderScope = (j.scope === "rider_order");
     var _lk0 = lockDenom(state.phone || j.phone || "", j.order_no || (window.state && state.orderNo) || "",
-      (j.baozi_total_orig || j.baozi_total || 0), (j.shop_total_orig || j.shop_total || 0));
-    var _obt = _lk0.baozi, _ost = _lk0.shop;
-    document.getElementById("curBaozi").textContent = Math.max(_obt - (j.baozi_received || 0), 0) + " / " + _obt;
-    document.getElementById("curShop").textContent = Math.max(_ost - (j.shop_received || 0), 0) + " / " + _ost;
+      _riderScope ? (j.baozi_total_orig || j.baozi_total || 0) : 0,
+      _riderScope ? (j.shop_total_orig || j.shop_total || 0) : 0);
+    var _obt = _lk0.baozi || 0, _ost = _lk0.shop || 0;
+    var _rbr = _riderScope ? (j.baozi_received || 0) : 0;
+    var _rsr = _riderScope ? (j.shop_received || 0) : 0;
+    document.getElementById("curBaozi").textContent = Math.max(_obt - _rbr, 0) + " / " + (_obt > 0 ? _obt : "-");
+    document.getElementById("curShop").textContent = Math.max(_ost - _rsr, 0) + " / " + (_ost > 0 ? _ost : "-");
     // 商家关闭 GPS 后：立即停止本端上报（GPS 停止），且不能自行重新开启
     if (j.gps_enabled === 0 && state.gpsEnabled) {
       state.gpsEnabled = false;

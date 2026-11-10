@@ -588,6 +588,23 @@ function render(j) {
     var cur = marker.getLatLng();
     animateMarkerTo([cur.lat, cur.lng], latest, 900);
   }
+  // 问题6：取消/完成后，无论有无商家坐标与轨迹，都用本次最新数据强制重建标记与弹窗（名字+状态立即更新）
+  if (st === "လက်ခံပြီးပါပြီ" || st === "ပယ်ဖျက်ထားသည်") {
+    var _fLL = (j.shop_lat !== null && j.shop_lat !== undefined && j.shop_lng !== null && j.shop_lng !== undefined)
+      ? [j.shop_lat, j.shop_lng]
+      : ((j.latest && j.latest.lat !== undefined) ? [j.latest.lat, j.latest.lng] : latest);
+    if (_fLL) {
+      var _fk = (st === "ပယ်ဖျက်ထားသည်") ? "cancel" : "done";
+      if (!doneMarker) {
+        doneMarker = L.marker(_fLL, { icon: doneIcon(j.order_no, _fk) }).addTo(map);
+      } else {
+        doneMarker.setLatLng(_fLL);
+        doneMarker.setIcon(doneIcon(j.order_no, _fk));
+      }
+      doneMarker.bindPopup(finalPopupHtml(j, st));
+      if (doneMarker.isPopupOpen && doneMarker.isPopupOpen()) { doneMarker.closePopup(); doneMarker.openPopup(); }
+    }
+  }
   // 商家位置 marker（绿色圆底 🏪）+ 引导路线 + 视野合并（轨迹+商家）
   var hasShop = (j.shop_lat !== null && j.shop_lat !== undefined && j.shop_lng !== null && j.shop_lng !== undefined);
   if (hasShop) {
@@ -1199,6 +1216,7 @@ function renderHistory() {
       + 'ပို့ရမည့်ဆိုင်လိပ်စာ：<b>' + (h.delivery_address || "-") + '</b><br>'
       + 'ကျန်ရှိသောပေါက်စီအလုံးအရေတွက်：<b>' + h.baozi_remaining + ' / ' + (h.baozi_total_orig || h.baozi_total) + '</b><br>'
       + 'ကျန်ရှိသောဆိုင်အရေတွက်：<b>' + h.shop_remaining + ' / ' + (h.shop_total_orig || h.shop_total) + '</b><br>'
+        + 'ပြန်အပ်သောပေါက်စီအရေအတွက်：<b>' + ((h.baozi_returned === undefined || h.baozi_returned === null) ? 0 : h.baozi_returned) + '</b><br>'
       + 'ငွေပေးချေမှုနည်းလမ်း：<b>' + (h.payment_method || "-") + '</b><br>'
       + 'Amount (MMK)：<b>' + (h.amount || "-") + '</b><br>'
       + '📍 Location / Geographic Location：<b>' + locDisplay(h) + '</b><br>'

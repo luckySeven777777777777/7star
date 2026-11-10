@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 包子店外卖实时定位追踪系统（Railway 部署版）
 =====================================
@@ -3066,7 +3066,7 @@ def admin_set_status_all():
 
 # ================= 手机 / 电脑 功能一致性补丁 =================
 # 说明：全局禁用缓存（手机端不会读到旧页面/旧接口），并补充“剩余数量”“今日已完成/已取消标记”接口
-APP_VERSION = "20261105-v1"
+APP_VERSION = "20261110-v3"
 
 
 @app.after_request
@@ -3143,6 +3143,10 @@ def _patch_rider_remaining():
         "multi_rider": _multi_rider,
         "phone": phone,
         "first_input": (bt <= 0),
+        # 本单是否已有任何送出/退回进度：只有「已有进度」才要求再次输入必须等于剩余量，
+        # 未送出前允许随意改填（分母 = 最新输入），否则骑手把 2000 改成 1200 会被前端拦死
+        "has_progress": (_to_int(rv.get("baozi_received")) + _to_int(rv.get("shop_received"))
+                         + _to_int(rv.get("baozi_returned"))) > 0,
         "order_no": (od or {}).get("order_no") or order_no or "",
         "status": (od or {}).get("status") or "",
         "completed_at": (od or {}).get("completed_at") or "",

@@ -1881,12 +1881,20 @@ def rider_bind():
 
 @app.after_request
 def _api_no_store(resp):
-    """接口一律禁缓存：商家端轮询到取消/完成状态必须立即生效，不能拿到旧响应。"""
+    """接口与页面一律禁缓存：
+    ① 商家端轮询到取消/完成状态必须立即生效，不能拿到旧响应；
+    ② 骑手手机浏览器经常缓存旧版 rider.html —— 后端已修好、手机还在跑旧 JS 时，
+       就会表现为「分母第二次输入又变了 / 显示别人的数量」。此处对页面也强制 no-store，
+       保证手机上每次打开都是当前部署的最新页面。"""
     try:
-        if request.path.startswith("/api/"):
+        _is_api = request.path.startswith("/api/")
+        _is_page = (resp.mimetype == "text/html") or request.path in ("/", "/rider", "/track", "/login")
+        if _is_api or _is_page:
             resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
             resp.headers["Pragma"] = "no-cache"
             resp.headers["Expires"] = "0"
+        if _is_page:
+            resp.headers["X-App-Version"] = APP_VERSION
     except Exception:
         pass
     return resp
@@ -2595,16 +2603,10 @@ def track():
             _d_st = _to_int(_rv.get("shop_total"))
             _d_sr = _to_int(_rv.get("shop_received"))
         elif _rv.get("scope") == "rider_empty":
-            # 该骑手在本单还没有独立记录：如果这单只有一个骑手，订单级数字就是他自己的数，
-            # 直接用（避免地图端突兀显示 0/0）；若出现过多骑手，保持 0，不用别人的量冒充。
-            try:
-                _cnt = order_rider_count(cur, order_no)
-            except Exception:
-                _cnt = 9
-            if _cnt <= 1:
-                _d_bt, _d_br, _d_st, _d_sr = order_counts(order_dict)
-            else:
-                _d_bt = _d_br = _d_st = _d_sr = 0
+            # 该骑手在本单还没有独立记录：一律 0 / 0，绝不用订单级数字兜底。
+            # 订单级 baozi_total / baozi_received 是所有骑手共用的合计（A 的 30 + B 的 25），
+            # 拿它显示就是这个骑手「看到了别人的数量」的根源。宁可显示 0，也绝不串号。
+            _d_bt = _d_br = _d_st = _d_sr = 0
     except Exception as _e_rv:
         print("[track] rider qty view failed: %s" % _e_rv)
     # 说明：上面的 rider_qty_view 已严格按「本骑手+本单/本天」取值，无记录即 rider_empty(0)，
@@ -3130,7 +3132,7 @@ def admin_set_status_all():
 
 # ================= 手机 / 电脑 功能一致性补丁 =================
 # 说明：全局禁用缓存（手机端不会读到旧页面/旧接口），并补充“剩余数量”“今日已完成/已取消标记”接口
-APP_VERSION = "20261110-v3"
+APP_VERSION = "20261111-v4"
 
 
 @app.after_request

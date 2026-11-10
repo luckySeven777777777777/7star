@@ -714,11 +714,12 @@ function _denomToday() {
 function _denomKey(phone, orderNo) {
   var p = String(phone || "").trim();
   var o = String(orderNo || "").trim();
-  // 【必须按「骑手 + 订单」锁分母】每个骑手每一单各自一份，骑手之间不混合、不同订单也不混。
-  // 之前按 rider+day 锁定，导致同一骑手换单、或两个骑手共用同一手机号时读到同一把锁，
-  // 于是新订单永远显示老订单/老骑手的数量（分母被顶成 600），这是「数量同步」的根因。
-  if (!p || !o) return "";
-  return "rider:" + p + "|order:" + o;
+  // 分母按「骑手 + 订单」锁定：每个骑手每一单各自一份，骑手之间不混合、不同订单也不混，
+  // 这是「两个骑手数量串在一起」和「输入 20 却显示 60」的根源，绝不能再按 rider+day 混算。
+  // 【按天锁定】同一骑手当天所有订单共用一份分母（第二次下单不改变），不同骑手各锁各的，绝不混合。
+  if (p) return "rider:" + p + "|day:" + _denomToday();
+  if (o) return "order:" + o;
+  return "";
 }
 // 返回该骑手当天的分母（= 该骑手当天第一次输入的数量）
 // 规则：同一骑手同一天内，无论重新下单、换订单号、改输入，分母都保持首次输入量，
@@ -733,10 +734,13 @@ function lockDenom(phone, orderNo, baoziTotal, shopTotal) {
   // 跨天（凌晨 0 点后）自动清零：丢弃前一天的锁
   if (rec && rec.day && rec.day !== day) rec = null;
   if (rec) {
-    // 【服务端优先】服务端返回的已经是「该骑手 + 该订单」自己的首次输入量，
-    // 本地锁只在服务端没给数字（0/空）时兜底，绝不允许本地旧锁把新订单的分母顶成老数字。
-    if (b <= 0) b = _denomNum(rec.baozi);
-    if (s <= 0) s = _denomNum(rec.shop);
+    // 本次给出的「该骑手本单」数字优先（可把历史上被订单级数字顶大的错误锁纠正回来，例如 60 → 20）；
+    // 只有本次没给出数字时才沿用旧锁。
+    // 问题5：同一天内首次锁定后，分母永久固定，第二次输入不再改变
+    // 【当天首次输入优先】键已按「骑手+当天」固定，本地锁就是当天第一次输入的量，
+    // 所以第二次下单（换订单号）也沿用它；服务端值只在本地无锁时兜底。
+    b = _denomNum(rec.baozi) || b;
+    s = _denomNum(rec.shop) || s;
   }
   if (b > 0 || s > 0) {
     all[key] = { baozi: b, shop: s, day: day };
@@ -1518,10 +1522,6 @@ async function bindOrder() {
     state.pendingStatus = "";
     state.confirmedStatuses = [];
     state.__finalSynced = "";
-    // 问题1/问题3：换订单必须清掉上一单的状态与数量缓存，否则新订单会继承老骑手/老订单的状态与锁
-    state.status = "";
-    state.curBaozi = "";
-    try { window.__remain = null; window.__finalLock = null; } catch (e) {}
     document.querySelectorAll("#statusBox button").forEach(function(btn) { btn.disabled = false; });
     // 问题4：绑定后仍按顺序放开，只有「အစားအစာယူရန်」可先点
     try { if (window.applyStatusOrder) window.applyStatusOrder(); } catch (e) {}
@@ -2006,15 +2006,30 @@ async function loadRemaining(phone) {
   if (!phone) return;
   // 输入框回填的是「这个骑手今天第一次输入的量」（不是扣减后的剩余量）：
   // 首次 600 送了 100 只剩 500 时，重新下单仍回填 600，分母不会被越扣越小。
-  // 【新订单必须自己输入】这里绝不回填上一单/上一个骑手的数量，
-  // 否则新单会带着老数字，骑手以为数量被"串"了。清空输入框，让每一单从自己的首次输入开始。
   try {
-    document.getElementById("baoziCount").value = "";
-    document.getElementById("shopCount").value = "";
-    if (window.validateCountInputs) window.validateCountInputs();
+    var r0 = await fetch("/api/rider/remaining?phone=" + encodeURIComponent(phone), { cache: "no-store" });
+    var j0 = await r0.json();
+    if (j0 && j0.ok && j0.baozi_total_orig > 0) {
+      document.getElementById("baoziCount").value = j0.baozi_total_orig;
+      document.getElementById("shopCount").value = (j0.shop_total_orig !== undefined && j0.shop_total_orig !== null) ? j0.shop_total_orig : document.getElementById("shopCount").value;
+      return;
+    }
   } catch (e) {}
-  // 仅刷新「剩余数量」卡片的退回/取消标记，不碰输入框
-  try { await fetch("/api/rider/remaining?phone=" + encodeURIComponent(phone), { cache: "no-store" }); } catch (e) {}
+  try {
+    var r = await fetch("/api/order/history?phone=" + encodeURIComponent(phone));
+    var j = await r.json();
+    if (!j.ok || !j.history || j.history.length === 0) return;
+    var h = j.history[0];
+    // 输入框提交的是「原始总量」，必须回填 total；绝不能用扣减后的 remaining 覆盖，否则分母会被越扣越小
+    var bt = (h.baozi_total !== undefined && h.baozi_total !== null && h.baozi_total !== "") ? h.baozi_total : h.baozi_remaining;
+    var st = (h.shop_total !== undefined && h.shop_total !== null && h.shop_total !== "") ? h.shop_total : h.shop_remaining;
+    if (bt !== undefined && bt !== null && bt !== "") {
+      document.getElementById("baoziCount").value = bt;
+    }
+    if (st !== undefined && st !== null && st !== "") {
+      document.getElementById("shopCount").value = st;
+    }
+  } catch (e) {}
 }
 
 // ---------- နောက်ဆုံးအခြေအနေ ပြန်လည် ရယူခြင်း ----------
@@ -2278,16 +2293,6 @@ async function refreshRiderInfo() {
       .then(function (r) { return r.json().then(function (j) { return {r: r, j: j}; }); })
       .then(function (res) {
         if (!res.j.ok) { if (res.r.status === 403) { handleUnbound(res.j.msg); return; } return; }
-        // 本地锁定的订单若在服务端已是终态（已完成 / 已取消），立刻清除死锁，允许接新单
-        var _sts = res.j.status || "";
-        if (_sts === "လက်ခံပြီးပါပြီ" || _sts === "ပယ်ဖျက်ထားသည်") {
-          try { localStorage.removeItem("riderLock_" + phone); } catch (e) {}
-          try { if (typeof resetAfterCompletion === "function") resetAfterCompletion(); } catch (e) {}
-          setTimeout(function () {
-            showInfo("ယခင် Order သည် ပြီးဆုံး/ပယ်ဖျက်ပြီး ဖြစ်သောကြောင့် လော့ခ်ဖွင့်ပြီးပါပြီ။ Order အသစ် ချိတ်ဆက်နိုင်ပါပြီ");
-          }, 150);
-          return;
-        }
         showRiderMap();
         startGps();
         refreshRiderInfo();
@@ -2701,17 +2706,7 @@ checkLogin();
         pr.then(function (r) {
           r.clone().json().then(function (j) {
             if (!j || !j.ok) return;
-            // 问题2：取消里填写的退回数量必须立刻显示在「ပြန်အပ်သောပေါက်စီအရေအတွက်」，
-            // 与确认里填写的退回量一起累计（服务端已把两者相加后返回）。
-            try {
-              var _rr = document.getElementById("rtReturn");
-              if (_rr && j.baozi_returned !== undefined && j.baozi_returned !== null) {
-                _rr.textContent = j.baozi_returned;
-              }
-              if (window.__remain) window.__remain.baoziReturned = j.baozi_returned;
-            } catch (e) {}
             loadRemain(snapPhone, snapOrder);
-            if (window.syncActionGate) window.syncActionGate();
             speakEn("Order number " + orderNoToWords(snapOrder) + " cancelled");
           }).catch(function () {});
         }).catch(function () {});
@@ -3303,111 +3298,6 @@ checkLogin();
       if (window.loadRemain) window.loadRemain(ph, no);
     } catch (e) {}
   }, 3000);
-})();
-</script>
-<script>
-// ================= v6：确认 / 取消 互锁 + 三状态顺序门禁（问题3、问题4） =================
-// 规则：
-//  1) 必须先把 အစားအစာယူရန် စောင့်ဆိုင်း → ပို့ဆောင်နေသည် → ရောက်ရှိပြီး 三个状态按键按顺序点完，
-//     「လက်ခံပြီးပါပြီ」和「အော်ဒါ ပယ်ဖျက်မည် ❌」才可以点击；
-//  2) 取消不需要先确认；但订单一旦确认（Completed），取消键永久禁用；
-//  3) 订单一旦取消（Cancelled），确认键永久禁用（服务端同样拦截，刷新/换设备也生效）。
-(function () {
-  var ORDER = ["အစားအစာယူရန် စောင့်ဆိုင်း", "ပို့ဆောင်နေသည်", "ရောက်ရှိပြီး"];
-
-  function cs() {
-    try { return (window.state && state.confirmedStatuses) || []; } catch (e) { return []; }
-  }
-  function curStatus() {
-    try { return (window.state && state.status) || ""; } catch (e) { return ""; }
-  }
-  function curOrder() {
-    try { return (window.state && state.orderNo) || window.__activeOrderNo || ""; } catch (e) { return window.__activeOrderNo || ""; }
-  }
-  // 三个状态按键是否已按顺序推到位（取已确认状态里最靠后的一位，前面必然已经点过）
-  function statusSeqDone() {
-    var c = cs(), maxIdx = -1;
-    for (var i = 0; i < ORDER.length; i++) { if (c.indexOf(ORDER[i]) >= 0 && i > maxIdx) maxIdx = i; }
-    var st = curStatus();
-    var si = ORDER.indexOf(st);
-    // 服务端最新状态也作为依据：刷新 / 换设备重绑时，已推进到第 3 个状态的订单不该被重新锁死
-    try {
-      var sv = (window.__remain && window.__remain.status) || "";
-      var sj = ORDER.indexOf(sv);
-      if (sj > si) si = sj;
-    } catch (e) {}
-    if (si > maxIdx) maxIdx = si;
-    return maxIdx >= ORDER.length - 1;
-  }
-  // 终态判定：Completed / Cancelled（本地即时锁 + 服务端状态双判定）
-  function terminal() {
-    var st = curStatus();
-    try { if (window.__remain && window.__remain.status) st = window.__remain.status; } catch (e) {}
-    var lk = window.__finalLock;
-    var no = curOrder();
-    if (lk && lk.no && no && lk.no === no && (Date.now() - lk.ts) < 6 * 3600 * 1000) {
-      if (lk.en === "Completed") return "completed";
-      if (lk.en === "Cancelled") return "cancelled";
-    }
-    if (st === "လက်ခံပြီးပါပြီ") return "completed";
-    if (st === "ပယ်ဖျက်ထားသည်") return "cancelled";
-    var c = cs();
-    if (c.indexOf("လက်ခံပြီးပါပြီ") >= 0) return "completed";
-    if (c.indexOf("ပယ်ဖျက်ထားသည်") >= 0) return "cancelled";
-    return "";
-  }
-  function paint(btn, enabled) {
-    if (!btn) return;
-    btn.disabled = !enabled;
-    btn.style.opacity = enabled ? "" : "0.45";
-    btn.style.cursor = enabled ? "pointer" : "not-allowed";
-  }
-  function apply() {
-    var t = terminal();
-    var ready = !!curOrder() && statusSeqDone() && !t;
-    paint(document.getElementById("confirmDeliveredBtn"), ready);
-    paint(document.getElementById("cancelOrderBtn"), ready);
-  }
-  window.syncActionGate = apply;
-  setInterval(apply, 200);
-  document.addEventListener("DOMContentLoaded", apply);
-
-  function msgFor(kind) {
-    if (kind === "confirm") {
-      if (terminal() === "cancelled") return "ဤအမှာစာကို ပယ်ဖျက်ထားပြီဖြစ်ပါသည်။ လက်ခံ၍ မရပါ（订单已取消，禁止确认）";
-      if (!statusSeqDone()) return "အစားအစာယူရန် → ပို့ဆောင်နေသည် → ရောက်ရှိပြီး အစဉ်လိုက် နှိပ်ပြီးမှ လက်ခံနိုင်ပါသည်（请先按顺序点完三个状态键）";
-    } else {
-      if (terminal() === "completed") return "ဤအမှာစာကို လက်ခံပြီးဖြစ်ပါသည်။ ပယ်ဖျက်၍ မရပါ（订单已确认，禁止取消）";
-      if (!statusSeqDone()) return "အစားအစာယူရန် → ပို့ဆောင်နေသည် → ရောက်ရှိပြီး အစဉ်လိုက် နှိပ်ပြီးမှ ပယ်ဖျက်နိုင်ပါသည်（请先按顺序点完三个状态键）";
-    }
-    return "";
-  }
-  function blockIfNeeded(kind) {
-    var t = terminal();
-    if (kind === "confirm" && (t === "cancelled" || t === "completed")) { showInfo(msgFor("confirm")); return true; }
-    if (kind === "cancel" && (t === "completed" || t === "cancelled")) { showInfo(msgFor("cancel")); return true; }
-    if (!statusSeqDone()) { showInfo(msgFor(kind)); return true; }
-    return false;
-  }
-  // 入口函数双保险（按钮是 inline onclick，同时包一层内部执行函数，任何路径调用都拦得住）
-  ["confirmDelivered", "confirmCancelOrder", "doConfirmDelivered", "doCancelOrder"].forEach(function (fn) {
-    var orig = window[fn];
-    if (typeof orig !== "function") return;
-    var kind = (fn.indexOf("ancel") >= 0 || fn.indexOf("Cancel") >= 0) ? "cancel" : "confirm";
-    window[fn] = function () {
-      if (blockIfNeeded(kind)) return;
-      return orig.apply(this, arguments);
-    };
-  });
-
-  // 点击任何一个状态键后立即重新评估一次（不必等 200ms 轮询）
-  document.addEventListener("click", function (ev) {
-    var t = ev.target;
-    while (t && t !== document) {
-      if (t.id === "statusBox" || (t.parentNode && t.parentNode.id === "statusBox")) { setTimeout(apply, 30); break; }
-      t = t.parentNode;
-    }
-  }, true);
 })();
 </script>
 

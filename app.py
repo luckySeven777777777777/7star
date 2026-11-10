@@ -782,8 +782,8 @@ def rider_qty_add(cur, phone, order_no, baozi_add, shop_add, returned_add=0):
     rec = rider_qty_dayrec(cur, phone, day)
     if not rec:
         try:
-            cur.execute(_q("INSERT INTO rider_order_qty (phone, order_no, day, baozi_orig, shop_orig, baozi_received, shop_received, updated_at) "
-                           "VALUES (?,?,?,0,0,?,?,?)"), (phone, key, day, b_add, s_add, now_str()))
+            cur.execute(_q("INSERT INTO rider_order_qty (phone, order_no, day, baozi_orig, shop_orig, baozi_received, shop_received, baozi_returned, updated_at) "
+                           "VALUES (?,?,?,0,0,?,?,?,?)"), (phone, key, day, b_add, s_add, r_add, now_str()))
         except Exception:
             pass
         return rider_qty_dayrec(cur, phone, day)
@@ -812,6 +812,9 @@ def rider_qty_view(cur, phone, order_dict=None, order_no=None):
             br = _to_int(rec.get("baozi_received"))
             sr = _to_int(rec.get("shop_received"))
             rt = _to_int(rec.get("baozi_returned"))
+            # 问题2：退回数量 = 确认✅ 时填的退回量 + 取消❌ 时填的退回量，两者都要计；
+            # 记录按「骑手 + 当天」取，所以缅甸时间凌晨 0 点后自动归零。
+            rt += _to_int(rec.get("cancel_baozi"))
             if bo > 0 or so > 0 or br > 0 or sr > 0 or rt > 0:
                 return {
                     "scope": "rider_order", "day": day, "order_no": order_no,
@@ -860,6 +863,157 @@ def order_rider_count(cur, order_no):
         except Exception:
             pass
     return len(seen)
+
+
+# ==================== 骑手状态闸门（问题3 / 问题4） ====================
+_STATUS_SEQ = ("အစားအစာယူရန် စောင့်ဆိုင်း", "ပို့ဆောင်နေသည်", "ရောက်ရှိပြီး")
+_STATUS_FINAL_DONE = "လက်ခံပြီးပါပြီ"
+_STATUS_FINAL_CANCEL = "ပယ်ဖျက်ထားသည်"
+_STATUS_LOG_READY = False
+
+
+def ensure_status_log(cur):
+    """骑手状态点按留痕表：手机没有 GPS 时也能证明「三个状态」确实按顺序点过。
+    只按 (order_no, phone) 记录，绝不跨骑手共享。"""
+    global _STATUS_LOG_READY
+    if _STATUS_LOG_READY:
+        return True
+    pk = "SERIAL PRIMARY KEY" if is_pg() else "INTEGER PRIMARY KEY AUTOINCREMENT"
+    try:
+        cur.execute(_q("CREATE TABLE IF NOT EXISTS rider_status_log ("
+                       "id " + pk + ", order_no TEXT NOT NULL, phone TEXT NOT NULL, "
+                       "status TEXT NOT NULL, created_at TEXT)"))
+        try:
+            cur.execute(_q("CREATE INDEX IF NOT EXISTS idx_rider_status_log ON rider_status_log (order_no, phone)"))
+        except Exception:
+            pass
+        _STATUS_LOG_READY = True
+        return True
+    except Exception as e:
+        print("[rider_status_log] ensure table failed: %s" % e)
+        return False
+
+
+def three_status_done(cur, order_no, phone):
+    """三个状态（取餐 → 配送中 → 到达）是否已按顺序点完。
+    判定来源三选一即可：订单状态、最新定位状态、状态留痕表（同一骑手同一订单）。"""
+    order_no = (order_no or "").strip()
+    if not order_no:
+        return False
+    key = _rq_key(phone)
+    try:
+        cur.execute(_q("SELECT status FROM orders WHERE order_no=?"), (order_no,))
+        r = cur.fetchone()
+        if r:
+            st = (_row_to_dict(cur, r) or {}).get("status") or ""
+            if st.strip() == "ရောက်ရှိပြီး":
+                return True
+    except Exception:
+        pass
+    try:
+        cur.execute(_q("SELECT status, phone FROM locations WHERE order_no=? ORDER BY id DESC LIMIT 12"), (order_no,))
+        for row in cur.fetchall() or []:
+            d = _row_to_dict(cur, row) or {}
+            if (d.get("status") or "").strip() != "ရောက်ရှိပြီး":
+                continue
+            # 定位表没有 phone 列时按订单判定（同一订单只会在本骑手名下推进）
+            lp = _rq_key(d.get("phone")) if "phone" in d else ""
+            if not lp or not key or lp == key:
+                return True
+    except Exception:
+        pass
+    try:
+        ensure_status_log(cur)
+        cur.execute(_q("SELECT phone, status FROM rider_status_log WHERE order_no=?"), (order_no,))
+        for row in cur.fetchall() or []:
+            d = _row_to_dict(cur, row) or {}
+            if (d.get("status") or "").strip() != "ရောက်ရှိပြီး":
+                continue
+            lp = _rq_key(d.get("phone"))
+            if not key or lp == key:
+                return True
+    except Exception:
+        pass
+    return False
+
+
+_STATUS_IDX = {s: i for i, s in enumerate(_STATUS_SEQ)}
+
+
+def status_predecessor_done(cur, order_no, phone, status):
+    """问题3（服务端闸门）：前一个状态没点过，就不许推进到后一个。
+    兼容旧数据：订单当前状态已经到前一个（或更后面）时，视为点过。"""
+    idx = _STATUS_IDX.get(status, -1)
+    if idx <= 0:
+        return True
+    prev = _STATUS_SEQ[idx - 1]
+    key = _rq_key(phone)
+    try:
+        ensure_status_log(cur)
+        cur.execute(_q("SELECT status FROM rider_status_log WHERE order_no=? AND phone=?"), (order_no, key))
+        for r in cur.fetchall() or []:
+            d = _row_to_dict(cur, r) or {}
+            if (d.get("status") or "").strip() == prev:
+                return True
+    except Exception:
+        pass
+    try:
+        cur.execute(_q("SELECT status FROM orders WHERE order_no=?"), (order_no,))
+        r = cur.fetchone()
+        if r:
+            st = ((_row_to_dict(cur, r) or {}).get("status") or "").strip()
+            if st in _STATUS_IDX and _STATUS_IDX[st] >= _STATUS_IDX[prev]:
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def _order_other_rider_bound(cur, order_no, phone):
+    """该订单上是否已有「别的骑手」绑定记录（用于禁止后来者覆盖订单级数量）。"""
+    me = _rq_key(phone)
+    seen = set()
+    for sql in (
+        "SELECT rider_phone AS p FROM order_history WHERE order_no=?",
+        "SELECT phone AS p FROM riders WHERE order_no=?",
+    ):
+        try:
+            cur.execute(_q(sql), (order_no,))
+            for r in cur.fetchall() or []:
+                d = _row_to_dict(cur, r) or {}
+                k = _rq_key(d.get("p"))
+                if k:
+                    seen.add(k)
+        except Exception:
+            pass
+    if me:
+        seen.discard(me)
+    return len(seen) > 0
+
+
+def order_single_rider_phone(cur, order_no):
+    """该订单唯一绑定的骑手手机号（规范化）。
+    只有「全订单只出现过 1 个骑手」时才返回，避免把别人的数量当成自己的。"""
+    order_no = (order_no or "").strip()
+    if not order_no:
+        return ""
+    seen = set()
+    for sql in (
+        "SELECT rider_phone AS p FROM order_history WHERE order_no=?",
+        "SELECT phone AS p FROM riders WHERE order_no=?",
+    ):
+        try:
+            cur.execute(_q(sql), (order_no,))
+            for r in cur.fetchall() or []:
+                d = _row_to_dict(cur, r) or {}
+                k = _rq_key(d.get("p"))
+                if k:
+                    seen.add(k)
+        except Exception:
+            pass
+    if len(seen) == 1:
+        return list(seen)[0]
+    return ""
 
 
 _OLC_ALPHABET = "23456789CFGHJMPQRVWX"
@@ -1603,7 +1757,7 @@ def rider_bind():
                      "baozi_total": _o_bt, "baozi_received": _o_br, "baozi_remaining": max(_o_bt - _o_br, 0),
                      "shop_total": _o_st, "shop_received": _o_sr, "shop_remaining": max(_o_st - _o_sr, 0)}
     # 【多骑手保护】该订单已被多个骑手用过时，绝不改写订单级数量字段，否则会把 A 骑手的数写成 B 骑手的数
-    _multi = order_rider_count(cur, order_no) > 1
+    _multi = (order_rider_count(cur, order_no) > 1) or _order_other_rider_bound(cur, order_no, phone)
     _upd_bt = old_bt_orig if _multi else baozi_total
     _upd_st = old_st_orig if _multi else shop_total
     _upd_bo = old_bt_orig if _multi else baozi_orig
@@ -1848,6 +2002,12 @@ def rider_confirm():
     if _st_now == "ပယ်ဖျက်ထားသည်":
         conn.close()
         return jsonify({"ok": False, "msg": "ဤအမှာစာကို ပယ်ဖျက်ပြီးဖြစ်ပါသည်။ Confirm လုပ်၍ မရပါ"})
+    # 问题3：确认✅ 必须先按顺序点完「အစားအစာယူရန် → စောင့်ဆိုင်းပို့ဆောင်နေသည် → ရောက်ရှိပြီး」三个状态
+    # 问题4：已取消❌ 的订单在后端同样禁止确认（前端禁用之外的第二道闸门，防作弊）
+    if not three_status_done(cur, order_no, phone):
+        conn.close()
+        return jsonify({"ok": False, "gate": "status_order",
+                        "msg": "အခြေအနေ ၃ ခု（အစားအစာယူရန် → စောင့်ဆိုင်းပို့ဆောင်နေသည် → ရောက်ရှိပြီး）အစဉ်လိုက် အတည်ပြုပြီးမှ Confirm လုပ်နိုင်ပါသည်။（请先按顺序点完三个状态再确认）"})
     new_baozi = (order_dict.get("baozi_received", 0) or 0) + confirm_baozi
     new_shop = (order_dict.get("shop_received", 0) or 0) + 1  # 每确认一个商家地址 +1
     cur.execute(
@@ -1990,6 +2150,29 @@ def rider_cancel():
             loc_text = reverse_geocode(_ld.get("lat"), _ld.get("lng")) or "-"
         except Exception:
             loc_text = "%.6f, %.6f" % (_to_int(_ld.get("lat")), _to_int(_ld.get("lng")))
+    # 问题4：已确认✅ 的订单禁止再取消❌（互斥，防作弊）；已取消的重复请求直接返回
+    cur.execute(_q("SELECT status FROM orders WHERE order_no=?"), (order_no,))
+    _oc_row = cur.fetchone()
+    _st_now2 = ((_row_to_dict(cur, _oc_row) or {}).get("status") or "").strip() if _oc_row else ""
+    if _st_now2 == "လက်ခံပြီးပါပြီ":
+        conn.close()
+        return jsonify({"ok": False, "gate": "already_done",
+                        "msg": "ဤအမှာစာကို လက်ခံပြီးဖြစ်ပါသည်။ ပယ်ဖျက်၍ မရပါ（订单已确认完成，无法再取消）"})
+    if _st_now2 == "ပယ်ဖျက်ထားသည်":
+        try:
+            _rvC = rider_qty_view(cur, phone, None, order_no)
+            _retC = _to_int(_rvC.get("baozi_returned"))
+        except Exception:
+            _retC = 0
+        conn.close()
+        return jsonify({"ok": True, "already": True, "status": "ပယ်ဖျက်ထားသည်",
+                        "baozi_returned": _retC,
+                        "msg": "ဤအမှာစာကို ပယ်ဖျက်ပြီးသားဖြစ်ပါသည်"})
+    # 问题3：取消❌ 同样必须先按顺序点完三个状态（确保骑手已到店/已到达），不需要等确认✅
+    if not three_status_done(cur, order_no, phone):
+        conn.close()
+        return jsonify({"ok": False, "gate": "status_order",
+                        "msg": "အခြေအနေ ၃ ခု（အစားအစာယူရန် → စောင့်ဆိုင်းပို့ဆောင်နေသည် → ရောက်ရှိပြီး）အစဉ်လိုက် အတည်ပြုပြီးမှ ပယ်ဖျက်နိုင်ပါသည်。（请先按顺序点完三个状态再取消）"})
     cur.execute(_q("UPDATE orders SET status='ပယ်ဖျက်ထားသည်', completed_at=? WHERE order_no=?"), (now_str(), order_no))
     cur.execute(_q("UPDATE riders SET order_no='', rider_name='' WHERE phone=? AND order_no=?"), (phone, order_no))
     # 保留订单历史：存在则更新骑手名与绑定时间，不存在则补记一条
@@ -2004,12 +2187,22 @@ def rider_cancel():
             _q("INSERT INTO order_history (order_no, rider_phone, rider_name, bind_time) VALUES (?,?,?,?)"),
             (order_no, phone, rider_name, now_str()),
         )
-    # 取消数量/原因留档（只写本骑手「当天」那一条，绝不扣减任何送出量）
+    # 问题2：取消❌ 时填写的退回包子数量同样计入「ပြန်အပ်သောပေါက်စီအရေအတွက်」，
+    # 与确认✅ 的退回量合并显示（只写本骑手「当天」那一条，绝不扣减任何送出量；凌晨 0 点自动归零）
+    _ret_total = 0
     try:
-        _cr = rider_qty_dayrec(cur, phone, now_str()[:10])
+        _day = now_str()[:10]
+        _cr = rider_qty_dayrec(cur, phone, _day)
         if _cr and _cr.get("id"):
+            _cb_old = _to_int(_cr.get("cancel_baozi"))
             cur.execute(_q("UPDATE rider_order_qty SET cancel_baozi=?, cancel_reason=?, updated_at=? WHERE id=?"),
-                        (cancel_baozi, cancel_reason, now_str(), _cr.get("id")))
+                        (_cb_old + cancel_baozi, cancel_reason, now_str(), _cr.get("id")))
+            _ret_total = _to_int(_cr.get("baozi_returned")) + _cb_old + cancel_baozi
+        elif cancel_baozi > 0:
+            cur.execute(_q("INSERT INTO rider_order_qty (phone, order_no, day, baozi_orig, shop_orig, baozi_received, shop_received, baozi_returned, cancel_baozi, cancel_reason, updated_at) "
+                           "VALUES (?,?,?,0,0,0,0,0,?,?,?)"),
+                        (phone, _rq_day_key(_day), _day, cancel_baozi, cancel_reason, now_str()))
+            _ret_total = cancel_baozi
     except Exception:
         pass
     _msg = "订单已取消：%s（骑手 %s）取消数量 %d 原因 %s" % (order_no, rider_name or phone, cancel_baozi, cancel_reason or "-")
@@ -2026,7 +2219,63 @@ def rider_cancel():
             tg_ok, tg_msg = False, str(e)
     return jsonify({"ok": True, "msg": "အော်ဒါ ပယ်ဖျက်ပြီးပါပြီ", "status": "ပယ်ဖျက်ထားသည်",
                     "cancel_baozi": cancel_baozi, "cancel_reason": cancel_reason,
+                    "baozi_returned": _to_int(_ret_total),
                     "telegram": tg_ok, "telegram_msg": tg_msg})
+
+
+@app.route("/api/rider/status", methods=["POST"])
+def rider_status_set():
+    """骑手点按状态时的服务端留痕：保证「三个状态按顺序点完」这件事在服务端可校验。
+    不写定位（没有 GPS 的手机也能用），只更新订单状态 + 记一行留痕，绝不覆盖终态。"""
+    data = request.get_json(silent=True) or {}
+    order_no = (data.get("order_no") or "").strip()
+    phone = (data.get("phone") or "").strip()
+    status = (data.get("status") or "").strip()
+    if not order_no or not phone or status not in _STATUS_SEQ:
+        return jsonify({"ok": False, "msg": "အချက်အလက် မပြည့်စုံပါ"}), 400
+    conn = get_db()
+    cur = conn.cursor()
+    rider = rider_row_by_phone(cur, phone, order_no)
+    if not rider:
+        # 订单必须存在且该骑手曾经绑定过，否则不允许推进状态
+        cur.execute(_q("SELECT order_no FROM orders WHERE order_no=?"), (order_no,))
+        if not cur.fetchone():
+            conn.close()
+            return jsonify({"ok": False, "msg": "အမှာစာ မတွေ့ပါ"}), 404
+    # 问题4：订单已终态（确认✅/取消❌）后，状态不允许再改
+    try:
+        cur.execute(_q("SELECT status FROM orders WHERE order_no=?"), (order_no,))
+        _ost = ((_row_to_dict(cur, cur.fetchone()) or {}).get("status") or "").strip()
+    except Exception:
+        _ost = ""
+    if _ost in ("လက်ခံပြီးပါပြီ", "ပယ်ဖျက်ထားသည်"):
+        conn.close()
+        return jsonify({"ok": False, "gate": "final", "msg": "ဤအမှာစာ ပြီးဆုံးပြီးဖြစ်ပါသည်（该订单已完成或已取消，状态不能再改）"}), 400
+    # 问题3：必须按顺序推进（取餐 → 配送中 → 到达），跳步一律拒绝
+    if not status_predecessor_done(cur, order_no, phone, status):
+        conn.close()
+        _idx_now = _STATUS_IDX.get(status, 0)
+        _need = _STATUS_SEQ[_idx_now - 1] if _idx_now > 0 else ""
+        return jsonify({"ok": False, "gate": "status_order",
+                        "msg": "အစဉ်လိုက် အတည်ပြုပါ（请先点前一个状态）：" + _need}), 400
+    try:
+        ensure_status_log(cur)
+        cur.execute(_q("INSERT INTO rider_status_log (order_no, phone, status, created_at) VALUES (?,?,?,?)"),
+                    (order_no, _rq_key(phone), status, now_str()))
+    except Exception:
+        pass
+    # 订单状态同步（与 report_location 一致，但不覆盖完成/取消终态）
+    try:
+        cur.execute(
+            _q("UPDATE orders SET status=? WHERE order_no=? AND (status IS NULL OR status='' OR (status<>'လက်ခံပြီးပါပြီ' AND status<>'ပယ်ဖျက်ထားသည်'))"),
+            (status, order_no),
+        )
+    except Exception:
+        pass
+    conn.commit()
+    _done3 = three_status_done(cur, order_no, phone)
+    conn.close()
+    return jsonify({"ok": True, "status": status, "three_done": bool(_done3)})
 
 
 @app.route("/api/rider/info", methods=["GET"])
@@ -2053,6 +2302,7 @@ def rider_info():
     latest = _row_to_dict(cur, latest_row) if latest_row else None
     # 骑手独立口径：只返回这个骑手自己的数量，绝不与其他骑手混算
     _rv = rider_qty_view(cur, phone, order_dict)
+    _three = three_status_done(cur, order_no, phone)
     conn.close()
     if latest:
         latest["address"] = reverse_geocode(latest["lat"], latest["lng"])
@@ -2060,6 +2310,8 @@ def rider_info():
         {
             "ok": True,
             "order_no": order_no,
+            "phone": phone,
+            "three_done": bool(_three),
             "status": order_dict.get("status", ""),
             "delivery_address": order_dict.get("delivery_address", ""),
             "shop_lat": order_dict.get("shop_lat"),
@@ -2837,6 +3089,7 @@ def _patch_rider_remaining():
         "day": today,
         "scope": rv["scope"],
         "multi_rider": _multi_rider,
+        "phone": phone,
         "first_input": (bt <= 0),
         "order_no": (od or {}).get("order_no") or order_no or "",
         "status": (od or {}).get("status") or "",

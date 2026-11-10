@@ -529,6 +529,8 @@ def _rq_key(phone):
     if p:
         return p
     raw = str(phone or "").strip().lower()
+    if raw.startswith("n:"):
+        return raw
     return ("n:" + raw) if raw else ""
 
 
@@ -651,12 +653,18 @@ def rider_qty_lock(cur, phone, order_no, baozi_in, shop_in):
         return b_in, s_in
     _ensure_qty_table(cur)
     day = now_str()[:10]
-    day_bo, day_so, _dbr, _dsr = rider_day_totals(cur, phone, day)
+    # 【隔离】分母只取「该骑手 + 该订单」自己的记录，绝不与当天其它订单/其它骑手混算，
+    # 否则一个骑手当天别的订单（或别的骑手）的数字会把本单分母顶大（20 被顶成 60）。
     rec = rider_qty_get(cur, phone, order_no)
     if rec:
-        # 分母只升不降：历史数据里被旧逻辑压成 500 的记录，会自动被当天首次输入的 600 纠正回来
-        b = max(_to_int(rec.get("baozi_orig")), day_bo)
-        s = max(_to_int(rec.get("shop_orig")), day_so)
+        b = _to_int(rec.get("baozi_orig"))
+        s = _to_int(rec.get("shop_orig"))
+        # 【纠正】本单还没送出任何数量时，以骑手这一次输入为准：
+        # 旧记录可能是上一版跨订单聚合算出来的 60，必须能让它回到骑手真正输入的 20。
+        if b_in > 0 and _to_int(rec.get("baozi_received")) <= 0 and b_in != b:
+            b = b_in
+        if s_in > 0 and _to_int(rec.get("shop_received")) <= 0 and s_in != s:
+            s = s_in
         if b <= 0:
             b = b_in
         if s <= 0:
@@ -669,9 +677,9 @@ def rider_qty_lock(cur, phone, order_no, baozi_in, shop_in):
             except Exception:
                 pass
         return nb, ns
-    # 新订单：分母优先沿用该骑手当天首次输入量
-    b_new = day_bo if day_bo > 0 else b_in
-    s_new = day_so if day_so > 0 else s_in
+    # 新订单：分母只取本单本次输入量（不同订单各自独立）
+    b_new = b_in
+    s_new = s_in
     try:
         cur.execute(_q("INSERT INTO rider_order_qty (phone, order_no, day, baozi_orig, shop_orig, baozi_received, shop_received, updated_at) "
                        "VALUES (?,?,?,?,?,0,0,?)"), (phone, order_no, day, b_new, s_new, now_str()))
@@ -718,21 +726,26 @@ def rider_qty_view(cur, phone, order_dict=None, order_no=None):
     phone = _rq_key(phone)
     if phone:
         _ensure_qty_table(cur)
-        bo, so, br, sr = rider_day_totals(cur, phone, day)
-        # 同一订单的独立记录也参与取最大值：跨天/中部刷新时，分母依然是该骑手第一次输入的 600，
-        # 绝不会被“剩余量 500”反向覆盖；已送仍按当天累计。
+        # 【严格隔离】只读「该骑手 + 该订单」这一条记录，绝不跨订单、跨骑手聚合，
+        # 否则本骑手当天别的订单（或别的骑手）的数字会把本单分母顶大（输入 20 却显示 60）。
         rec = rider_qty_get(cur, phone, order_no) if order_no else None
         if rec:
-            bo = max(bo, _to_int(rec.get("baozi_orig")))
-            so = max(so, _to_int(rec.get("shop_orig")))
-            if (rec.get("day") or "") != day:
-                br = max(br, _to_int(rec.get("baozi_received")))
-                sr = max(sr, _to_int(rec.get("shop_received")))
-        if bo > 0 or so > 0:
+            bo = _to_int(rec.get("baozi_orig"))
+            so = _to_int(rec.get("shop_orig"))
+            br = _to_int(rec.get("baozi_received"))
+            sr = _to_int(rec.get("shop_received"))
+            if bo > 0 or so > 0:
+                return {
+                    "scope": "rider_order", "day": day, "order_no": order_no,
+                    "baozi_total": bo, "baozi_received": br, "baozi_remaining": max(bo - br, 0),
+                    "shop_total": so, "shop_received": sr, "shop_remaining": max(so - sr, 0),
+                }
+        # 本骑手在这一单还没有自己的数量记录：返回「待首次输入」，绝不用订单级数字冒充
+        if order_no:
             return {
-                "scope": "rider_order", "day": day, "order_no": order_no,
-                "baozi_total": bo, "baozi_received": br, "baozi_remaining": max(bo - br, 0),
-                "shop_total": so, "shop_received": sr, "shop_remaining": max(so - sr, 0),
+                "scope": "rider_empty", "day": day, "order_no": order_no,
+                "baozi_total": 0, "baozi_received": 0, "baozi_remaining": 0,
+                "shop_total": 0, "shop_received": 0, "shop_remaining": 0,
             }
     if order_dict:
         # 隔离保护：只要这个订单下已经有任何骑手自己的数量记录，就禁止再用「订单口径」兜底，
@@ -1024,7 +1037,7 @@ _LINK_PATTERNS = (
 )
 
 
-def parse_link_coords(text, strict=True):
+def parse_link_coords(text, strict=True, allow_view_center=True):
     """从 Google Maps 链接提取坐标：!3d..!4d / ?q= / ?ll= / /place/lat,lng / @lat,lng（支持 URL 编码）。
     strict=True 时只返回业务区域内的坐标：宁可解析失败、让骑手改填坐标或 Plus Code，
     也绝不把商家位置落到国外去。"""
@@ -1048,7 +1061,7 @@ def parse_link_coords(text, strict=True):
         except (TypeError, ValueError):
             pass
     first = None
-    for pat in _LINK_PATTERNS:
+    for pat in (_LINK_PATTERNS if allow_view_center else _LINK_PATTERNS[:-1]):
         for m in re.finditer(pat, s):
             try:
                 cand = (float(m.group(1)), float(m.group(2)))
@@ -1167,17 +1180,17 @@ def resolve_shop_location(link, coords_text, plus_code=""):
     _any = parse_link_coords(url, strict=False)
     if _any and not in_region(_any[0], _any[1]):
         return None, None, url
-    c = parse_link_coords(url)
+    c = parse_link_coords(url, allow_view_center=False)
     if c:
         return c[0], c[1], url
     if not url.lower().startswith(("http://", "https://")):
         return None, None, url
     final_url, body = _fetch_maps_page(url)
-    c = parse_link_coords(final_url)
+    c = parse_link_coords(final_url, allow_view_center=False)
     if c:
         return c[0], c[1], url
     if body:
-        c = parse_link_coords(body)
+        c = parse_link_coords(body, allow_view_center=False)
         if c:
             return c[0], c[1], url
         pc = parse_plus_code_text(body)
@@ -2656,15 +2669,10 @@ def _patch_rider_remaining():
         else:
             br_day, sr_day = br, sr
     else:
-        # 有骑手手机号但当天还没自己的记录（新骑手/跨天首单/历史库刚迁移）：
-        # 用该订单的「原始输入量」当分母（绝不是扣减后的剩余量），已收按该订单当天口径，
-        # 既不显示 0 空白，也不会把分母压成 500。
-        bt, br, st, sr = order_counts(od)
-        done_day = (od.get("completed_at") or "")[:10]
-        if done_day and done_day != today:
-            br_day, sr_day = 0, 0
-        else:
-            br_day, sr_day = br, sr
+        # 有骑手手机号但本单还没有他自己的数量记录：一律显示「待首次输入」，
+        # 绝不用订单级数字（整单/别的骑手的量）冒充本骑手的分母 —— 这是 20 变 60、两骑手串号的根源。
+        bt, st = 0, 0
+        br_day, sr_day = 0, 0
     # 隔离兜底：同一订单有多个骑手时，绝不允许把订单级数字（别人的量）当成这个骑手的量。
     # 但只对"订单级兜底"（scope=order）生效——骑手自己已有记录时（scope=rider_order）
     # 那本来就是他自己的数，一律保留，绝不归零。

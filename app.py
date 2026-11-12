@@ -565,7 +565,7 @@ def _rq_day_key(day=None, order_no=None):
     """数量记录存储键：按「骑手 + 订单 + 当天」各占一行。
     加入订单维度后，同一骑手换新订单不会沿用上一单的数字（这是「输入 1200 地图却显示 2000」的根因）；
     键里带日期，跨天自然生成新行，等于缅甸时间凌晨 0 点自动归零。"""
-    day = day or now_str()[:10]
+    day = day or rider_qty_denominator_day()
     on = (order_no or "").strip()
     if on:
         return "__O__" + on + "|" + day
@@ -576,7 +576,7 @@ def rider_qty_dayrec(cur, phone, day=None, order_no=None):
     """取该骑手「当天」的数量记录。
     传 order_no 时按「骑手+订单+当天」精确取（页面显示的就是这一单自己的数）；
     不传 order_no 时才退回旧的「骑手+当天」合并记录（仅兼容旧数据，页面逻辑不再使用）。"""
-    day = day or now_str()[:10]
+    day = day or rider_qty_denominator_day()
     phone = _rq_key(phone)
     if not phone:
         return None
@@ -591,6 +591,20 @@ def rider_qty_dayrec(cur, phone, day=None, order_no=None):
     except Exception:
         return None
     if order_no:
+        # 兼容前版在 23:59–00:00 写入自然日旧键的交界分钟记录。
+        try:
+            if day == rider_qty_denominator_day():
+                prev_day = (datetime.strptime(day, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
+                prev_key = _rq_day_key(prev_day, order_no)
+                cur.execute(_q("SELECT * FROM rider_order_qty WHERE phone=? AND order_no=?"), (phone, prev_key))
+                legacy = cur.fetchone()
+                if legacy:
+                    legacy = _row_to_dict(cur, legacy) or {}
+                    updated = str(legacy.get("updated_at") or "")
+                    if updated.startswith(prev_day) and updated[11:16] >= "23:59":
+                        return legacy
+        except Exception:
+            pass
         # 本单今天还没有自己的记录：返回 None，绝不借用其它订单 / 其它天的数字
         return None
     # 【兼容旧调用·只读】不传订单号时只做内存汇总，绝不写库、绝不把多行合并成一行——
@@ -715,7 +729,7 @@ def rider_day_totals(cur, phone, day=None):
     分母 = 当天首次输入量（各单 orig 的最大值，即第一次输入的那个数，如 600）；
     已送 = 当天各单累加（如 100）。这样重下单后仍显示 600 / 剩 500。
     返回 (baozi_orig, shop_orig, baozi_received, shop_received)"""
-    day = day or now_str()[:10]
+    day = day or rider_qty_denominator_day()
     phone = _rq_key(phone)
     if not phone:
         return 0, 0, 0, 0
@@ -764,7 +778,7 @@ def rider_qty_returned_day(cur, phone, day=None):
     """该骑手「当天」退回包子总数：把当天所有订单的确认✅退回 + 取消❌退回全部相加。
     订单完成一次不会清零，只有缅甸时间凌晨 0 点跨天后自动归零。"""
     phone = _rq_key(phone)
-    day = day or now_str()[:10]
+    day = day or rider_qty_denominator_day()
     if not phone:
         return 0
     _ensure_qty_table(cur)
@@ -780,7 +794,7 @@ def rider_qty_returned_day(cur, phone, day=None):
     return max(total, 0)
 
 
-def rider_qty_lock(cur, phone, order_no, baozi_in, shop_in):
+def rider_qty_lock(cur, phone, order_no, baozi_in, shop_in, day=None):
     """锁定「该骑手 + 该订单 + 当天」的分母。
     规则（严格按老板要求）：
     ① 当天第一次输入的数字即分母，当天内第二次/第三次输入的任何数字都不改动它；
@@ -792,7 +806,7 @@ def rider_qty_lock(cur, phone, order_no, baozi_in, shop_in):
     if not phone:
         return b_in, s_in
     _ensure_qty_table(cur)
-    day = now_str()[:10]
+    day = day or rider_qty_denominator_day()
     key = _rq_day_key(day, order_no)
     rec = rider_qty_dayrec(cur, phone, day, order_no)
 
@@ -825,7 +839,7 @@ def rider_qty_lock(cur, phone, order_no, baozi_in, shop_in):
 def rider_daily_qty_orig(cur, phone, day=None):
     """返回骑手当天第一次输入的分母；没有日汇总行时，从当天最早订单记录恢复。"""
     phone = _rq_key(phone)
-    day = day or now_str()[:10]
+    day = day or rider_qty_denominator_day()
     if not phone:
         return 0, 0
     b = s = 0
@@ -858,7 +872,7 @@ def rider_daily_qty_orig(cur, phone, day=None):
 def rider_daily_qty_lock(cur, phone, day, baozi_in, shop_in):
     """按手机号 + 仰光本地日期锁定分母；不同订单再次输入不会覆盖当天首值。"""
     phone = _rq_key(phone)
-    day = day or now_str()[:10]
+    day = day or rider_qty_denominator_day()
     b_in = max(_to_int(baozi_in), 0)
     s_in = max(_to_int(shop_in), 0)
     if not phone:
@@ -887,7 +901,7 @@ def rider_daily_qty_lock(cur, phone, day, baozi_in, shop_in):
     return nb, ns
 
 
-def rider_qty_add(cur, phone, order_no, baozi_add, shop_add, returned_add=0):
+def rider_qty_add(cur, phone, order_no, baozi_add, shop_add, returned_add=0, day=None):
     """把本次送出 / 退回 / 取消退回累加到「该骑手 + 该订单 + 今天」这一行；
     不同骑手、不同订单互不影响，跨天自动归零。"""
     b_add = max(_to_int(baozi_add), 0)
@@ -897,7 +911,7 @@ def rider_qty_add(cur, phone, order_no, baozi_add, shop_add, returned_add=0):
     if not phone:
         return None
     _ensure_qty_table(cur)
-    day = now_str()[:10]
+    day = day or rider_qty_denominator_day()
     key = _rq_day_key(day, order_no)
     rec = rider_qty_dayrec(cur, phone, day, order_no)
     if not rec:
@@ -925,7 +939,7 @@ def rider_qty_view(cur, phone, order_dict=None, order_no=None, day=None):
     ② 已送/剩余只算这个骑手在这一单的，不同骑手、不同订单完全隔离，绝不互相串数；
     ③ 退回包子总量 = 该骑手「当天」所有订单累计（确认✅ + 取消❌），订单完成不清零，
        只有缅甸时间凌晨 0 点跨天自动归零。没有该骑手记录时返回 rider_empty，绝不用订单级数字冒充。"""
-    day = (day or "").strip() or now_str()[:10]
+    day = (day or "").strip() or rider_qty_denominator_day()
     if order_no is None and order_dict:
         order_no = (order_dict.get("order_no") or "").strip()
     phone = _rq_key(phone)
@@ -1577,6 +1591,18 @@ def rider_qty_denominator_day():
         return now_str()[:10]
 
 
+def rider_qty_day_from_timestamp(value):
+    """将仰光时间戳换算为数量记录业务日（23:59 起算下一日）。"""
+    stamp = str(value or "").strip()
+    day = stamp[:10]
+    try:
+        if len(stamp) >= 16 and stamp[11:16] >= "23:59":
+            day = (datetime.strptime(day, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
+    except Exception:
+        pass
+    return day
+
+
 def utc_iso_now():
     """通知专用：UTC ISO8601（带 Z 后缀），前端按缅甸时区 UTC+6:30 换算显示，与服务器时区无关"""
     return datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -1871,7 +1897,8 @@ def rider_bind():
     # 【数量校验】一切按「这个骑手 + 这个订单」自己的数字判断：
     # 同一单已经送出过一部分后再填写，输入值必须等于剩余量；
     # 换了新订单号则属于这一单的首次录入，允许填写新的数量（不再被上一单的数字拦住）。
-    _sv = rider_qty_view(cur, phone, None, order_no)
+    qty_day = rider_qty_denominator_day()
+    _sv = rider_qty_view(cur, phone, None, order_no, qty_day)
     if _sv.get("scope") == "rider_order":
         _sv_br = _to_int(_sv.get("baozi_received"))
         _sv_sr = _to_int(_sv.get("shop_received"))
@@ -1884,7 +1911,7 @@ def rider_bind():
     _in_bt, _in_st = baozi_total, shop_total
     old_bt_orig = int(old.get("baozi_total_orig") or 0)
     old_st_orig = int(old.get("shop_total_orig") or 0)
-    today = now_str()[:10]
+    today = qty_day
     lock_day = (old.get("qty_lock_day") or "").strip()
     locked = bool(lock_day) and lock_day == today and (old_bt_orig > 0 or old_st_orig > 0)
     # 【分母永久固定 + 骑手独立】先看「这个骑手 + 这一单」自己有没有分母：
@@ -1892,7 +1919,7 @@ def rider_bind():
     #   没有 → 本次输入就是这个骑手在这一单的分母，写死后不再变。
     # 绝不使用订单级 old_bt_orig 当分母：那是别的骑手（比如 A 的 30）写进订单表的，
     # B 骑手绑同一单就会看到 30 —— 这就是「两个骑手数量串在一起」的根源。
-    _today_rec = rider_qty_dayrec(cur, phone, today, order_no) or {}
+    _today_rec = rider_qty_dayrec(cur, phone, qty_day, order_no) or {}
     _t_b = _to_int(_today_rec.get("baozi_orig"))
     _t_s = _to_int(_today_rec.get("shop_orig"))
     # 【分母固定·当天首次】当天已经有这个骑手在这一单的首次值 → 本次输入一律忽略（分母原封不动）；
@@ -1905,14 +1932,14 @@ def rider_bind():
     baozi_total = baozi_orig
     shop_total = shop_orig
     # 骑手独立分母：锁定用的就是这个骑手自己的固定分母
-    rider_bt_orig, rider_st_orig = rider_qty_lock(cur, phone, order_no, baozi_orig, shop_orig)
-    daily_lock_day = rider_qty_denominator_day()
+    rider_bt_orig, rider_st_orig = rider_qty_lock(cur, phone, order_no, baozi_orig, shop_orig, qty_day)
+    daily_lock_day = qty_day
     rider_day_bt_orig, rider_day_st_orig = rider_daily_qty_lock(cur, phone, daily_lock_day, baozi_orig, shop_orig)
 
-    rider_qty = rider_qty_view(cur, phone, None, order_no)
+    rider_qty = rider_qty_view(cur, phone, None, order_no, qty_day)
     if rider_qty["scope"] == "none":
         _o_bt, _o_br, _o_st, _o_sr = order_counts(old)
-        rider_qty = {"scope": "order", "day": today,
+        rider_qty = {"scope": "order", "day": qty_day,
                      "baozi_total": _o_bt, "baozi_received": _o_br, "baozi_remaining": max(_o_bt - _o_br, 0),
                      "shop_total": _o_st, "shop_received": _o_sr, "shop_remaining": max(_o_st - _o_sr, 0)}
     # 【多骑手保护】该订单已被多个骑手用过时，绝不改写订单级数量字段，否则会把 A 骑手的数写成 B 骑手的数
@@ -1952,7 +1979,7 @@ def rider_bind():
                     "baozi_remaining": rider_qty.get("baozi_remaining", 0),
                     "shop_remaining": rider_qty.get("shop_remaining", 0),
                     "scope": rider_qty.get("scope", "order"),
-                    "day": today,
+                    "day": qty_day,
                     "denominator_day": daily_lock_day,
                     "qty_lock_day": lock_day})
 
@@ -2259,10 +2286,10 @@ def rider_confirm():
     if not tg_ok and text_sent:
         tg_ok, tg_msg = True, "text sent"
     # 送出的数量只累加到「这个骑手自己」名下：其他骑手的数量完全不受影响
-    _day = now_str()[:10]
-    rider_qty_add(cur, phone, order_no, confirm_baozi, 1, return_baozi)
+    _day = rider_qty_denominator_day()
+    rider_qty_add(cur, phone, order_no, confirm_baozi, 1, return_baozi, _day)
     conn.commit()
-    _rvC = rider_qty_view(cur, phone, order_dict, order_no)
+    _rvC = rider_qty_view(cur, phone, order_dict, order_no, _day)
     conn.close()
     # 兜底：若该骑手该单还没有记录（没填过数量），按订单口径返回，保证前端不会显示 0
     if _rvC["scope"] != "rider_order":
@@ -2365,7 +2392,7 @@ def rider_cancel():
     # 与确认✅ 的退回量合并显示（只写本骑手「当天」那一条，绝不扣减任何送出量；凌晨 0 点自动归零）
     _ret_total = 0
     try:
-        _day = now_str()[:10]
+        _day = rider_qty_denominator_day()
         _cr = rider_qty_dayrec(cur, phone, _day, order_no)
         if _cr and _cr.get("id"):
             _cb_old = _to_int(_cr.get("cancel_baozi"))
@@ -2547,7 +2574,7 @@ def order_history_api():
             latest["address"] = reverse_geocode(latest["lat"], latest["lng"])
         _h_bt, _h_br, _h_st, _h_sr = order_counts(od)
         # 每个骑手只看自己这份数量：历史列表里也不会出现别的骑手 / 别的订单的数字
-        _hrv = rider_qty_view(cur, phone, od, order_no, (h.get("bind_time") or "")[:10] or None)
+        _hrv = rider_qty_view(cur, phone, od, order_no, rider_qty_day_from_timestamp(h.get("bind_time")) or None)
         if _hrv["scope"] in ("rider_order", "rider_empty"):
             _h_bt, _h_br = _hrv["baozi_total"], _hrv["baozi_received"]
             _h_st, _h_sr = _hrv["shop_total"], _hrv["shop_received"]

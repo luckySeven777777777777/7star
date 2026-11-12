@@ -781,8 +781,11 @@ def rider_qty_returned_day(cur, phone, day=None):
 
 
 def rider_qty_lock(cur, phone, order_no, baozi_in, shop_in):
-    """锁定「该骑手 + 该订单」的分母：本单第一次输入即分母，之后重复绑定 / 改填 / 隔天登录都不改变；
-    换新订单号则是新的一单，用新的输入量。"""
+    """锁定「该骑手 + 该订单 + 当天」的分母。
+    规则（严格按老板要求）：
+    ① 当天第一次输入的数字即分母，当天内第二次/第三次输入的任何数字都不改动它；
+    ② 跨天（缅甸时间 0 点后）该行不再存在，当天第一次输入重新成为分母；
+    ③ 每个骑手各自一份（phone 做键），骑手之间绝不共享分母。"""
     b_in = max(_to_int(baozi_in), 0)
     s_in = max(_to_int(shop_in), 0)
     phone = _rq_key(phone)
@@ -792,27 +795,25 @@ def rider_qty_lock(cur, phone, order_no, baozi_in, shop_in):
     day = now_str()[:10]
     key = _rq_day_key(day, order_no)
     rec = rider_qty_dayrec(cur, phone, day, order_no)
-    prev_b, prev_s = rider_qty_orig_anyday(cur, phone, order_no)
 
-    def _pick(cur_v, prev_v, in_v):
-        # 优先级：本行已有 → 本单历史（跨天） → 本次输入。已有值永不覆盖。
+    def _pick(cur_v, in_v):
+        # 当天已有首次值 → 永不覆盖（第二次输入不改变分母）；当天没有 → 本次输入即当天首次值。
+        # 刻意不再读「跨天历史分母」：否则跨天后新一天的第一次输入永远改不动老分母。
         if _to_int(cur_v) > 0:
             return _to_int(cur_v)
-        if _to_int(prev_v) > 0:
-            return _to_int(prev_v)
         return max(_to_int(in_v), 0)
 
     if rec:
-        nb = _pick(rec.get("baozi_orig"), prev_b, b_in)
-        ns = _pick(rec.get("shop_orig"), prev_s, s_in)
+        nb = _pick(rec.get("baozi_orig"), b_in)
+        ns = _pick(rec.get("shop_orig"), s_in)
         try:
             cur.execute(_q("UPDATE rider_order_qty SET order_no=?, day=?, baozi_orig=?, shop_orig=?, updated_at=? WHERE phone=? AND id=?"),
                         (key, day, nb, ns, now_str(), phone, rec.get("id")))
         except Exception:
             pass
         return nb, ns
-    nb = prev_b if prev_b > 0 else b_in
-    ns = prev_s if prev_s > 0 else s_in
+    nb = b_in
+    ns = s_in
     try:
         cur.execute(_q("INSERT INTO rider_order_qty (phone, order_no, day, baozi_orig, shop_orig, baozi_received, shop_received, updated_at) "
                        "VALUES (?,?,?,?,?,0,0,?)"), (phone, key, day, nb, ns, now_str()))
@@ -855,7 +856,8 @@ def rider_qty_add(cur, phone, order_no, baozi_add, shop_add, returned_add=0):
 
 def rider_qty_view(cur, phone, order_dict=None, order_no=None, day=None):
     """数量统一口径（三条硬规则）：
-    ① 分母 = 「该骑手 + 该订单」第一次输入量，永久固定，重复登录/重复输入/隔天都不会改变；
+    ① 分母 = 「该骑手 + 该订单 + 当天」第一次输入量，当天内永久固定（第二次及以后输入都不改动），
+       跨天（缅甸时间 0 点后）自动重新认定当天的第一次输入；
     ② 已送/剩余只算这个骑手在这一单的，不同骑手、不同订单完全隔离，绝不互相串数；
     ③ 退回包子总量 = 该骑手「当天」所有订单累计（确认✅ + 取消❌），订单完成不清零，
        只有缅甸时间凌晨 0 点跨天自动归零。没有该骑手记录时返回 rider_empty，绝不用订单级数字冒充。"""
@@ -865,12 +867,13 @@ def rider_qty_view(cur, phone, order_dict=None, order_no=None, day=None):
     phone = _rq_key(phone)
     if phone:
         rec = rider_qty_dayrec(cur, phone, day, order_no)
-        prev_b, prev_s = rider_qty_orig_anyday(cur, phone, order_no)
         # 退回量：当天跨订单累计（不清零）
         rt_day = rider_qty_returned_day(cur, phone, day)
         if rec:
-            bo = _to_int(rec.get("baozi_orig")) or prev_b
-            so = _to_int(rec.get("shop_orig")) or prev_s
+            # 分母只认「本人 + 本单 + 当天」这一行的首次输入，
+            # 绝不借用其它订单 / 其它骑手 / 前一天的旧分母（否则跨天后分母改不动、或串到别人的数）。
+            bo = _to_int(rec.get("baozi_orig"))
+            so = _to_int(rec.get("shop_orig"))
             br = _to_int(rec.get("baozi_received"))
             sr = _to_int(rec.get("shop_received"))
             if bo > 0 or so > 0 or br > 0 or sr > 0 or rt_day > 0:
@@ -880,14 +883,8 @@ def rider_qty_view(cur, phone, order_dict=None, order_no=None, day=None):
                     "baozi_returned": rt_day,
                     "shop_total": so, "shop_received": sr, "shop_remaining": max(so - sr, 0),
                 }
-        # 今天还没有本单记录，但本单历史上有分母：分母照旧固定显示，今天送出量为 0
-        if prev_b > 0 or prev_s > 0 or rt_day > 0:
-            return {
-                "scope": "rider_order", "day": day, "order_no": order_no,
-                "baozi_total": prev_b, "baozi_received": 0, "baozi_remaining": prev_b,
-                "baozi_returned": rt_day,
-                "shop_total": prev_s, "shop_received": 0, "shop_remaining": prev_s,
-            }
+        # 今天该骑手在本单还没有自己的数量记录（新的一天 / 新骑手）：分母一律为 0，
+        # 由本骑手当天第一次输入重新认定，绝不用昨天的分母或别人的（订单级）数字顶上。
         return {
             "scope": "rider_empty", "day": day, "order_no": order_no,
             "baozi_total": 0, "baozi_received": 0, "baozi_remaining": 0, "baozi_returned": rt_day,
@@ -1820,13 +1817,15 @@ def rider_bind():
     #   没有 → 本次输入就是这个骑手在这一单的分母，写死后不再变。
     # 绝不使用订单级 old_bt_orig 当分母：那是别的骑手（比如 A 的 30）写进订单表的，
     # B 骑手绑同一单就会看到 30 —— 这就是「两个骑手数量串在一起」的根源。
-    _r_prev_b, _r_prev_s = rider_qty_orig_anyday(cur, phone, order_no)
-    if _r_prev_b > 0 or _r_prev_s > 0:
-        baozi_orig = _r_prev_b if _r_prev_b > 0 else (baozi_total if baozi_total > 0 else old_bt_orig)
-        shop_orig = _r_prev_s if _r_prev_s > 0 else (shop_total if shop_total > 0 else old_st_orig)
-    else:
-        baozi_orig = baozi_total if baozi_total > 0 else old_bt_orig
-        shop_orig = shop_total if shop_total > 0 else old_st_orig
+    _today_rec = rider_qty_dayrec(cur, phone, today, order_no) or {}
+    _t_b = _to_int(_today_rec.get("baozi_orig"))
+    _t_s = _to_int(_today_rec.get("shop_orig"))
+    # 【分母固定·当天首次】当天已经有这个骑手在这一单的首次值 → 本次输入一律忽略（分母原封不动）；
+    # 当天还没有 → 本次输入就是当天的首次值，写死。跨天（缅甸 0 点）自动重新认定首次输入。
+    # 刻意不再用订单级 old_bt_orig / old_st_orig 兜底：那是别的骑手写进订单表的数字，
+    # B 骑手绑同一单就会看到 A 的 30 —— 这正是两个骑手数量串在一起的根源。
+    baozi_orig = _t_b if _t_b > 0 else (baozi_total if baozi_total > 0 else 0)
+    shop_orig = _t_s if _t_s > 0 else (shop_total if shop_total > 0 else 0)
     lock_day = today
     baozi_total = baozi_orig
     shop_total = shop_orig
@@ -1841,10 +1840,11 @@ def rider_bind():
                      "shop_total": _o_st, "shop_received": _o_sr, "shop_remaining": max(_o_st - _o_sr, 0)}
     # 【多骑手保护】该订单已被多个骑手用过时，绝不改写订单级数量字段，否则会把 A 骑手的数写成 B 骑手的数
     _multi = (order_rider_count(cur, order_no) > 1) or _order_other_rider_bound(cur, order_no, phone)
-    _upd_bt = old_bt_orig if _multi else baozi_total
-    _upd_st = old_st_orig if _multi else shop_total
-    _upd_bo = old_bt_orig if _multi else baozi_orig
-    _upd_so = old_st_orig if _multi else shop_orig
+    # 只在「单骑手且本次确实填了数」时才更新订单级数量；否则保留订单原有数字（不清零，也不把别人的数写回来）
+    _upd_bt = old_bt_orig if (_multi or baozi_total <= 0) else baozi_total
+    _upd_st = old_st_orig if (_multi or shop_total <= 0) else shop_total
+    _upd_bo = old_bt_orig if (_multi or baozi_orig <= 0) else baozi_orig
+    _upd_so = old_st_orig if (_multi or shop_orig <= 0) else shop_orig
     cur.execute(
         _q("UPDATE orders SET delivery_address=?, baozi_total=?, shop_total=?, baozi_total_orig=?, shop_total_orig=?, qty_lock_day=?, city=?, gps_enabled=1, shop_lat=?, shop_lng=?, shop_link=? WHERE order_no=?"),
         (delivery_address, _upd_bt, _upd_st, _upd_bo, _upd_so, lock_day, city, shop_lat, shop_lng, shop_link, order_no),

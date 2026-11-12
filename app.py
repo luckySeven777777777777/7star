@@ -796,24 +796,29 @@ def rider_qty_lock(cur, phone, order_no, baozi_in, shop_in):
     key = _rq_day_key(day, order_no)
     rec = rider_qty_dayrec(cur, phone, day, order_no)
 
-    def _pick(cur_v, in_v):
-        # 当天已有首次值 → 永不覆盖（第二次输入不改变分母）；当天没有 → 本次输入即当天首次值。
-        # 刻意不再读「跨天历史分母」：否则跨天后新一天的第一次输入永远改不动老分母。
+    # 【分母永久固定】分母只认「该骑手 + 该订单」有史以来第一次录入的值：
+    # 当天这一行没有首次值（跨天新行 / 先确认或取消已经建了 orig=0 的行）时，
+    # 一律沿用历史分母，绝不把「第二次输入的剩余量」当成分母（否则 700 会变成 600、甚至 0）。
+    _ab, _as = rider_qty_orig_anyday(cur, phone, order_no)
+
+    def _pick(cur_v, in_v, any_v):
         if _to_int(cur_v) > 0:
             return _to_int(cur_v)
+        if _to_int(any_v) > 0:
+            return _to_int(any_v)
         return max(_to_int(in_v), 0)
 
     if rec:
-        nb = _pick(rec.get("baozi_orig"), b_in)
-        ns = _pick(rec.get("shop_orig"), s_in)
+        nb = _pick(rec.get("baozi_orig"), b_in, _ab)
+        ns = _pick(rec.get("shop_orig"), s_in, _as)
         try:
             cur.execute(_q("UPDATE rider_order_qty SET order_no=?, day=?, baozi_orig=?, shop_orig=?, updated_at=? WHERE phone=? AND id=?"),
                         (key, day, nb, ns, now_str(), phone, rec.get("id")))
         except Exception:
             pass
         return nb, ns
-    nb = b_in
-    ns = s_in
+    nb = _ab if _ab > 0 else b_in
+    ns = _as if _as > 0 else s_in
     try:
         cur.execute(_q("INSERT INTO rider_order_qty (phone, order_no, day, baozi_orig, shop_orig, baozi_received, shop_received, updated_at) "
                        "VALUES (?,?,?,?,?,0,0,?)"), (phone, key, day, nb, ns, now_str()))
@@ -837,9 +842,13 @@ def rider_qty_add(cur, phone, order_no, baozi_add, shop_add, returned_add=0):
     key = _rq_day_key(day, order_no)
     rec = rider_qty_dayrec(cur, phone, day, order_no)
     if not rec:
+        # 【分母不能被冲掉】当天还没有这一行（跨天 / 先确认再填数）时，
+        # 新行必须带上「该骑手 + 该订单」的历史分母，绝不能再写 0，
+        # 否则后面 bind 会把这笔单的分母当成 0，重新按剩余量当分母（700 变 600 的根源）。
+        _ab, _as = rider_qty_orig_anyday(cur, phone, order_no)
         try:
             cur.execute(_q("INSERT INTO rider_order_qty (phone, order_no, day, baozi_orig, shop_orig, baozi_received, shop_received, baozi_returned, updated_at) "
-                           "VALUES (?,?,?,0,0,?,?,?,?)"), (phone, key, day, b_add, s_add, r_add, now_str()))
+                           "VALUES (?,?,?,?,?,?,?,?,?)"), (phone, key, day, _ab, _as, b_add, s_add, r_add, now_str()))
         except Exception:
             pass
         return rider_qty_dayrec(cur, phone, day, order_no)
@@ -870,12 +879,18 @@ def rider_qty_view(cur, phone, order_dict=None, order_no=None, day=None):
         # 退回量：当天跨订单累计（不清零）
         rt_day = rider_qty_returned_day(cur, phone, day)
         if rec:
-            # 分母只认「本人 + 本单 + 当天」这一行的首次输入，
-            # 绝不借用其它订单 / 其它骑手 / 前一天的旧分母（否则跨天后分母改不动、或串到别人的数）。
+            # 分母只认「本人 + 本单」有史以来第一次录入的值（永久固定），
+            # 当天行的首次值缺失时用历史分母补上，绝不借用其它订单 / 其它骑手的数字。
             bo = _to_int(rec.get("baozi_orig"))
             so = _to_int(rec.get("shop_orig"))
             br = _to_int(rec.get("baozi_received"))
             sr = _to_int(rec.get("shop_received"))
+            if bo <= 0 or so <= 0:
+                _ab, _as = rider_qty_orig_anyday(cur, phone, order_no)
+                if bo <= 0:
+                    bo = _ab
+                if so <= 0:
+                    so = _as
             if bo > 0 or so > 0 or br > 0 or sr > 0 or rt_day > 0:
                 return {
                     "scope": "rider_order", "day": day, "order_no": order_no,
@@ -883,8 +898,17 @@ def rider_qty_view(cur, phone, order_dict=None, order_no=None, day=None):
                     "baozi_returned": rt_day,
                     "shop_total": so, "shop_received": sr, "shop_remaining": max(so - sr, 0),
                 }
-        # 今天该骑手在本单还没有自己的数量记录（新的一天 / 新骑手）：分母一律为 0，
-        # 由本骑手当天第一次输入重新认定，绝不用昨天的分母或别人的（订单级）数字顶上。
+        # 今天该骑手在本单还没有自己的数量记录（跨天 / 新骑手）：
+        # 分母仍然用「该骑手 + 该订单」的历史分母（永久固定），当天送出量从 0 起算；
+        # 只有从没录入过分母的新骑手才返回 rider_empty，由他第一次输入认定。
+        _ab0, _as0 = rider_qty_orig_anyday(cur, phone, order_no)
+        if _ab0 > 0 or _as0 > 0:
+            return {
+                "scope": "rider_order", "day": day, "order_no": order_no,
+                "baozi_total": _ab0, "baozi_received": 0, "baozi_remaining": max(_ab0, 0),
+                "baozi_returned": rt_day,
+                "shop_total": _as0, "shop_received": 0, "shop_remaining": max(_as0, 0),
+            }
         return {
             "scope": "rider_empty", "day": day, "order_no": order_no,
             "baozi_total": 0, "baozi_received": 0, "baozi_remaining": 0, "baozi_returned": rt_day,
@@ -1329,15 +1353,6 @@ def parse_link_coords(text, strict=True, allow_view_center=True):
         pass
     if not s:
         return None
-    # Google 跳转链里常见的反序写法：!2d<经度>!3d<纬度>（与 !3d!4d 等价，只是顺序相反）
-    m = re.search(r"!2d(-?\d{1,3}\.\d+)!3d(-?\d{1,3}\.\d+)", s, re.I)
-    if m:
-        try:
-            cand = (float(m.group(2)), float(m.group(1)))
-            if (not strict) or in_region(cand[0], cand[1]):
-                return cand
-        except (TypeError, ValueError):
-            pass
     first = None
     for pat in (_LINK_PATTERNS if allow_view_center else _LINK_PATTERNS[:-1]):
         for m in re.finditer(pat, s):
@@ -1349,6 +1364,19 @@ def parse_link_coords(text, strict=True, allow_view_center=True):
                 first = cand
             if in_region(cand[0], cand[1]):
                 return cand
+    # 【定位不准修复】反序写法 !2d<经度>!3d<纬度> 只在其它模式全都解析不出来时才用：
+    # Google 长链接里 !2d/!3d 是「地图视图中心」，店铺真实坐标是 !3d/!4d；
+    # 之前把它放在最前面优先命中，手机上贴长链接就会落到视图中心 → 与商家真实点位对不上。
+    m = re.search(r"!2d(-?\d{1,3}\.\d+)!3d(-?\d{1,3}\.\d+)", s, re.I)
+    if m:
+        try:
+            cand = swap_if_reversed(float(m.group(2)), float(m.group(1)))
+            if in_region(cand[0], cand[1]):
+                return cand
+            if first is None:
+                first = cand
+        except (TypeError, ValueError):
+            pass
     if strict:
         return None
     return first
@@ -1826,6 +1854,14 @@ def rider_bind():
     # B 骑手绑同一单就会看到 A 的 30 —— 这正是两个骑手数量串在一起的根源。
     baozi_orig = _t_b if _t_b > 0 else (baozi_total if baozi_total > 0 else 0)
     shop_orig = _t_s if _t_s > 0 else (shop_total if shop_total > 0 else 0)
+    # 【分母永久固定】当天行没有首次值（跨天 / 之前的行被确认、取消写成 0）时，
+    # 直接沿用「该骑手 + 该订单」历史上第一次输入的分母，绝不拿本次输入的剩余量当新分母。
+    if baozi_orig <= 0 or shop_orig <= 0:
+        _ab_bind, _as_bind = rider_qty_orig_anyday(cur, phone, order_no)
+        if baozi_orig <= 0 and _ab_bind > 0:
+            baozi_orig = _ab_bind
+        if shop_orig <= 0 and _as_bind > 0:
+            shop_orig = _as_bind
     lock_day = today
     baozi_total = baozi_orig
     shop_total = shop_orig
@@ -2305,9 +2341,12 @@ def rider_cancel():
                         (_cb_old + cancel_baozi, cancel_reason, now_str(), _cr.get("id")))
             _ret_total = rider_qty_returned_day(cur, phone, _day)
         elif cancel_baozi > 0:
+            # 与确认✅ 同理：新建行必须带上「该骑手 + 该订单」的历史分母，不能写 0，
+            # 否则这笔单的分母会被冲掉，骑车人再填一次就把剩余量当成了新分母。
+            _ab_c, _as_c = rider_qty_orig_anyday(cur, phone, order_no)
             cur.execute(_q("INSERT INTO rider_order_qty (phone, order_no, day, baozi_orig, shop_orig, baozi_received, shop_received, baozi_returned, cancel_baozi, cancel_reason, updated_at) "
-                           "VALUES (?,?,?,0,0,0,0,0,?,?,?)"),
-                        (phone, _rq_day_key(_day, order_no), _day, cancel_baozi, cancel_reason, now_str()))
+                           "VALUES (?,?,?,?,?,0,0,0,?,?,?)"),
+                        (phone, _rq_day_key(_day, order_no), _day, _ab_c, _as_c, cancel_baozi, cancel_reason, now_str()))
             _ret_total = rider_qty_returned_day(cur, phone, _day)
         else:
             _ret_total = rider_qty_returned_day(cur, phone, _day)
@@ -3132,7 +3171,7 @@ def admin_set_status_all():
 
 # ================= 手机 / 电脑 功能一致性补丁 =================
 # 说明：全局禁用缓存（手机端不会读到旧页面/旧接口），并补充“剩余数量”“今日已完成/已取消标记”接口
-APP_VERSION = "20261111-v4"
+APP_VERSION = "20261112-v5"
 
 
 @app.after_request

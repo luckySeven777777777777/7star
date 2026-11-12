@@ -56,6 +56,7 @@ DB_PATH = os.path.join(BASE_DIR, "data", "tracking.db")
 DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
 
 app = Flask(__name__)
+APP_STARTUP_ID = uuid.uuid4().hex
 
 # ==================== Telegram 通知配置 ====================
 # 机器人 Token 从环境变量 TELEGRAM_BOT_TOKEN 读取（Railway 部署时在 Dashboard 配置）
@@ -501,6 +502,29 @@ try:
     ensure_rider_qty_table()
 except Exception:
     pass
+
+
+def reset_rider_quantity_stats_on_startup():
+    """Clear rider quantity stats on each app start; leave orders, users, and GPS tracks intact."""
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        cur.execute(_q("DELETE FROM rider_daily_qty"))
+        cur.execute(_q("DELETE FROM rider_order_qty"))
+        cur.execute(_q("UPDATE orders SET baozi_total_orig=0, shop_total_orig=0, qty_lock_day=''"))
+        conn.commit()
+        print("[rider-qty] startup reset complete; order/account/location records preserved")
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        print("[rider-qty] startup reset failed: %s" % e)
+    finally:
+        conn.close()
+
+
+reset_rider_quantity_stats_on_startup()
 
 
 def _to_int(v):
@@ -1386,7 +1410,7 @@ def swap_if_reversed(lat, lng):
 
 _LINK_PATTERNS = (
     r"!3d(-?\d{1,3}\.\d+)!4d(-?\d{1,3}\.\d+)",
-    r"[?&](?:q|query|ll|daddr|destination|center|sll|viewpoint|location)=(-?\d{1,3}\.\d+)\s*,\s*(-?\d{1,3}\.\d+)",
+    r"[?&](?:q|query|daddr|destination)=(-?\d{1,3}\.\d+)\s*,\s*(-?\d{1,3}\.\d+)",
     r"/place/(-?\d{1,3}\.\d+),(-?\d{1,3}\.\d+)",
     r"/search/(-?\d{1,3}\.\d+),(-?\d{1,3}\.\d+)",
     r"@(-?\d{1,3}\.\d+),(-?\d{1,3}\.\d+)",
@@ -1394,7 +1418,7 @@ _LINK_PATTERNS = (
 
 
 def parse_link_coords(text, strict=True, allow_view_center=True):
-    """从 Google Maps 链接提取坐标：!3d..!4d / ?q= / ?ll= / /place/lat,lng / @lat,lng（支持 URL 编码）。
+    """从 Google Maps 链接提取坐标：!3d..!4d / ?q= / ?query= / /place/lat,lng / @lat,lng（支持 URL 编码）。
     strict=True 时只返回业务区域内的坐标：宁可解析失败、让骑手改填坐标或 Plus Code，
     也绝不把商家位置落到国外去。"""
     s = str(text or "")
@@ -1552,9 +1576,6 @@ def resolve_shop_location(link, coords_text, plus_code=""):
         pc = parse_plus_code_text(body)
         if pc and in_region(pc[0], pc[1]):
             return pc[0], pc[1], url
-        c = parse_body_coords(body)
-        if c:
-            return c[0], c[1], url
         # 二次跳转：部分手机端短链落地页只给一个中转链接（maps.google.com/?cid=… 或 /maps/place/…），
         # 再抓一次即可拿到带 !3d/!4d 的真实地址，避免手机端解析失败后退回原链接、定位到国外。
         m2 = re.search(r"https?://(?:www\.)?google\.[a-z.]{2,}/maps[^\s\"'<>\\]+", body)
@@ -1562,8 +1583,7 @@ def resolve_shop_location(link, coords_text, plus_code=""):
             u2 = m2.group(0).replace("\\u0026", "&").replace("\\/", "/").replace("&amp;", "&")
             if u2 and u2 != url:
                 f2, b2 = _fetch_maps_page(u2)
-                c2 = parse_link_coords(f2) or (parse_link_coords(b2) if b2 else None) \
-                    or (parse_body_coords(b2) if b2 else None)
+                c2 = parse_link_coords(f2, allow_view_center=False) or (parse_link_coords(b2, allow_view_center=False) if b2 else None)
                 if c2:
                     return c2[0], c2[1], url
     return None, None, url
@@ -1980,6 +2000,7 @@ def rider_bind():
                     "shop_remaining": rider_qty.get("shop_remaining", 0),
                     "scope": rider_qty.get("scope", "order"),
                     "day": qty_day,
+                    "startup_id": APP_STARTUP_ID,
                     "denominator_day": daily_lock_day,
                     "qty_lock_day": lock_day})
 
@@ -2529,6 +2550,7 @@ def rider_info():
             "scope": _rv["scope"],
             "day": _rv["day"],
             "denominator_day": _denominator_day,
+            "startup_id": APP_STARTUP_ID,
             "baozi_total": _rv["baozi_total"],
             "shop_total": _rv["shop_total"],
             "baozi_received": _rv["baozi_received"],
@@ -3306,6 +3328,7 @@ def _patch_rider_remaining():
         "ok": True,
         "day": today,
         "denominator_day": denominator_day,
+        "startup_id": APP_STARTUP_ID,
         "scope": rv["scope"],
         "multi_rider": _multi_rider,
         "phone": phone,

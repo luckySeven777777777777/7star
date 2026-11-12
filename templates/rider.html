@@ -729,74 +729,47 @@ function _denomKey(phone, orderNo) {
   if (o) return "order:" + o;
   return "";
 }
-// 【修复1】包子分母的锁定键 = 骑手手机号 + 当天（不含订单号）：
-// 同一天内换订单、重填、第二次输入都不会改写分母；次日 0 点后自然重新锁定。
-function _denomKeyDay(phone) {
-  var p = String(phone || "").trim();
-  return p ? ("riderday:" + p) : "";
-}
-// 返回该骑手在该订单的分母
-// 规则：包子分母 = 这个骑手「当天」第一次输入的数量（同一天内换单/重填都不改写）；
-//       店铺分母 = 这个骑手在这一单第一次输入的数量（原有口径不变）。
+// 返回该骑手在该订单的分母（= 这个骑手在这一单第一次输入的数量）
+// 规则：第一次输入后永久固定，重复登录、重复输入都不会改变它。
 function lockDenom(phone, orderNo, baoziTotal, shopTotal) {
   var b = _denomNum(baoziTotal), s = _denomNum(shopTotal);
-  var kdB = _denomKeyDay(phone);
   var key = _denomKey(phone, orderNo);
   var day = _denomToday();
-  if (!kdB && !key) return { baozi: b, shop: s };
+  if (!key) return { baozi: b, shop: s };
   var all = loadDenomLock();
-  var lb = 0, ls = 0, _chg = false;
+  var rec = all[key] || null;
   // 跨天（仰光时间 0 点后）本地锁立即失效：新一天的第一次输入重新成为分母
   // 旧版本缓存（没有 day 字段）同样视为过期丢弃，避免沿用历史错误分母
-  Object.keys(all).forEach(function (k) {
-    if (all[k] && (!all[k].day || String(all[k].day) !== day)) { delete all[k]; }
-  });
-  if (kdB) {
-    var rb = all[kdB] || null;
-    lb = rb ? _denomNum(rb.baozi) : 0;
-    if (!(lb > 0) && b > 0) { lb = b; all[kdB] = { baozi: lb, shop: 0, day: day }; _chg = true; }
-  } else { lb = b; }
-  if (key) {
-    var rs = all[key] || null;
-    ls = rs ? _denomNum(rs.shop) : 0;
+  if (rec && (!rec.day || String(rec.day) !== day)) { delete all[key]; rec = null; }
+  var lb = rec ? _denomNum(rec.baozi) : 0;
+  var ls = rec ? _denomNum(rec.shop) : 0;
+  if (lb > 0 || ls > 0) {
     // 当天首次值已锁 → 后续任何来源的数字都不覆盖（第二次/第三次输入改不动分母）。
-    if (!(ls > 0) && s > 0) { ls = s; all[key] = { baozi: 0, shop: ls, day: day }; _chg = true; }
-  } else { ls = s; }
-  if (_chg) saveDenomLock(all);
-  return { baozi: lb, shop: ls };
-}
-
-// 【修复2】数量文案统一格式：一律「剩余 / 分母」，分母锁定不到时只显示剩余量本身，
-// 绝不拼出「140 / 0」「0 / 0」这类把 0 当分母的错误表达。
-function _qtyPairTxt(rem, den) {
-  var r = parseInt(rem, 10);
-  var d = parseInt(den, 10);
-  var rTxt = isNaN(r) ? "-" : String(r);
-  if (!isNaN(d) && d > 0) return rTxt + " / " + d;
-  return rTxt;
-}
-// 【修复2】历史/详情记录的分母：优先用这条记录自己的首输值(>0)；
-// 缺失时用「骑手+当天」锁兜底；此函数只读，绝不把记录里的本单数量写进锁（否则第二次下单分母会被改写）。
-function _histDenom(h) {
-  var b = _denomNum(h && h.baozi_total_orig);
-  var s = _denomNum(h && h.shop_total_orig);
-  if (!(b > 0) || !(s > 0)) {
-    var d = lockDenom((h && h.rider_phone) || "", "", 0, 0);
-    if (!(b > 0)) b = _denomNum(d.baozi);
-    if (!(s > 0)) s = _denomNum(d.shop);
+    // 仅补「首次输入时另一项没填」的空缺，已锁的那一项永不改动。
+    var _chg = false;
+    if (!(lb > 0) && b > 0) { lb = b; _chg = true; }
+    if (!(ls > 0) && s > 0) { ls = s; _chg = true; }
+    if (_chg) { all[key] = { baozi: lb, shop: ls, day: day }; saveDenomLock(all); }
+    return { baozi: lb, shop: ls };
+  }
+  if (b > 0 || s > 0) {
+    all[key] = { baozi: b, shop: s, day: day };
+    // 顺手清理其它日期的过期记录，避免 localStorage 无限增长
+    Object.keys(all).forEach(function (k) {
+      if (all[k] && all[k].day && all[k].day !== day) delete all[k];
+    });
+    saveDenomLock(all);
   }
   return { baozi: b, shop: s };
 }
-window._qtyPairTxt = _qtyPairTxt;
-window._denomNum = _denomNum;
-window._histDenom = _histDenom;
+
 window.lockDenom = lockDenom;
-// 商家位置解析：坐标文本 → Plus Code（只接受业务区域内的结果）
-// 【修复2】Google 链接一律不在前端解析，统一交服务端解析，保证手机与电脑得到完全相同的坐标
+// 商家位置解析（与后端同优先级）：坐标文本 → 链接 → Plus Code，且只接受业务区域内的结果
 function resolveShopLocation() {
   var c = parseCoordsText(document.getElementById("shopLocationCoords").value);
   if (c && inRegion(c[0], c[1])) return c;
-  // 【修复2】删除前端按链接/短码自解析坐标：链接只由服务端解析，避免手机端算出与电脑不同的点
+  c = (window.parseLinkCoordsPrecise || parseLinkCoords)(document.getElementById("shopLocationLink").value);
+  if (c && inRegion(c[0], c[1])) return c;
   var pc = decodePlusCode(document.getElementById("shopLocationPlusCode").value);
   if (pc && inRegion(pc[0], pc[1])) return pc;
   return null;
@@ -867,8 +840,11 @@ async function updateShopLocation() {
     var pc = decodePlusCode(plus);
     if (pc && inRegion(pc[0], pc[1])) { coords = pc[0].toFixed(6) + ", " + pc[1].toFixed(6); }
   }
-  // 【修复2】手机端不再自行解析 Google 链接/短码：只把原始链接交给服务端解析，
-  // 服务端是唯一解析入口，手机与电脑因此得到完全相同的坐标（本地解析会算出偏移的点并覆盖服务端结果）。
+  // 长链接可直接在前端解析出坐标，避免手机端因网络/短链重定向失败
+  if (!coords && link) {
+    var lc = window.parseLinkCoordsPrecise ? window.parseLinkCoordsPrecise(link) : null;
+    if (lc && inRegion(lc[0], lc[1])) { coords = lc[0].toFixed(6) + ", " + lc[1].toFixed(6); }
+  }
   if (!coords && !link) {
     showInfo("Cannot read this location on phone. Please paste a Google Maps link, or fill Coordinates / Plus Code");
     return;
@@ -1563,24 +1539,9 @@ async function bindOrder() {
       // 未送出前（hasProgress=false）允许改填任意数量，绝不拦截
       var _prog2 = !!_rm.hasProgress;
       var _hasRem2 = !_first2 && ((!isNaN(_nb2) && _nb2 > 0) || (!isNaN(_ns2) && _ns2 > 0));
-      // 【修复2】分母（当天首次锁值）：包子用当天锁、店铺用本单首输；
-      // 某一侧还没有分母（如第二次下单时店铺侧为 0）时，这一侧一律不参与「必须等于剩余量」比较，
-      // 否则会把第二次下单直接拦死，并把 0 拼进缅文提示（140 / 0）。
-      var _db2 = _denomNum(_rm.baoziOrig);
-      var _ds2 = _denomNum(_rm.shopOrig);
-      if (!(_db2 > 0) || !(_ds2 > 0)) {
-        // 内存里没拿到分母时，再从「当天锁 / 本单首输锁」补一次，避免分母回落成 0
-        var _lkS2 = lockDenom(phone, orderNo, 0, 0);
-        if (!(_db2 > 0) && _denomNum(_lkS2.baozi) > 0) _db2 = _denomNum(_lkS2.baozi);
-        if (!(_ds2 > 0) && _denomNum(_lkS2.shop) > 0) _ds2 = _denomNum(_lkS2.shop);
-      }
-      var _bBad2 = (_db2 > 0) && !isNaN(_nb2) && !isNaN(_inB) && (_inB !== _nb2);
-      var _sBad2 = (_ds2 > 0) && !isNaN(_ns2) && !isNaN(_inS) && (_inS !== _ns2);
-      if (_same2 && _prog2 && _hasRem2 && (_bBad2 || _sBad2)) {
-        var _pairs2 = [];
-        if (_db2 > 0) _pairs2.push(_qtyPairTxt(_nb2, _db2));
-        if (_ds2 > 0) _pairs2.push(_qtyPairTxt(_ns2, _ds2));
-        showInfo("အရေအတွက် မကိုက်ညီပါ — ကျန်ရှိသည် " + (_pairs2.join("၊ ") || "-") + " သာ ဖြစ်သည်");
+      if (_same2 && _prog2 && _hasRem2 && _rm.baozi !== null && _rm.baozi !== undefined && _rm.shop !== null && _rm.shop !== undefined &&
+          !isNaN(_nb2) && !isNaN(_ns2) && (!isNaN(_inB) && !isNaN(_inS)) && (_inB !== _nb2 || _inS !== _ns2)) {
+        showInfo("အရေအတွက် မကိုက်ညီပါ — ကျန်ရှိသည် " + _nb2 + " / " + _ns2 + " သာ ဖြစ်သည်");
         return;
       }
     } catch (e) {}
@@ -2376,8 +2337,8 @@ function renderHistory() {
       + 'လက်ရှိအခြေအနေ：' + stTagHtml((h.status && h.status !== "待取餐") ? h.status : "-") + '<br>'
       + 'လက်ရှိနေရာ：<b>' + loc + '</b><br>'
       + 'ပို့ရမည့်ဆိုင်လိပ်စာ：<b>' + (h.delivery_address || "-") + '</b><br>'
-      + 'ကျန်ရှိသောပေါက်စီအလုံးအရေတွက်：<b>' + _qtyPairTxt(h.baozi_remaining, _histDenom(h).baozi) + '</b><br>'
-      + 'ကျန်ရှိသောဆိုင်အရေတွက်：<b>' + _qtyPairTxt(h.shop_remaining, _histDenom(h).shop) + '</b><br>'
+      + 'ကျန်ရှိသောပေါက်စီအလုံးအရေတွက်：<b>' + h.baozi_remaining + ' / ' + (lockDenom(h.rider_phone || "", h.order_no || "", (h.baozi_total_orig || h.baozi_total), (h.shop_total_orig || h.shop_total)).baozi || "-") + '</b><br>'
+      + 'ကျန်ရှိသောဆိုင်အရေတွက်：<b>' + h.shop_remaining + ' / ' + (lockDenom(h.rider_phone || "", h.order_no || "", (h.baozi_total_orig || h.baozi_total), (h.shop_total_orig || h.shop_total)).shop || "-") + '</b><br>'
       + 'ပြန်အပ်သောပေါက်စီအရေအတွက်：<b>' + ((h.baozi_returned === undefined || h.baozi_returned === null) ? 0 : h.baozi_returned) + '</b><br>'
       + 'ငွေပေးချေမှုနည်းလမ်း：<b>' + (h.payment_method || "-") + '</b><br>'
       + 'Amount (MMK)：<b>' + (h.amount || "-") + '</b><br>'
@@ -2483,21 +2444,14 @@ async function refreshRiderInfo() {
     // 分母锁定：分母永远取「这个骑手今天第一次输入的量」，只增不减（重新下单也不会变成 500）
     // 问题3：只认「本骑手本人」的数字；没有本人记录时绝不用订单级数字冒充（否则所有骑手看到同一数字）
     var _riderScope = (j.scope === "rider_order");
-    var _lk0 = lockDenom(state.phone || j.phone || "", j.order_no || (window.state && state.orderNo) || "",
+    var _lk0 = lockDenom(state.phone || j.phone || "", "__daily__" + String(j.denominator_day || j.day || _denomToday()),
       _riderScope ? (j.baozi_total_orig || j.baozi_total || 0) : 0,
       _riderScope ? (j.shop_total_orig || j.shop_total || 0) : 0);
     var _obt = _lk0.baozi || 0, _ost = _lk0.shop || 0;
-    // 【修复2】第二次下单（新订单号、服务端还没给本单分母）时，用本地「当天锁」兜底，
-    // 保证卡片上始终是「当天累计剩余 / 当天首次锁定分母」，分母不回落成 0。
-    if (!(_obt > 0) || !(_ost > 0)) {
-      var _lkD0 = lockDenom(state.phone || j.phone || "", "", 0, 0);
-      if (!(_obt > 0) && _denomNum(_lkD0.baozi) > 0) _obt = _denomNum(_lkD0.baozi);
-      if (!(_ost > 0) && _denomNum(_lkD0.shop) > 0) _ost = _denomNum(_lkD0.shop);
-    }
     var _rbr = _riderScope ? (j.baozi_received || 0) : 0;
     var _rsr = _riderScope ? (j.shop_received || 0) : 0;
-    document.getElementById("curBaozi").textContent = Math.max(_obt - _rbr, 0) + " / " + (_obt > 0 ? _obt : "-");
-    document.getElementById("curShop").textContent = Math.max(_ost - _rsr, 0) + " / " + (_ost > 0 ? _ost : "-");
+    document.getElementById("curBaozi").textContent = (j.baozi_remaining !== undefined ? j.baozi_remaining : Math.max(_obt - _rbr, 0)) + " / " + (_obt > 0 ? _obt : "-");
+    document.getElementById("curShop").textContent = (j.shop_remaining !== undefined ? j.shop_remaining : Math.max(_ost - _rsr, 0)) + " / " + (_ost > 0 ? _ost : "-");
     // 商家关闭 GPS 后：立即停止本端上报（GPS 停止），且不能自行重新开启
     if (j.gps_enabled === 0 && state.gpsEnabled) {
       state.gpsEnabled = false;
@@ -2868,20 +2822,13 @@ checkLogin();
     var _isRiderScope = (j.scope === "rider_order" || j.scope === "rider_empty") && (_srvB > 0 || _srvS > 0);
     var _denB = 0, _denS = 0;
     if (_isRiderScope) {
-      var _lkR = lockDenom((window.state && state.phone) || "", j.order_no || (window.state && state.orderNo) || "",
+      var _lkR = lockDenom((window.state && state.phone) || "", "__daily__" + String(j.denominator_day || j.day || _denomToday()),
         _srvB, _srvS);
       // 分母以「本骑手 + 本单 + 当天第一次输入」为准（本地锁优先）：
       // 第二次、第三次输入时服务端/界面传来的任何新数字都不会改动已锁的分母；
       // 只有本地还没有当天的锁（首次登录 / 清过缓存）时才采用服务端返回的本人分母。
       _denB = _lkR.baozi || _srvB || 0;
       _denS = _lkR.shop || _srvS || 0;
-    }
-    // 【修复2】服务端没给分母（新订单首次绑定 / scope 非骑手口径）时，仍要拿本地「当天锁」兜底，
-    // 绝不让分母回落成 0 或空：当天首次锁定的分母在当天内必须一直显示。
-    if (!(_denB > 0) || !(_denS > 0)) {
-      var _lkD = lockDenom((window.state && state.phone) || "", "", 0, 0);
-      if (!(_denB > 0) && _denomNum(_lkD.baozi) > 0) _denB = _denomNum(_lkD.baozi);
-      if (!(_denS > 0) && _denomNum(_lkD.shop) > 0) _denS = _denomNum(_lkD.shop);
     }
     // 还没绑定订单、且服务端返回 rider_empty（该骑手当天没有任何自己的数量）时，
     // 一律显示 "-"，不显示 0/-，避免"骑手还没下单却显示 0"的误解
@@ -2931,7 +2878,7 @@ window._rem().hasProgress = !!j.has_progress;
     // 【关键修复】分母绝不取「本次输入」：只读取已经锁定的分母（服务端下发的首次数）。
     // 之前这里把本次输入写进本地锁并当分母显示，导致第二次输入 99 就显示 99 / 99 ——
     // 这就是「分母第二次输入就变了」的直接原因。现在锁不到就显示 "-"，等 loadRemain 校正。
-    var _lkL = lockDenom((window.state && state.phone) || "", orderNo || "", 0, 0);
+    var _lkL = lockDenom((window.state && state.phone) || "", "__daily__" + _denomToday(), 0, 0);
     var _denB = _lkL.baozi || 0, _denS = _lkL.shop || 0;
     // 分子（剩余）不允许大于分母：本次输入的 99 不能显示成「99 / 30」
     var _showB = (!isNaN(b) && _denB > 0 && b > _denB) ? _denB : b;
@@ -3124,36 +3071,22 @@ window._rem().hasProgress = !!j.has_progress;
     if (hasRemain) {
       var db = window.__remain ? Number(window._rem().baoziOrig) : NaN;
       var ds = window.__remain ? Number(window._rem().shopOrig) : NaN;
-      // 【修复2】当天锁缺失时从本地当天键补分母，绝不用 0 当分母参与比较
-      var _lkV = (window.lockDenom ? window.lockDenom((window.state && window.state.phone) || "", "", 0, 0) : null);
-      if (_lkV) {
-        if (!(db > 0)) db = Number(_lkV.baozi) || 0;
-        if (!(ds > 0)) ds = Number(_lkV.shop) || 0;
-      }
       var nb = Number(rb), ns = Number(rs);
-      // 【修复2】某一侧没有分母（如第二次下单时店铺侧为 0）→ 该侧不参与校验，
-      // 否则会被「必须等于 0」永久拦死，并把 0 拼进提示文案（140 / 0）。
-      var bHasDen = (!isNaN(db) && db > 0);
-      var sHasDen = (!isNaN(ds) && ds > 0);
-      var bPartial = (bHasDen && nb < db);   // 已经送过一部分
-      var sPartial = (sHasDen && ns < ds);
+      var bPartial = (!isNaN(db) && db > 0 && nb < db);   // 已经送过一部分
+      var sPartial = (!isNaN(ds) && ds > 0 && ns < ds);
       // 已经送过一部分：只允许 ≤ 当前剩余量；剩余量本身(如 500)可下单，超出的(如 600)一律拒绝
-      var bOk = !bHasDen ? true : (bPartial ? (bt <= nb && bt > 0) : (bt === nb || bt === db));
-      var sOk = !sHasDen ? true : (sPartial ? (st <= ns && st > 0) : (st === ns || st === ds));
+      var bOk = bPartial ? (bt <= nb && bt > 0) : (bt === nb || (!isNaN(db) && db > 0 && bt === db));
+      var sOk = sPartial ? (st <= ns && st > 0) : (st === ns || (!isNaN(ds) && ds > 0 && st === ds));
       // 超出首次输入量（超送）一律拒绝
-      if (bHasDen && bt > db) bOk = false;
-      if (sHasDen && st > ds) sOk = false;
+      if (!isNaN(db) && db > 0 && bt > db) bOk = false;
+      if (!isNaN(ds) && ds > 0 && st > ds) sOk = false;
       // 已经送过一部分时，超过当前剩余量一律拒绝（600 剩 500 时填 600 必须被拦下）
       if (bPartial && bt > nb) bOk = false;
       if (sPartial && st > ns) sOk = false;
       if (!bOk || !sOk) {
         bind.disabled = true;
-        // 提示统一「剩余 / 分母」，只拼有分母的一侧，绝不出现 140 / 0
-        var _pairV = [];
-        if (bHasDen && window._qtyPairTxt) _pairV.push(window._qtyPairTxt(nb, db));
-        if (sHasDen && window._qtyPairTxt) _pairV.push(window._qtyPairTxt(ns, ds));
         bind.textContent = "အရေအတွက် မကိုက်ညီပါ (Count must equal remaining " +
-          (_pairV.join(" , ") || "-") + ")";
+          (isNaN(nb) ? "-" : nb) + " / " + (isNaN(ns) ? "-" : ns) + ")";
         return;
       }
     }

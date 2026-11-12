@@ -121,6 +121,15 @@ def build_proof_caption(order_no, phone, order_dict, rider_name, latest, qty=Non
     else:
         baozi_total, baozi_received, shop_total, shop_received = order_counts(order_dict)
         returned = 0
+    # 【修复2】分母为 0 时先退回订单级数量，绝不把「剩余 / 0」拼进缅文通知文案。
+    if baozi_total <= 0 or shop_total <= 0:
+        _oc_bt, _oc_br, _oc_st, _oc_sr = order_counts(order_dict)
+        if baozi_total <= 0 and _oc_bt > 0:
+            baozi_total = _oc_bt
+            baozi_received = max(baozi_received, _oc_br)
+        if shop_total <= 0 and _oc_st > 0:
+            shop_total = _oc_st
+            shop_received = max(shop_received, _oc_sr)
     loc_text = "-"
     if latest:
         loc_text = latest.get("address") or ("%.6f, %.6f" % (latest["lat"], latest["lng"]))
@@ -846,6 +855,35 @@ def rider_day_denom_lock(cur, phone, baozi_in, day=None):
     return locked if locked > 0 else b_in
 
 
+def rider_day_denom_seed(cur, phone, day=None):
+    """【修复2】当天锁读不到时的兜底恢复：从该骑手「当天」已有的数量行里回收首次值，
+    写回 rider_day_denom，保证第二次/第三次下单时分母绝不回落成 0（140 / 0 的根因之一）。
+    只做「回收已有值」，绝不会凭空造出分母；当天确实没有任何数量行时返回 0。"""
+    phone = _rq_key(phone)
+    day = (day or "").strip() or now_str()[:10]
+    if not phone:
+        return 0
+    _ensure_qty_table(cur)
+    best = 0
+    try:
+        cur.execute(_q("SELECT baozi_orig FROM rider_order_qty WHERE phone=? AND day=?"), (phone, day))
+        for row in cur.fetchall() or []:
+            d = _row_to_dict(cur, row) or {}
+            best = max(best, _to_int(d.get("baozi_orig")))
+    except Exception:
+        return 0
+    if best <= 0:
+        return 0
+    _ensure_day_denom_table(cur)
+    try:
+        cur.execute(_q("INSERT INTO rider_day_denom (phone, day, baozi_orig, updated_at) VALUES (?,?,?,?)"),
+                    (phone, day, best, now_str()))
+    except Exception:
+        pass
+    locked = rider_day_denom_get(cur, phone, day)
+    return locked if locked > 0 else best
+
+
 def rider_day_baozi_received(cur, phone, day=None):
     """该骑手「当天」包子已送总数（当天所有订单累加），用于按当天分母算剩余。"""
     phone = _rq_key(phone)
@@ -883,6 +921,9 @@ def rider_qty_lock(cur, phone, order_no, baozi_in, shop_in):
     # 【修复1】包子分母按「骑手 + 当天」锁定：当天第一次输入的数量即当天唯一分母，
     # 当天内换单、重填、第二次输入更小的数字都不会再改写它；跨天后重新按新一天的第一次输入锁定。
     _day_b = rider_day_denom_lock(cur, phone, b_in, day)
+    if _day_b <= 0:
+        # 本次没填数量、当天锁又缺失（老数据 / 清理过）：回收当天已有首次值，绝不让分母变 0
+        _day_b = rider_day_denom_seed(cur, phone, day)
     if _day_b > 0:
         b_in = _day_b
 
@@ -963,6 +1004,10 @@ def rider_qty_view(cur, phone, order_dict=None, order_no=None, day=None):
         # 【修复1】包子分母 = 该骑手「当天第一次输入」被锁定的值，当天内永不改写；
         # 已送 = 当天累计送出，剩余 = 当天锁定分母 - 当天已送（换单/重填都不会把分母改小）。
         _day_b = rider_day_denom_get(cur, phone, day)
+        if _day_b <= 0:
+            # 当天锁缺失（老数据 / 刚换新版本）时回收当天已有首次值，
+            # 否则第二次下单会读到 0，前端分母就回落成 0（140 / 0）
+            _day_b = rider_day_denom_seed(cur, phone, day)
         _day_br = rider_day_baozi_received(cur, phone, day) if _day_b > 0 else 0
         if rec or _day_b > 0:
             # 店铺分母仍只认「本人 + 本单 + 当天」这一行的首次输入，
@@ -1893,14 +1938,26 @@ def rider_bind():
     # 换了新订单号则属于这一单的首次录入，允许填写新的数量（不再被上一单的数字拦住）。
     _sv = rider_qty_view(cur, phone, None, order_no)
     if _sv.get("scope") == "rider_order":
+        _sv_bt = _to_int(_sv.get("baozi_total"))
+        _sv_st = _to_int(_sv.get("shop_total"))
         _sv_br = _to_int(_sv.get("baozi_received"))
         _sv_sr = _to_int(_sv.get("shop_received"))
-        if _sv_br > 0 or _sv_sr > 0:
-            _sv_rb = _to_int(_sv.get("baozi_remaining"))
-            _sv_rs = _to_int(_sv.get("shop_remaining"))
-            if baozi_total != _sv_rb or shop_total != _sv_rs:
-                conn.close()
-                return jsonify({"ok": False, "msg": "အရေအတွက် မကိုက်ညီပါ — ကျန်ရှိသည် ပေါက်စီ %d / ဆိုင် %d သာ ဖြစ်သည်။ ကျန်ရှိသော အရေအတွက်အတိုင်းသာ ထည့်ပါ" % (_sv_rb, _sv_rs)}), 400
+        _sv_rb = _to_int(_sv.get("baozi_remaining"))
+        _sv_rs = _to_int(_sv.get("shop_remaining"))
+        # 【修复2】只对「当天已有分母且确实送出过」的那一侧要求「必须等于剩余量」：
+        # 第二次下单是全新订单号，店铺侧还没有本单分母（0），若仍拿 0 去比，
+        # 会把骑手直接拦死，并把「包子剩余 / 店铺 0」（140 / 0）拼进缅文提示。
+        _sv_b_bad = (_sv_bt > 0 and _sv_br > 0 and baozi_total != _sv_rb)
+        _sv_s_bad = (_sv_st > 0 and _sv_sr > 0 and shop_total != _sv_rs)
+        if _sv_b_bad or _sv_s_bad:
+            # 提示文案统一拼「剩余 / 当天分母」，分母缺失的一侧不拼，绝不出现 140 / 0、0 / 0
+            _sv_parts = []
+            if _sv_bt > 0:
+                _sv_parts.append("ပေါက်စီ %d / %d" % (_sv_rb, _sv_bt))
+            if _sv_st > 0:
+                _sv_parts.append("ဆိုင် %d / %d" % (_sv_rs, _sv_st))
+            conn.close()
+            return jsonify({"ok": False, "msg": "အရေအတွက် မကိုက်ညီပါ — ကျန်ရှိသည် " + ("၊ ".join(_sv_parts) or "-") + " သာ ဖြစ်သည်။ ကျန်ရှိသော အရေအတွက်အတိုင်းသာ ထည့်ပါ"}), 400
     _in_bt, _in_st = baozi_total, shop_total
     old_bt_orig = int(old.get("baozi_total_orig") or 0)
     old_st_orig = int(old.get("shop_total_orig") or 0)
@@ -1924,6 +1981,10 @@ def rider_bind():
     # 换新单、重填、第二次输入更小的数字（如先输 450、再输 400）都不改变分母；跨天后重新锁定。
     _day_seed_b = max(baozi_total, _t_b)
     _day_lock_b = rider_day_denom_lock(cur, phone, _day_seed_b, today)
+    if _day_lock_b <= 0:
+        # 【修复2】第二次下单时本单数量可能为 0、当天锁也读不到（旧数据/换设备）：
+        # 从当天已有数量行回收首次值，绝不让分母回落成 0（140 / 0 的直接根因）。
+        _day_lock_b = rider_day_denom_seed(cur, phone, today)
     if _day_lock_b > 0:
         baozi_orig = _day_lock_b
     shop_orig = _t_s if _t_s > 0 else (shop_total if shop_total > 0 else 0)

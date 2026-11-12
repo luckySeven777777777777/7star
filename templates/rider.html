@@ -536,10 +536,10 @@ function parseLinkCoords(text) {
     var rc = [parseFloat(m2[2]), parseFloat(m2[1])];
     if (inRegion(rc[0], rc[1])) return rc;
   }
-  // Google 分享链接优先级：!3d!4d 是店铺精确坐标；?q=/?ll= 次之；/place/lat,lng；@ 只是视图中心，最后兜底
+  // Google 分享链接优先级：!3d!4d、明确的 q/query/destination 坐标、/place/lat,lng；@ 只是视图中心
   var pats = [
     /!3d(-?\d{1,3}\.\d+)!4d(-?\d{1,3}\.\d+)/,
-    /[?&](?:q|query|ll|daddr|destination|center|sll|viewpoint|location)=(-?\d{1,3}\.\d+)\s*,\s*(-?\d{1,3}\.\d+)/,
+    /[?&](?:q|query|daddr|destination)=(-?\d{1,3}\.\d+)\s*,\s*(-?\d{1,3}\.\d+)/,
     /\/place\/(-?\d{1,3}\.\d+),(-?\d{1,3}\.\d+)/,
     /\/search\/(-?\d{1,3}\.\d+),(-?\d{1,3}\.\d+)/,
     /@(-?\d{1,3}\.\d+),(-?\d{1,3}\.\d+)/
@@ -554,7 +554,7 @@ function parseLinkCoords(text) {
   }
   return null;
 }
-// 手机端专用：只采信「精确定位点」（!3d!4d / ?q= / /place/lat,lng / /search/lat,lng）。
+// 手机端专用：只采信「精确定位点」（!3d!4d / 明确的 q/query/destination / /place/lat,lng / /search/lat,lng）。
 // @lat,lng 只是地图视野中心，手机端分享链接里用它会偏到旁边几十~几百米，所以这里绝不用它。
 function parseLinkCoordsPrecise(text) {
   if (!text) return null;
@@ -568,7 +568,7 @@ function parseLinkCoordsPrecise(text) {
   }
   var pats = [
     /!3d(-?\d{1,3}\.\d+)!4d(-?\d{1,3}\.\d+)/,
-    /[?&](?:q|query|ll|daddr|destination|center|sll|viewpoint|location)=(-?\d{1,3}\.\d+)\s*,\s*(-?\d{1,3}\.\d+)/,
+    /[?&](?:q|query|daddr|destination)=(-?\d{1,3}\.\d+)\s*,\s*(-?\d{1,3}\.\d+)/,
     /\/place\/(-?\d{1,3}\.\d+),(-?\d{1,3}\.\d+)/,
     /\/search\/(-?\d{1,3}\.\d+),(-?\d{1,3}\.\d+)/
   ];
@@ -704,6 +704,17 @@ function decodePlusCode(text) {
 }
 // ===== 剩余数量分母锁定：分母恒等于骑手第一次输入的数量，刷新页面 / 重新获取订单都不会减小 =====
 var DENOM_LOCK_KEY = "riderDenomLock_v1";
+var DENOM_STARTUP_KEY = "riderDenomStartup_v1";
+function syncDenomStartup(serverId) {
+  var id = String(serverId || "").trim();
+  if (!id) return;
+  try {
+    if ((localStorage.getItem(DENOM_STARTUP_KEY) || "") !== id) {
+      localStorage.removeItem(DENOM_LOCK_KEY);
+      localStorage.setItem(DENOM_STARTUP_KEY, id);
+    }
+  } catch (e) {}
+}
 function loadDenomLock() {
   try { return JSON.parse(localStorage.getItem(DENOM_LOCK_KEY) || "{}") || {}; } catch (e) { return {}; }
 }
@@ -1603,6 +1614,7 @@ async function bindOrder() {
           ok: true, phone: phone, order_no: j.order_no || orderNo,
           status: j.status || state.status || "ပို့ဆောင်နေသည်",
           day: j.day || "", scope: j.scope || "rider_order",
+          startup_id: j.startup_id || "",
           baozi_total_orig: j.baozi_total_orig, shop_total_orig: j.shop_total_orig,
           baozi_received: j.baozi_received, shop_received: j.shop_received,
           baozi_remaining: j.baozi_remaining, shop_remaining: j.shop_remaining,
@@ -2793,6 +2805,8 @@ checkLogin();
   }
   function paintRemain(j) {
     if (!j) return;
+    // Railway 每次重启都会清空骑手数量统计；同步启动代次，避免浏览器继续显示旧分母。
+    syncDenomStartup(j.startup_id);
     // 问题1：只渲染「本骑手」自己的数量。手机号不一致（上一单/别的骑手的旧响应）直接丢弃，杜绝串号。
     var _jp = String((j && j.phone) || "").trim();
     var _cp = String((window.state && state.phone) || "").trim();
@@ -2835,10 +2849,10 @@ checkLogin();
     var _noOrderEmpty = (j.scope === "rider_empty") && !((window.state && state.orderNo) || "");
     if (g("rtBaozi")) g("rtBaozi").textContent = _noOrderEmpty ? "-" :
       (((j.baozi_remaining !== undefined && j.baozi_remaining !== null) ? j.baozi_remaining : "-") +
-      " / " + (_denB || "-"));
+      " / " + _denB);
     if (g("rtShop")) g("rtShop").textContent = _noOrderEmpty ? "-" :
       (((j.shop_remaining !== undefined && j.shop_remaining !== null) ? j.shop_remaining : "-") +
-      " / " + (_denS || "-"));
+      " / " + _denS);
     if (g("rtReturn")) g("rtReturn").textContent = ((j.baozi_returned !== undefined && j.baozi_returned !== null) ? j.baozi_returned : 0);
     if (g("rtTime")) {
       var now = new Date();

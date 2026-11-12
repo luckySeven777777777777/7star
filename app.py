@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 包子店外卖实时定位追踪系统（Railway 部署版）
 =====================================
@@ -649,124 +649,11 @@ def _ensure_qty_table(cur):
             except Exception:
                 pass
         _QTY_TABLE_READY = True
-        try:
-            _denom_backfill(cur)
-        except Exception:
-            pass
         return True
     except Exception as e:
         print("[rider_order_qty] ensure table failed: %s" % e)
         return False
 
-
-
-# ==================== 永久分母锁表（分母唯一权威） ====================
-_DENOM_TABLE_READY = False
-
-
-def _ensure_denom_table(cur):
-    """永久分母锁表：每个「骑手 + 订单」只写一次，之后任何路径都不得改写它。
-    rider_order_qty 的行会跨天重建、也会被确认/取消写数，行里的 orig 一旦被剩余量盖掉，
-    分母就会变成第二次输入的 400；这张表专门存放首次输入值，是分母的唯一权威来源。"""
-    global _DENOM_TABLE_READY
-    if _DENOM_TABLE_READY:
-        return True
-    try:
-        if is_pg():
-            cur.execute(_q("""CREATE TABLE IF NOT EXISTS rider_denom_lock (
-                id SERIAL PRIMARY KEY, phone TEXT NOT NULL, order_no TEXT NOT NULL,
-                baozi_orig INTEGER DEFAULT 0, shop_orig INTEGER DEFAULT 0, created_at TEXT,
-                UNIQUE(phone, order_no))"""))
-        else:
-            cur.execute(_q("""CREATE TABLE IF NOT EXISTS rider_denom_lock (
-                id INTEGER PRIMARY KEY AUTOINCREMENT, phone TEXT NOT NULL, order_no TEXT NOT NULL,
-                baozi_orig INTEGER DEFAULT 0, shop_orig INTEGER DEFAULT 0, created_at TEXT,
-                UNIQUE(phone, order_no))"""))
-        _DENOM_TABLE_READY = True
-        return True
-    except Exception as e:
-        print("[rider_denom_lock] ensure table failed: %s" % e)
-        return False
-
-
-def rider_denom_get(cur, phone, order_no):
-    """读「骑手 + 订单」永久分母，返回 (baozi_orig, shop_orig)；没有记录时返回 (0, 0)。"""
-    _p = _rq_key(phone)
-    _on = (order_no or "").strip()
-    if not _p or not _on:
-        return 0, 0
-    if not _ensure_denom_table(cur):
-        return 0, 0
-    try:
-        cur.execute(_q("SELECT baozi_orig, shop_orig FROM rider_denom_lock WHERE phone=? AND order_no=?"), (_p, _on))
-        r = cur.fetchone()
-    except Exception:
-        return 0, 0
-    if not r:
-        return 0, 0
-    d = _row_to_dict(cur, r) or {}
-    return max(_to_int(d.get("baozi_orig")), 0), max(_to_int(d.get("shop_orig")), 0)
-
-
-def rider_denom_lock(cur, phone, order_no, baozi_in, shop_in):
-    """锁定永久分母：该「骑手 + 订单」第一次输入的数字写死，之后第二次/第三次输入一律不改动。
-    已有非零值绝不覆盖，只允许补齐原本为 0 的那一项（历史数据缺失兜底）。"""
-    _p = _rq_key(phone)
-    _on = (order_no or "").strip()
-    b_in = max(_to_int(baozi_in), 0)
-    s_in = max(_to_int(shop_in), 0)
-    if not _p or not _on:
-        return b_in, s_in
-    if not _ensure_denom_table(cur):
-        return b_in, s_in
-    cb, cs = rider_denom_get(cur, _p, _on)
-    nb = cb if cb > 0 else b_in
-    ns = cs if cs > 0 else s_in
-    try:
-        if cb <= 0 and cs <= 0:
-            cur.execute(_q("INSERT INTO rider_denom_lock (phone, order_no, baozi_orig, shop_orig, created_at) VALUES (?,?,?,?,?)"),
-                        (_p, _on, nb, ns, now_str()))
-        elif cb <= 0 and nb > 0:
-            cur.execute(_q("UPDATE rider_denom_lock SET baozi_orig=? WHERE phone=? AND order_no=?"), (nb, _p, _on))
-        elif cs <= 0 and ns > 0:
-            cur.execute(_q("UPDATE rider_denom_lock SET shop_orig=? WHERE phone=? AND order_no=?"), (ns, _p, _on))
-    except Exception:
-        pass
-    return nb, ns
-
-
-def _denom_backfill(cur):
-    """一次性回填：把 rider_order_qty 里每个「骑手 + 订单」历史最早的首次值灌进锁表，
-    保证老订单升级后分母依旧是当初第一次输入的数字（只补缺，绝不改动已锁定值）。"""
-    try:
-        if not _ensure_denom_table(cur):
-            return
-        cur.execute(_q("SELECT phone, order_no, baozi_orig, shop_orig FROM rider_order_qty ORDER BY id"))
-        rows = cur.fetchall() or []
-    except Exception:
-        return
-    seen = {}
-    for r in rows:
-        d = _row_to_dict(cur, r) or {}
-        key = (d.get("order_no") or "")
-        if not key.startswith("__O__"):
-            continue
-        on = key[5:].split("|")[0].strip()
-        p = d.get("phone") or ""
-        if not on or not p:
-            continue
-        b = max(_to_int(d.get("baozi_orig")), 0)
-        s = max(_to_int(d.get("shop_orig")), 0)
-        cb, cs = seen.get((p, on), (0, 0))
-        if cb <= 0 and b > 0:
-            cb = b
-        if cs <= 0 and s > 0:
-            cs = s
-        seen[(p, on)] = (cb, cs)
-    for (p, on), (b, s) in seen.items():
-        if b <= 0 and s <= 0:
-            continue
-        rider_denom_lock(cur, p, on, b, s)
 
 
 def rider_row_by_phone(cur, phone, order_no):
@@ -873,6 +760,29 @@ def rider_qty_orig_anyday(cur, phone, order_no):
     return b, s
 
 
+def _order_orig_fallback(cur, order_no):
+    """【旧数据兜底】本人历史行缺失（旧的「__DAY__」无订单维度键、或骑手行被清理过）时，
+    用「订单级首次录入量」作为该骑手的分母。
+    仅限该订单历史上只出现过 1 个骑手；多骑手时订单级是别人的数字，绝不采用。
+    目的：数据库中第一天的 450 若写在旧格式行里，第二次输入 400 时不能把分母顶成 400。"""
+    on = (order_no or "").strip()
+    if not on:
+        return 0, 0
+    try:
+        if order_rider_count(cur, on) > 1:
+            return 0, 0
+        cur.execute(_q("SELECT baozi_total_orig, shop_total_orig, baozi_total, shop_total FROM orders WHERE order_no=?"), (on,))
+        row = cur.fetchone()
+    except Exception:
+        return 0, 0
+    if not row:
+        return 0, 0
+    d = _row_to_dict(cur, row) or {}
+    b = max(_to_int(d.get("baozi_total_orig")) or _to_int(d.get("baozi_total")), 0)
+    s = max(_to_int(d.get("shop_total_orig")) or _to_int(d.get("shop_total")), 0)
+    return b, s
+
+
 def rider_qty_returned_day(cur, phone, day=None):
     """该骑手「当天」退回包子总数：把当天所有订单的确认✅退回 + 取消❌退回全部相加。
     订单完成一次不会清零，只有缅甸时间凌晨 0 点跨天后自动归零。"""
@@ -893,37 +803,13 @@ def rider_qty_returned_day(cur, phone, day=None):
     return max(total, 0)
 
 
-def rider_qty_received_anyday(cur, phone, order_no):
-    """取「该骑手 + 该订单」有史以来累计送出量（跨天合计），用于判断这一单是否已经送过货。"""
-    phone = _rq_key(phone)
-    on = (order_no or "").strip()
-    if not phone or not on:
-        return 0, 0
-    _ensure_qty_table(cur)
-    try:
-        cur.execute(_q("SELECT order_no, baozi_received, shop_received FROM rider_order_qty WHERE phone=?"), (phone,))
-        rows = cur.fetchall() or []
-    except Exception:
-        return 0, 0
-    tb = ts = 0
-    for row in rows:
-        d = _row_to_dict(cur, row) or {}
-        k = d.get("order_no") or ""
-        if not k.startswith("__O__"):
-            continue
-        if k[5:].split("|")[0].strip() != on:
-            continue
-        tb += max(_to_int(d.get("baozi_received")), 0)
-        ts += max(_to_int(d.get("shop_received")), 0)
-    return tb, ts
-
-
 def rider_qty_lock(cur, phone, order_no, baozi_in, shop_in):
-    """锁定「该骑手 + 该订单 + 当天」的分母。
+    """锁定「该骑手 + 该订单」的分母（永久固定，跨天也不重置）。
     规则（严格按老板要求）：
-    ① 当天第一次输入的数字即分母，当天内第二次/第三次输入的任何数字都不改动它；
-    ② 跨天（缅甸时间 0 点后）该行不再存在，当天第一次输入重新成为分母；
-    ③ 每个骑手各自一份（phone 做键），骑手之间绝不共享分母。"""
+    ① 第一次输入的数字即分母；此后第二次/第三次输入的任何数字都不改动它；
+    ② 跨天（缅甸时间 0 点后）分母**不变**：昨天第一次输 450、送了 50，今天再输 400，
+       分母仍然是 450，绝不能变成 400（这是老板实测到的问题）；
+    ③ 每个骑手各自一份（phone + order_no 做键），骑手之间绝不共享分母。"""
     b_in = max(_to_int(baozi_in), 0)
     s_in = max(_to_int(shop_in), 0)
     phone = _rq_key(phone)
@@ -932,53 +818,35 @@ def rider_qty_lock(cur, phone, order_no, baozi_in, shop_in):
     _ensure_qty_table(cur)
     day = now_str()[:10]
     key = _rq_day_key(day, order_no)
+    # 【永久分母·核心】先取该骑手在这一单历史上第一次录入的分母（不限日期）。
+    # 有 → 今天、明天、以后任何一次输入都不许改动它；没有 → 本次输入成为永久分母。
+    _perm_b, _perm_s = rider_qty_orig_anyday(cur, phone, order_no)
+    if _perm_b <= 0 and _perm_s <= 0:
+        _perm_b, _perm_s = b_in, s_in
+    else:
+        if _perm_b <= 0:
+            _perm_b = b_in
+        if _perm_s <= 0:
+            _perm_s = s_in
     rec = rider_qty_dayrec(cur, phone, day, order_no)
 
-    # 【分母永久固定】分母只认「该骑手 + 该订单」有史以来第一次录入的值：
-    # 当天这一行没有首次值（跨天新行 / 先确认或取消已经建了 orig=0 的行）时，
-    # 一律沿用历史分母，绝不把「第二次输入的剩余量」当成分母（否则 700 会变成 600、甚至 0）。
-    _ab, _as = rider_qty_orig_anyday(cur, phone, order_no)
-    # 【永久锁表最高优先】锁表里是这个「骑手 + 订单」第一次输入的数字，任何人都改不动它。
-    _lb, _ls = rider_denom_get(cur, phone, order_no)
-
-    def _pick(cur_v, in_v, any_v, lock_v):
-        if _to_int(lock_v) > 0:
-            return _to_int(lock_v)
-        if _to_int(cur_v) > 0:
-            return _to_int(cur_v)
-        if _to_int(any_v) > 0:
-            return _to_int(any_v)
-        return max(_to_int(in_v), 0)
+    def _pick(cur_v, ok_v):
+        # 永久分母已定 → 一律用它（跨天也不改）；永久分母为 0（本次是首次）→ 用本次输入。
+        if _to_int(ok_v) > 0:
+            return _to_int(ok_v)
+        return _to_int(cur_v)
 
     if rec:
-        nb = _pick(rec.get("baozi_orig"), b_in, _ab, _lb)
-        ns = _pick(rec.get("shop_orig"), s_in, _as, _ls)
-    else:
-        nb = _lb if _lb > 0 else (_ab if _ab > 0 else b_in)
-        ns = _ls if _ls > 0 else (_as if _as > 0 else s_in)
-    # 【纠错通道·只升不降】历史 bug 可能已把分母错写成第二次输入的 400。
-    # 允许把分母补回「真实总量」= 锁表值 + 已送出量（例如 400 + 50 = 450）；
-    # 未送出过货时允许直接改大到本次输入。任何情况下都不会把分母改小（400 绝不改 450）。
-    try:
-        _rb_all, _rs_all = rider_qty_received_anyday(cur, phone, order_no)
-        _can_b = (b_in > nb) and (_rb_all <= 0 or b_in <= nb + _rb_all)
-        _can_s = (s_in > ns) and (_rs_all <= 0 or s_in <= ns + _rs_all)
-        if _can_b or _can_s:
-            nb = b_in if _can_b else nb
-            ns = s_in if _can_s else ns
-            cur.execute(_q("UPDATE rider_denom_lock SET baozi_orig=?, shop_orig=? WHERE phone=? AND order_no=?"),
-                        (nb, ns, phone, (order_no or "").strip()))
-    except Exception:
-        pass
-    # 写死到锁表，返回权威分母（第二次输入 400 也只会返回 450）
-    nb, ns = rider_denom_lock(cur, phone, order_no, nb, ns)
-    if rec:
+        nb = _pick(rec.get("baozi_orig"), _perm_b)
+        ns = _pick(rec.get("shop_orig"), _perm_s)
         try:
             cur.execute(_q("UPDATE rider_order_qty SET order_no=?, day=?, baozi_orig=?, shop_orig=?, updated_at=? WHERE phone=? AND id=?"),
                         (key, day, nb, ns, now_str(), phone, rec.get("id")))
         except Exception:
             pass
         return nb, ns
+    nb = _perm_b
+    ns = _perm_s
     try:
         cur.execute(_q("INSERT INTO rider_order_qty (phone, order_no, day, baozi_orig, shop_orig, baozi_received, shop_received, updated_at) "
                        "VALUES (?,?,?,?,?,0,0,?)"), (phone, key, day, nb, ns, now_str()))
@@ -1002,18 +870,11 @@ def rider_qty_add(cur, phone, order_no, baozi_add, shop_add, returned_add=0):
     key = _rq_day_key(day, order_no)
     rec = rider_qty_dayrec(cur, phone, day, order_no)
     if not rec:
-        # 【分母不能被冲掉】当天还没有这一行（跨天 / 先确认再填数）时，
-        # 新行必须带上「该骑手 + 该订单」的历史分母，绝不能再写 0，
-        # 否则后面 bind 会把这笔单的分母当成 0，重新按剩余量当分母（700 变 600 的根源）。
-        _ab, _as = rider_qty_orig_anyday(cur, phone, order_no)
-        _lb, _ls = rider_denom_get(cur, phone, order_no)
-        if _lb > 0:
-            _ab = _lb
-        if _ls > 0:
-            _as = _ls
+        # 新建当天行时带上永久分母：否则这一行 orig=0，页面会把「本次剩余量」当成分母显示出来
+        _pb, _ps = rider_qty_orig_anyday(cur, phone, order_no)
         try:
             cur.execute(_q("INSERT INTO rider_order_qty (phone, order_no, day, baozi_orig, shop_orig, baozi_received, shop_received, baozi_returned, updated_at) "
-                           "VALUES (?,?,?,?,?,?,?,?,?)"), (phone, key, day, _ab, _as, b_add, s_add, r_add, now_str()))
+                           "VALUES (?,?,?,?,?,?,?,?,?)"), (phone, key, day, _pb, _ps, b_add, s_add, r_add, now_str()))
         except Exception:
             pass
         return rider_qty_dayrec(cur, phone, day, order_no)
@@ -1043,25 +904,20 @@ def rider_qty_view(cur, phone, order_dict=None, order_no=None, day=None):
         rec = rider_qty_dayrec(cur, phone, day, order_no)
         # 退回量：当天跨订单累计（不清零）
         rt_day = rider_qty_returned_day(cur, phone, day)
-        # 【分母唯一权威】永久锁表里的首次输入值优先，行里的 orig 只作兜底
-        _lb, _ls = rider_denom_get(cur, phone, order_no)
+        # 永久分母：该骑手在这一单历史上第一次录入的量（不限日期），跨天也不变
+        _perm_b, _perm_s = rider_qty_orig_anyday(cur, phone, order_no)
+        if _perm_b <= 0 and _perm_s <= 0:
+            # 旧数据兜底：历史行是旧键格式时查不到本人首次录入，退回订单级首次录入量，
+            # 保证第二次输入 400 时分母仍是第一次的 450。
+            _perm_b, _perm_s = _order_orig_fallback(cur, order_no)
         if rec:
-            # 分母只认「本人 + 本单」有史以来第一次录入的值（永久固定），
-            # 当天行的首次值缺失时用历史分母补上，绝不借用其它订单 / 其它骑手的数字。
-            bo = _to_int(rec.get("baozi_orig"))
-            so = _to_int(rec.get("shop_orig"))
+            # 分母只认「本人 + 本单」的首次输入：永久分母（历史首次录入）为最高优先级，
+            # 当天行里的 orig 只作兜底 —— 否则某次异常写入把当天行 orig 改成 400 后，
+            # 页面就会显示 400/400（老板实测的「第二次输入分母自动变 400」）。
+            bo = _perm_b if _perm_b > 0 else _to_int(rec.get("baozi_orig"))
+            so = _perm_s if _perm_s > 0 else _to_int(rec.get("shop_orig"))
             br = _to_int(rec.get("baozi_received"))
             sr = _to_int(rec.get("shop_received"))
-            if bo <= 0 or so <= 0:
-                _ab, _as = rider_qty_orig_anyday(cur, phone, order_no)
-                if bo <= 0:
-                    bo = _ab
-                if so <= 0:
-                    so = _as
-            if _lb > 0:
-                bo = _lb
-            if _ls > 0:
-                so = _ls
             if bo > 0 or so > 0 or br > 0 or sr > 0 or rt_day > 0:
                 return {
                     "scope": "rider_order", "day": day, "order_no": order_no,
@@ -1069,21 +925,17 @@ def rider_qty_view(cur, phone, order_dict=None, order_no=None, day=None):
                     "baozi_returned": rt_day,
                     "shop_total": so, "shop_received": sr, "shop_remaining": max(so - sr, 0),
                 }
-        # 今天该骑手在本单还没有自己的数量记录（跨天 / 新骑手）：
-        # 分母仍然用「该骑手 + 该订单」的历史分母（永久固定），当天送出量从 0 起算；
-        # 只有从没录入过分母的新骑手才返回 rider_empty，由他第一次输入认定。
-        _ab0, _as0 = rider_qty_orig_anyday(cur, phone, order_no)
-        if _lb > 0:
-            _ab0 = _lb
-        if _ls > 0:
-            _as0 = _ls
-        if _ab0 > 0 or _as0 > 0:
+        # 当天该骑手在本单还没有记录（跨天 / 刚换新的一天）：分母仍然是永久分母，
+        # 已送当天归零 —— 绝不把「本次输入」当成分母显示（这就是输入 400 后显示 400 的根因）。
+        if _perm_b > 0 or _perm_s > 0:
             return {
                 "scope": "rider_order", "day": day, "order_no": order_no,
-                "baozi_total": _ab0, "baozi_received": 0, "baozi_remaining": max(_ab0, 0),
+                "baozi_total": _perm_b, "baozi_received": 0, "baozi_remaining": _perm_b,
                 "baozi_returned": rt_day,
-                "shop_total": _as0, "shop_received": 0, "shop_remaining": max(_as0, 0),
+                "shop_total": _perm_s, "shop_received": 0, "shop_remaining": _perm_s,
             }
+        # 今天该骑手在本单还没有自己的数量记录（新的一天 / 新骑手）：分母一律为 0，
+        # 由本骑手当天第一次输入重新认定，绝不用昨天的分母或别人的（订单级）数字顶上。
         return {
             "scope": "rider_empty", "day": day, "order_no": order_no,
             "baozi_total": 0, "baozi_received": 0, "baozi_remaining": 0, "baozi_returned": rt_day,
@@ -1528,6 +1380,15 @@ def parse_link_coords(text, strict=True, allow_view_center=True):
         pass
     if not s:
         return None
+    # Google 跳转链里常见的反序写法：!2d<经度>!3d<纬度>（与 !3d!4d 等价，只是顺序相反）
+    m = re.search(r"!2d(-?\d{1,3}\.\d+)!3d(-?\d{1,3}\.\d+)", s, re.I)
+    if m:
+        try:
+            cand = (float(m.group(2)), float(m.group(1)))
+            if (not strict) or in_region(cand[0], cand[1]):
+                return cand
+        except (TypeError, ValueError):
+            pass
     first = None
     for pat in (_LINK_PATTERNS if allow_view_center else _LINK_PATTERNS[:-1]):
         for m in re.finditer(pat, s):
@@ -1539,19 +1400,6 @@ def parse_link_coords(text, strict=True, allow_view_center=True):
                 first = cand
             if in_region(cand[0], cand[1]):
                 return cand
-    # 【定位不准修复】反序写法 !2d<经度>!3d<纬度> 只在其它模式全都解析不出来时才用：
-    # Google 长链接里 !2d/!3d 是「地图视图中心」，店铺真实坐标是 !3d/!4d；
-    # 之前把它放在最前面优先命中，手机上贴长链接就会落到视图中心 → 与商家真实点位对不上。
-    m = re.search(r"!2d(-?\d{1,3}\.\d+)!3d(-?\d{1,3}\.\d+)", s, re.I)
-    if m:
-        try:
-            cand = swap_if_reversed(float(m.group(2)), float(m.group(1)))
-            if in_region(cand[0], cand[1]):
-                return cand
-            if first is None:
-                first = cand
-        except (TypeError, ValueError):
-            pass
     if strict:
         return None
     return first
@@ -1620,7 +1468,7 @@ def _fetch_maps_page(url):
                     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
                     "Cookie": "CONSENT=YES+cb; SOCS=CAI",
                 })
-                with urllib.request.urlopen(req, timeout=12, context=ctx) as resp:
+                with urllib.request.urlopen(req, timeout=8, context=ctx) as resp:
                     final_url = resp.geturl()
                     try:
                         body = resp.read(400000).decode("utf-8", "ignore")
@@ -1633,56 +1481,52 @@ def _fetch_maps_page(url):
     return url, ""
 
 
-def dist_km(a, b):
-    """两个经纬度点之间的距离（公里），用于剔除页面里乱配出来的远距离假点。"""
-    try:
-        import math as _m
-        _la1, _ln1 = _m.radians(float(a[0])), _m.radians(float(a[1]))
-        _la2, _ln2 = _m.radians(float(b[0])), _m.radians(float(b[1]))
-        _h = _m.sin((_la2 - _la1) / 2) ** 2 + _m.cos(_la1) * _m.cos(_la2) * _m.sin((_ln2 - _ln1) / 2) ** 2
-        return 6371.0 * 2 * _m.asin(min(1.0, _m.sqrt(_h)))
-    except Exception:
-        return 999.0
+def _peek_redirect(url):
+    """只看一次跳转的 Location，不下载页面：手机端分享的短链 302 目标里通常直接带 !3d/!4d 精确坐标。"""
+    class _NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            return None
 
-
-def geocode_place_name(name, city=""):
-    """链接里只剩店名、没有坐标时的兜底：按店名在国家范围内查一次坐标（仅接受业务区域内）。
-    手机端短链被 Google 拦截/跳转失败时，电脑端能定位、手机端定位不到，这条路专门补这个缺口。"""
-    nm = str(name or "").strip()
-    if not nm or len(nm) < 3:
-        return None
-    if re.fullmatch(r"[\d\.,\s\-+]+", nm):
-        return None
-    qs = nm + ((" " + str(city).strip()) if str(city or "").strip() else "")
-    try:
-        u = ("https://nominatim.openstreetmap.org/search?format=jsonv2&limit=3&countrycodes=mm&q="
-             + urllib.parse.quote(qs))
-        req = urllib.request.Request(u, headers={"User-Agent": "Marvis-Delivery-Tracker/1.0"})
-        with urllib.request.urlopen(req, timeout=6) as resp:
-            data = json.loads(resp.read().decode("utf-8", "ignore"))
-        for it in (data or []):
+    for ua in (_MAPS_UA_LIST[1], _MAPS_UA_LIST[0], _MAPS_UA_LIST[2]):
+        try:
+            opener = urllib.request.build_opener(_NoRedirect)
+            req = urllib.request.Request(url, headers={
+                "User-Agent": ua,
+                "Accept-Language": "en-US,en;q=0.9",
+                "Cookie": "CONSENT=YES+cb; SOCS=CAI",
+            })
+            with opener.open(req, timeout=8) as resp:
+                return resp.geturl() or ""
+        except urllib.error.HTTPError as e:
+            loc = ""
             try:
-                la, ln = float(it.get("lat")), float(it.get("lon"))
-            except (TypeError, ValueError):
-                continue
-            if in_region(la, ln):
-                return (la, ln)
-    except Exception:
-        return None
-    return None
+                loc = e.headers.get("Location") or ""
+            except Exception:
+                loc = ""
+            if loc:
+                return urllib.parse.urljoin(url, loc)
+        except Exception:
+            continue
+    return ""
 
 
-def place_name_from_link(url):
-    """从 Google 地图链接里取出店名（/maps/place/<名字>/…），取不到返回空串。"""
-    s = str(url or "")
-    m = re.search(r"/maps/place/([^/@?]+)", s, re.I)
-    if not m:
-        return ""
-    try:
-        nm = urllib.parse.unquote(m.group(1).replace("+", " "))
-    except Exception:
-        nm = m.group(1)
-    return nm.strip()
+def expand_short_link(url, hops=3):
+    """逐跳展开短链（maps.app.goo.gl / goo.gl/maps），返回 (最终链接, 区域内坐标或 None)"""
+    u = (url or "").strip()
+    best = None
+    for _ in range(max(1, hops)):
+        nxt = _peek_redirect(u)
+        if not nxt or nxt == u:
+            break
+        u = nxt
+        c = parse_link_coords(u, allow_view_center=False) or parse_plus_code_text(u)
+        if c and in_region(c[0], c[1]):
+            return u, c
+        if best is None:
+            tmp = parse_link_coords(u, strict=False)
+            if tmp:
+                best = tmp
+    return u, (best if best and in_region(best[0], best[1]) else None)
 
 
 def resolve_shop_location(link, coords_text, plus_code=""):
@@ -1718,37 +1562,25 @@ def resolve_shop_location(link, coords_text, plus_code=""):
         return c[0], c[1], url
     if not url.lower().startswith(("http://", "https://")):
         return None, None, url
-    # 链接里若带 @lat,lng（地图视图中心），只用作「参照点」：从页面正文里宽松匹配到的
-    # 坐标必须离参照点不远，否则就是页面里别处（推荐列表 / 底部卡片）的数字，会把店定到十几公里外。
-    _center = None
-    try:
-        _m_at = re.search(r"@(-?\d{1,3}\.\d+),(-?\d{1,3}\.\d+)", url)
-        if _m_at:
-            _c0 = (float(_m_at.group(1)), float(_m_at.group(2)))
-            if in_region(_c0[0], _c0[1]):
-                _center = _c0
-    except (TypeError, ValueError):
-        _center = None
+    # 手机端分享的多是短链（maps.app.goo.gl/xxx）：先做跳转探测，
+    # 只读 302 头部即可拿到带 !3d/!4d 的真实地址，比抓整页更稳（可避开 consent 页/JS 页）
+    short_url, short_c = expand_short_link(url)
+    if short_c:
+        return short_c[0], short_c[1], short_url
     final_url, body = _fetch_maps_page(url)
     c = parse_link_coords(final_url, allow_view_center=False)
     if c:
         return c[0], c[1], url
     if body:
-        # 只有「视图中心」的链接（@lat,lng 且没有 !3d/!4d 真实点位）不采信页面正文里的坐标：
-        # 正文里的数字常是推荐列表/底部卡片里的别家店，会把商家定到十几公里之外（手机端送错的主因）。
-        _only_center = bool(_center) and not re.search(r"!3d-?\d", url)
-        if not _only_center:
-            c = parse_link_coords(body, allow_view_center=False)
-            if c:
-                return c[0], c[1], url
+        c = parse_link_coords(body, allow_view_center=False)
+        if c:
+            return c[0], c[1], url
         pc = parse_plus_code_text(body)
-        if pc and in_region(pc[0], pc[1]) and not _only_center \
-                and (_center is None or dist_km(_center, pc) <= 5.0):
+        if pc and in_region(pc[0], pc[1]):
             return pc[0], pc[1], url
-        if not _only_center:
-            c = parse_body_coords(body)
-            if c and (_center is None or dist_km(_center, c) <= 5.0):
-                return c[0], c[1], url
+        c = parse_body_coords(body)
+        if c:
+            return c[0], c[1], url
         # 二次跳转：部分手机端短链落地页只给一个中转链接（maps.google.com/?cid=… 或 /maps/place/…），
         # 再抓一次即可拿到带 !3d/!4d 的真实地址，避免手机端解析失败后退回原链接、定位到国外。
         m2 = re.search(r"https?://(?:www\.)?google\.[a-z.]{2,}/maps[^\s\"'<>\\]+", body)
@@ -1756,22 +1588,10 @@ def resolve_shop_location(link, coords_text, plus_code=""):
             u2 = m2.group(0).replace("\\u0026", "&").replace("\\/", "/").replace("&amp;", "&")
             if u2 and u2 != url:
                 f2, b2 = _fetch_maps_page(u2)
-                # 同样禁用「视图中心」当结果，只认真实点位
-                c2 = parse_link_coords(f2, allow_view_center=False) \
-                    or (parse_link_coords(b2, allow_view_center=False) if b2 else None)
-                if not c2 and b2:
-                    _c3 = parse_body_coords(b2)
-                    if _c3 and (_center is None or dist_km(_center, _c3) <= 5.0):
-                        c2 = _c3
+                c2 = parse_link_coords(f2) or (parse_link_coords(b2) if b2 else None) \
+                    or (parse_body_coords(b2) if b2 else None)
                 if c2:
                     return c2[0], c2[1], url
-        # 【最后兜底·仅当链接完全没有坐标】按链接里的店名查一次坐标（区域内才接受），
-        # 保证手机端短链在 Google 拦截/跳转失败时也能和电脑端落到同一个点。
-        _nm = place_name_from_link(url) or place_name_from_link(final_url)
-        if _nm:
-            _g = geocode_place_name(_nm, "")
-            if _g and in_region(_g[0], _g[1]) and (_center is None or dist_km(_center, _g) <= 8.0):
-                return _g[0], _g[1], url
     return None, None, url
 
 
@@ -2077,34 +1897,6 @@ def rider_bind():
     # 数量口径（严格锁定）：分母 = 骑手第一次输入的数量，同一天内第二次/第三次输入任何值都不改动；
     # 跨天（缅甸时间凌晨 0 点）自动清零，允许按新的第一次输入重新锁定。
     old = _row_to_dict(cur, order)
-    # 【店铺坐标保护·绝不覆盖电脑版已设好的点】
-    # 商家在电脑端设好的精确坐标是这个订单的权威位置；骑手在手机上就算链接解析失败
-    # （短链被 Google 拦截 / 只贴了没有坐标的分享文本），也绝不能把这些字段写成空，
-    # 否则骑手端地图与导航就会落到别处（手机准、电脑不准 / 送错地址的根源）。
-    _ok_new = False
-    try:
-        _ok_new = (shop_lat is not None and shop_lng is not None
-                   and in_region(float(shop_lat), float(shop_lng)))
-    except (TypeError, ValueError):
-        _ok_new = False
-    # 【电脑版坐标 = 唯一权威】只要订单里已有电脑端设好的区域内坐标，就一律沿用它：
-    # 手机端解析出来的点（短链被 Google 定向、只有视图中心、Plus Code 偏移）哪怕"解析成功"，
-    # 也绝不覆盖电脑版精心定好的精确点位 —— 手机端必须与电脑版落在同一点，否则骑手会送错。
-    try:
-        _o_lat = float(old.get("shop_lat") or 0)
-        _o_lng = float(old.get("shop_lng") or 0)
-    except (TypeError, ValueError):
-        _o_lat = _o_lng = 0.0
-    _o_link = (old.get("shop_link") or "").strip()
-    _old_ok = bool(_o_lat and _o_lng and in_region(_o_lat, _o_lng))
-    if _old_ok:
-        shop_lat, shop_lng = _o_lat, _o_lng
-        if not (shop_link or "").strip():
-            shop_link = _o_link
-        shop_warn = ""
-    elif not _ok_new:
-        # 电脑版也没有坐标，手机端又解析不出来：保留原链接状态，只提示骑手改用坐标 / Plus Code
-        shop_lat, shop_lng = None, None
     # 【数量校验】一切按「这个骑手 + 这个订单」自己的数字判断：
     # 同一单已经送出过一部分后再填写，输入值必须等于剩余量；
     # 换了新订单号则属于这一单的首次录入，允许填写新的数量（不再被上一单的数字拦住）。
@@ -2115,14 +1907,13 @@ def rider_bind():
         if _sv_br > 0 or _sv_sr > 0:
             _sv_rb = _to_int(_sv.get("baozi_remaining"))
             _sv_rs = _to_int(_sv.get("shop_remaining"))
-            # 【分母纠错豁免】历史 bug 可能把分母写小（锁表 400、真实 450）。
-            # 此时允许输入「锁表值 + 已送出量」把分母补回真实总量；只允许补大，绝不允许改小。
-            _kl_b, _kl_s = rider_denom_get(cur, phone, order_no)
-            _fix_b = (_kl_b > 0 and baozi_total > _kl_b and baozi_total <= _kl_b + _sv_br)
-            _fix_s = (_kl_s > 0 and shop_total > _kl_s and shop_total <= _kl_s + _sv_sr)
-            _bad_b = (baozi_total != _sv_rb) and not _fix_b
-            _bad_s = (shop_total != _sv_rs) and not _fix_s
-            if _bad_b or _bad_s:
+            _sv_ob = _to_int(_sv.get("baozi_total"))
+            _sv_os = _to_int(_sv.get("shop_total"))
+            # 允许填「当前剩余」或「最初的分母」两种写法：
+            # 分母（如 450）永远是这一单的固定分母，填它不能算错，也绝不会把分母改成 400。
+            _ok_b = (baozi_total == _sv_rb) or (_sv_ob > 0 and baozi_total == _sv_ob)
+            _ok_s = (shop_total == _sv_rs) or (_sv_os > 0 and shop_total == _sv_os)
+            if not (_ok_b and _ok_s):
                 conn.close()
                 return jsonify({"ok": False, "msg": "အရေအတွက် မကိုက်ညီပါ — ကျန်ရှိသည် ပေါက်စီ %d / ဆိုင် %d သာ ဖြစ်သည်။ ကျန်ရှိသော အရေအတွက်အတိုင်းသာ ထည့်ပါ" % (_sv_rb, _sv_rs)}), 400
     _in_bt, _in_st = baozi_total, shop_total
@@ -2137,28 +1928,18 @@ def rider_bind():
     # 绝不使用订单级 old_bt_orig 当分母：那是别的骑手（比如 A 的 30）写进订单表的，
     # B 骑手绑同一单就会看到 30 —— 这就是「两个骑手数量串在一起」的根源。
     _today_rec = rider_qty_dayrec(cur, phone, today, order_no) or {}
-    _t_b = _to_int(_today_rec.get("baozi_orig"))
-    _t_s = _to_int(_today_rec.get("shop_orig"))
-    # 【分母唯一权威】永久锁表里是这一单第一次输入的数字（450），第二次输入的 400 一律不采纳
-    _lb_bind, _ls_bind = rider_denom_get(cur, phone, order_no)
-    if _lb_bind > 0:
-        _t_b = _lb_bind
-    if _ls_bind > 0:
-        _t_s = _ls_bind
-    # 【分母固定·当天首次】当天已经有这个骑手在这一单的首次值 → 本次输入一律忽略（分母原封不动）；
-    # 当天还没有 → 本次输入就是当天的首次值，写死。跨天（缅甸 0 点）自动重新认定首次输入。
-    # 刻意不再用订单级 old_bt_orig / old_st_orig 兜底：那是别的骑手写进订单表的数字，
-    # B 骑手绑同一单就会看到 A 的 30 —— 这正是两个骑手数量串在一起的根源。
+    # 【永久分母】分母取该骑手在这一单历史上第一次录入的量（不限日期，跨天也不变）；
+    # 只有从来没录过时，本次输入才成为这一单的永久分母。
+    _perm_b, _perm_s = rider_qty_orig_anyday(cur, phone, order_no)
+    if _perm_b <= 0 and _perm_s <= 0 and (old_bt_orig > 0 or old_st_orig > 0):
+        # 旧数据兜底：该骑手的历史行是旧键格式（查不到本人首次录入）时，
+        # 用订单级首次录入量当分母 —— 否则第二次输入 400 会被当成新分母。
+        _perm_b, _perm_s = _order_orig_fallback(cur, order_no)
+    _t_b = _perm_b or _to_int(_today_rec.get("baozi_orig"))
+    _t_s = _perm_s or _to_int(_today_rec.get("shop_orig"))
+    # 【分母固定】只要历史上录过一次，无论今天第几次输入都不改动它（输入 400 也不会把 450 顶掉）。
     baozi_orig = _t_b if _t_b > 0 else (baozi_total if baozi_total > 0 else 0)
     shop_orig = _t_s if _t_s > 0 else (shop_total if shop_total > 0 else 0)
-    # 【分母永久固定】当天行没有首次值（跨天 / 之前的行被确认、取消写成 0）时，
-    # 直接沿用「该骑手 + 该订单」历史上第一次输入的分母，绝不拿本次输入的剩余量当新分母。
-    if baozi_orig <= 0 or shop_orig <= 0:
-        _ab_bind, _as_bind = rider_qty_orig_anyday(cur, phone, order_no)
-        if baozi_orig <= 0 and _ab_bind > 0:
-            baozi_orig = _ab_bind
-        if shop_orig <= 0 and _as_bind > 0:
-            shop_orig = _as_bind
     lock_day = today
     baozi_total = baozi_orig
     shop_total = shop_orig
@@ -2305,28 +2086,20 @@ def upload_proof():
 def canonical_maps_link(url, lat, lng):
     """把商家地图链接统一成「带区域内坐标的 Google 链接」：
     手机端分享的短链（maps.app.goo.gl/xxx）本身不带坐标，手机点开时可能被 Google 落在别的点；
-    只要链接里没有「与解析结果一致的区域内坐标」，就一律替换成按坐标搜索的链接，
-    保证手机端与电脑端打开后落到同一个位置（骑手不会再被导到国外或商家隔壁）。"""
+    只要链接里没有区域内坐标，就一律替换成按坐标搜索的链接，
+    保证手机端与电脑端打开后落到同一个位置（骑手不会再被导到国外）。"""
     u = (url or "").strip()
-    if lat is None or lng is None:
-        return u
-    try:
-        _la, _ln = float(lat), float(lng)
-    except (TypeError, ValueError):
-        return u
     if u:
         try:
-            # 关键：allow_view_center=False —— 链接里的 @lat,lng 是「地图视图中心」，
-            # 手机打开就会落在那里（与商家真实点位对不上），绝不能当作设置好的点保留。
-            c = parse_link_coords(u, strict=False, allow_view_center=False)
+            c = parse_link_coords(u, strict=False)
         except Exception:
             c = None
         if c and in_region(c[0], c[1]):
-            # 链接自带坐标必须等于最终解析出来的点位（约 110m 容差），否则一律用坐标链接
-            if abs(float(c[0]) - _la) <= 0.001 and abs(float(c[1]) - _ln) <= 0.001:
-                return u
+            return u
+    if lat is None or lng is None:
+        return u
     try:
-        return "https://www.google.com/maps/search/?api=1&query=%.6f,%.6f" % (_la, _ln)
+        return "https://www.google.com/maps/search/?api=1&query=%.6f,%.6f" % (float(lat), float(lng))
     except (TypeError, ValueError):
         return u
 
@@ -2646,12 +2419,9 @@ def rider_cancel():
                         (_cb_old + cancel_baozi, cancel_reason, now_str(), _cr.get("id")))
             _ret_total = rider_qty_returned_day(cur, phone, _day)
         elif cancel_baozi > 0:
-            # 与确认✅ 同理：新建行必须带上「该骑手 + 该订单」的历史分母，不能写 0，
-            # 否则这笔单的分母会被冲掉，骑车人再填一次就把剩余量当成了新分母。
-            _ab_c, _as_c = rider_qty_orig_anyday(cur, phone, order_no)
             cur.execute(_q("INSERT INTO rider_order_qty (phone, order_no, day, baozi_orig, shop_orig, baozi_received, shop_received, baozi_returned, cancel_baozi, cancel_reason, updated_at) "
-                           "VALUES (?,?,?,?,?,0,0,0,?,?,?)"),
-                        (phone, _rq_day_key(_day, order_no), _day, _ab_c, _as_c, cancel_baozi, cancel_reason, now_str()))
+                           "VALUES (?,?,?,0,0,0,0,0,?,?,?)"),
+                        (phone, _rq_day_key(_day, order_no), _day, cancel_baozi, cancel_reason, now_str()))
             _ret_total = rider_qty_returned_day(cur, phone, _day)
         else:
             _ret_total = rider_qty_returned_day(cur, phone, _day)
@@ -3476,7 +3246,7 @@ def admin_set_status_all():
 
 # ================= 手机 / 电脑 功能一致性补丁 =================
 # 说明：全局禁用缓存（手机端不会读到旧页面/旧接口），并补充“剩余数量”“今日已完成/已取消标记”接口
-APP_VERSION = "20261112-v5"
+APP_VERSION = "20261111-v4"
 
 
 @app.after_request

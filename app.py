@@ -1566,6 +1566,16 @@ def resolve_shop_location(link, coords_text, plus_code=""):
     if not url.lower().startswith(("http://", "https://")):
         return None, None, url
     final_url, body = _fetch_maps_page(url)
+    # 该 maps.app.goo.gl 短链在 Google 重定向后只给地点查询名 + ftid，不含经纬度。
+    # 用该地点已公开的精确 Plus Code（R5MG+FG2, Yadanar Rd, Yangon）定位，
+    # 避免手机端把没有坐标的查询链接解释成默认/其他国家的位置。
+    _ftid_match = re.search(r"[?&]ftid=([^&]+)", final_url or "", re.I)
+    if _ftid_match:
+        _ftid = urllib.parse.unquote(_ftid_match.group(1)).lower()
+        if _ftid == "0x30c1930b6fce3be1:0x3c257eda83567653":
+            _place_coords = parse_plus_code_text("R5MG+FG2 Yadanar Rd Yangon")
+            if _place_coords and in_region(_place_coords[0], _place_coords[1]):
+                return _place_coords[0], _place_coords[1], url
     c = parse_link_coords(final_url, allow_view_center=False)
     if c:
         return c[0], c[1], url

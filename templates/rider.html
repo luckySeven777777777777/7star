@@ -2805,12 +2805,16 @@ checkLogin();
   }
   function paintRemain(j) {
     if (!j) return;
-    // Railway 每次重启都会清空骑手数量统计；同步启动代次，避免浏览器继续显示旧分母。
-    syncDenomStartup(j.startup_id);
     // 问题1：只渲染「本骑手」自己的数量。手机号不一致（上一单/别的骑手的旧响应）直接丢弃，杜绝串号。
     var _jp = String((j && j.phone) || "").trim();
     var _cp = String((window.state && state.phone) || "").trim();
+    var _input = document.getElementById("riderPhone");
+    var _ip = String((_input && _input.value) || "").trim();
+    // 页面手机号必须与响应手机号完全一致；换骑手后，旧轮询/缓存响应一律丢弃。
+    if (!_jp || !_ip || _jp !== _ip) return;
     if (_jp && _cp && _jp !== _cp) { return; }
+    // Railway 每次重启都会清空骑手数量统计；同步启动代次，避免浏览器继续显示旧分母。
+    syncDenomStartup(j.startup_id);
     // 订单隔离：卡片刻意只显示「当前绑定的这一个订单」的数量。
     // 同一手机号可能先后绑过多个订单，若返回的是别的订单，直接丢弃，避免不同骑手/不同订单数量混在一起。
     var _cur = (window.state && state.orderNo) || "";
@@ -2923,6 +2927,9 @@ window._rem().hasProgress = !!j.has_progress;
     if (!phone && !orderNo) return;
     var _reqPhone = String(phone || "").trim();
     var _reqOrder = String(orderNo || "").trim();
+    var _phoneInput = document.getElementById("riderPhone");
+    var _enteredPhone = String((_phoneInput && _phoneInput.value) || "").trim();
+    if (!_enteredPhone || (_reqPhone && _reqPhone !== _enteredPhone)) return;
     var q = [];
     if (phone) q.push("phone=" + encodeURIComponent(phone));
     if (orderNo) q.push("order_no=" + encodeURIComponent(orderNo));
@@ -2985,19 +2992,36 @@ window._rem().hasProgress = !!j.has_progress;
   };
 
   // ---------- 页面加载后，若已有骑手手机号则自动显示剩余数量 ----------
+  function clearRemainForPhoneMismatch() {
+    var entered = String((document.getElementById("riderPhone") || {}).value || "").trim();
+    var active = String((window.state && state.phone) || "").trim();
+    if (entered && active && entered === active) return;
+    window.__remain = { baozi: null, shop: null, day: "", orderNo: "", status: "" };
+    var values = { rtOrder: "-", rtStatus: "-", rtBaozi: "- / -", rtShop: "- / -", rtReturn: "0", rtTime: "-" };
+    Object.keys(values).forEach(function (id) {
+      var el = document.getElementById(id);
+      if (el) el.textContent = values[id];
+    });
+  }
+  var _riderPhoneInput = document.getElementById("riderPhone");
+  if (_riderPhoneInput) {
+    _riderPhoneInput.addEventListener("input", clearRemainForPhoneMismatch);
+    _riderPhoneInput.addEventListener("change", function () {
+      var entered = String(_riderPhoneInput.value || "").trim();
+      var active = String((window.state && state.phone) || "").trim();
+      if (entered && active && entered === active && state.orderNo) loadRemain(active, state.orderNo);
+      else clearRemainForPhoneMismatch();
+    });
+  }
   function bootRemain() {
     var ph = "";
     try {
       var el = document.getElementById("riderPhone");
       if (el) ph = (el.value || "").trim();
       if (!ph) { try { ph = (localStorage.getItem("riderPhoneSaved") || "").trim(); } catch (e) {} }
-      if (!ph) {
-        for (var k in localStorage) {
-          if (k && k.indexOf("riderLock_") === 0) { ph = k.replace("riderLock_", ""); break; }
-        }
-      }
     } catch (e) {}
-    if (ph) loadRemain(ph, "");
+    var currentPhone = String((document.getElementById("riderPhone") || {}).value || "").trim();
+    if (ph && currentPhone && ph === currentPhone) loadRemain(ph, "");
   }
   if (document.readyState === "complete" || document.readyState === "interactive") {
     setTimeout(bootRemain, 600);

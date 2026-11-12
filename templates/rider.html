@@ -729,58 +729,50 @@ function _denomKey(phone, orderNo) {
   if (o) return "order:" + o;
   return "";
 }
-// 返回该骑手在该订单的分母（= 这个骑手在这一单第一次输入的数量）
-// 规则：第一次输入后永久固定；跨天（缅甸 0 点）也不重置、不清空，
-//       昨天首输 450 送 50，今天再输 400，分母仍是 450（老板实测要求）。
+// 【修复1】包子分母的锁定键 = 骑手手机号 + 当天（不含订单号）：
+// 同一天内换订单、重填、第二次输入都不会改写分母；次日 0 点后自然重新锁定。
+function _denomKeyDay(phone) {
+  var p = String(phone || "").trim();
+  return p ? ("riderday:" + p) : "";
+}
+// 返回该骑手在该订单的分母
+// 规则：包子分母 = 这个骑手「当天」第一次输入的数量（同一天内换单/重填都不改写）；
+//       店铺分母 = 这个骑手在这一单第一次输入的数量（原有口径不变）。
 function lockDenom(phone, orderNo, baoziTotal, shopTotal) {
   var b = _denomNum(baoziTotal), s = _denomNum(shopTotal);
+  var kdB = _denomKeyDay(phone);
   var key = _denomKey(phone, orderNo);
   var day = _denomToday();
-  if (!key) return { baozi: b, shop: s };
+  if (!kdB && !key) return { baozi: b, shop: s };
   var all = loadDenomLock();
-  var rec = all[key] || null;
-  // 不再按日期作废：分母是「该骑手 + 该订单」的永久首次值，跨天继续有效。
-  var lb = rec ? _denomNum(rec.baozi) : 0;
-  var ls = rec ? _denomNum(rec.shop) : 0;
-  if (lb > 0 || ls > 0) {
-    // 已锁 → 后续任何来源的数字都不覆盖（第二次/第三次输入改不动分母）。
-    // 仅补「首次输入时另一项没填」的空缺，已锁的那一项永不改动。
-    var _chg = false;
-    if (!(lb > 0) && b > 0) { lb = b; _chg = true; }
-    if (!(ls > 0) && s > 0) { ls = s; _chg = true; }
-    if (_chg) { all[key] = { baozi: lb, shop: ls, day: day }; saveDenomLock(all); }
-    return { baozi: lb, shop: ls };
-  }
-  if (b > 0 || s > 0) {
-    all[key] = { baozi: b, shop: s, day: day };
-    saveDenomLock(all);
-  }
-  return { baozi: b, shop: s };
+  var lb = 0, ls = 0, _chg = false;
+  // 跨天（仰光时间 0 点后）本地锁立即失效：新一天的第一次输入重新成为分母
+  // 旧版本缓存（没有 day 字段）同样视为过期丢弃，避免沿用历史错误分母
+  Object.keys(all).forEach(function (k) {
+    if (all[k] && (!all[k].day || String(all[k].day) !== day)) { delete all[k]; }
+  });
+  if (kdB) {
+    var rb = all[kdB] || null;
+    lb = rb ? _denomNum(rb.baozi) : 0;
+    if (!(lb > 0) && b > 0) { lb = b; all[kdB] = { baozi: lb, shop: 0, day: day }; _chg = true; }
+  } else { lb = b; }
+  if (key) {
+    var rs = all[key] || null;
+    ls = rs ? _denomNum(rs.shop) : 0;
+    // 当天首次值已锁 → 后续任何来源的数字都不覆盖（第二次/第三次输入改不动分母）。
+    if (!(ls > 0) && s > 0) { ls = s; all[key] = { baozi: 0, shop: ls, day: day }; _chg = true; }
+  } else { ls = s; }
+  if (_chg) saveDenomLock(all);
+  return { baozi: lb, shop: ls };
 }
-
-// 服务端权威分母：后端已按「骑手 + 订单」永久固定，服务端给了值就以它为准并同步本地锁，
-// 保证清过缓存、换设备、跨天登录时显示的仍是同一个分母（输入 400 不会显示成 400）。
-function setDenomFromServer(phone, orderNo, baoziTotal, shopTotal) {
-  var b = _denomNum(baoziTotal), s = _denomNum(shopTotal);
-  var key = _denomKey(phone, orderNo);
-  if (!key || (b <= 0 && s <= 0)) return { baozi: 0, shop: 0 };
-  var all = loadDenomLock();
-  var rec = all[key] || {};
-  var nb = b > 0 ? b : _denomNum(rec.baozi);
-  var ns = s > 0 ? s : _denomNum(rec.shop);
-  all[key] = { baozi: nb, shop: ns, day: _denomToday() };
-  saveDenomLock(all);
-  return { baozi: nb, shop: ns };
-}
-
 
 window.lockDenom = lockDenom;
-// 商家位置解析（与后端同优先级）：坐标文本 → 链接 → Plus Code，且只接受业务区域内的结果
+// 商家位置解析：坐标文本 → Plus Code（只接受业务区域内的结果）
+// 【修复2】Google 链接一律不在前端解析，统一交服务端解析，保证手机与电脑得到完全相同的坐标
 function resolveShopLocation() {
   var c = parseCoordsText(document.getElementById("shopLocationCoords").value);
   if (c && inRegion(c[0], c[1])) return c;
-  c = (window.parseLinkCoordsPrecise || parseLinkCoords)(document.getElementById("shopLocationLink").value);
-  if (c && inRegion(c[0], c[1])) return c;
+  // 【修复2】删除前端按链接/短码自解析坐标：链接只由服务端解析，避免手机端算出与电脑不同的点
   var pc = decodePlusCode(document.getElementById("shopLocationPlusCode").value);
   if (pc && inRegion(pc[0], pc[1])) return pc;
   return null;
@@ -805,13 +797,9 @@ function toHalfWidth(s) {
 function normalizePlusCodeInput(raw) {
   var s = toHalfWidth(raw).trim();
   s = s.replace(/^(plus\s*code|pluscode|plus|ကုဒ်)\s*[:：]?\s*/i, "");
-  var up = s.toUpperCase();
-  var m = up.match(/([23456789CFGHJMPQRVWX]{2,8}\+[23456789CFGHJMPQRVWX]{0,3})/);
-  if (!m) return up;
-  // 手机粘贴的短码后面常带城市名（如 M9VQ+XX Mandalay）：必须保留城市，
-  // 否则短码只能按默认城市补高位，会把商家定位到别的城市（手机端典型偏点原因）
-  var tail = String(s.slice(m.index + m[1].length) || "").replace(/[,\s]+/g, " ").trim();
-  return m[1] + (tail ? " " + tail : "");
+  var m = s.toUpperCase().match(/([23456789CFGHJMPQRVWX]{2,8}\+[23456789CFGHJMPQRVWX]{0,3})/);
+  if (m) return m[0];
+  return s.toUpperCase();
 }
 function normalizeCoordsInput(raw) {
   var s = toHalfWidth(raw).trim();
@@ -851,9 +839,13 @@ async function updateShopLocation() {
       coords = "";
     }
   }
-  // 【手机与电脑一致】链接和 Plus Code 一律不在前端转成坐标，全部交服务端权威解析：
-  // 两端走同一套算法，结果必然相同（前端在手机上解析短链/短码容易偏点）。
-  if (!coords && !link && !plus) {
+  if (!coords) {
+    var pc = decodePlusCode(plus);
+    if (pc && inRegion(pc[0], pc[1])) { coords = pc[0].toFixed(6) + ", " + pc[1].toFixed(6); }
+  }
+  // 【修复2】手机端不再自行解析 Google 链接/短码：只把原始链接交给服务端解析，
+  // 服务端是唯一解析入口，手机与电脑因此得到完全相同的坐标（本地解析会算出偏移的点并覆盖服务端结果）。
+  if (!coords && !link) {
     showInfo("Cannot read this location on phone. Please paste a Google Maps link, or fill Coordinates / Plus Code");
     return;
   }
@@ -1275,10 +1267,7 @@ function setShop(lat, lng, linkText) {
     shopMarker.setLatLng([lat, lng]);
   }
   var txt = lat.toFixed(6) + ", " + lng.toFixed(6);
-  // 商家位置链接统一显示为「坐标链接」：手机端点开与电脑端落到同一点，绝不回退原始短链
-  var mapUrl = "https://www.google.com/maps/search/?api=1&query=" + lat.toFixed(6) + "," + lng.toFixed(6);
-  shopMarker.bindPopup("📍 <b>ဆိုင် / Shop</b><br>" + txt +
-    '<br><a href="' + mapUrl + '" target="_blank" rel="noopener" style="color:#1565c0;">Google Maps</a>');
+  shopMarker.bindPopup("📍 <b>ဆိုင် / Shop</b><br>" + (linkText || txt) + "<br>" + txt);
   updateRoute();
   if (riderMap) {
     if (state.curLat !== null && state.curLat !== undefined) {
@@ -2348,8 +2337,8 @@ function renderHistory() {
       + 'လက်ရှိအခြေအနေ：' + stTagHtml((h.status && h.status !== "待取餐") ? h.status : "-") + '<br>'
       + 'လက်ရှိနေရာ：<b>' + loc + '</b><br>'
       + 'ပို့ရမည့်ဆိုင်လိပ်စာ：<b>' + (h.delivery_address || "-") + '</b><br>'
-      + 'ကျန်ရှိသောပေါက်စီအလုံးအရေတွက်：<b>' + h.baozi_remaining + ' / ' + (lockDenom(h.rider_phone || "", h.order_no || "", (h.baozi_total_orig || 0), (h.shop_total_orig || 0)).baozi || "-") + '</b><br>'
-      + 'ကျန်ရှိသောဆိုင်အရေတွက်：<b>' + h.shop_remaining + ' / ' + (lockDenom(h.rider_phone || "", h.order_no || "", (h.baozi_total_orig || 0), (h.shop_total_orig || 0)).shop || "-") + '</b><br>'
+      + 'ကျန်ရှိသောပေါက်စီအလုံးအရေတွက်：<b>' + h.baozi_remaining + ' / ' + (lockDenom(h.rider_phone || "", h.order_no || "", (h.baozi_total_orig || h.baozi_total), (h.shop_total_orig || h.shop_total)).baozi || "-") + '</b><br>'
+      + 'ကျန်ရှိသောဆိုင်အရေတွက်：<b>' + h.shop_remaining + ' / ' + (lockDenom(h.rider_phone || "", h.order_no || "", (h.baozi_total_orig || h.baozi_total), (h.shop_total_orig || h.shop_total)).shop || "-") + '</b><br>'
       + 'ပြန်အပ်သောပေါက်စီအရေအတွက်：<b>' + ((h.baozi_returned === undefined || h.baozi_returned === null) ? 0 : h.baozi_returned) + '</b><br>'
       + 'ငွေပေးချေမှုနည်းလမ်း：<b>' + (h.payment_method || "-") + '</b><br>'
       + 'Amount (MMK)：<b>' + (h.amount || "-") + '</b><br>'
@@ -2441,28 +2430,10 @@ async function refreshRiderInfo() {
       setShop(j.shop_lat, j.shop_lng, j.shop_link || "");
       document.getElementById("shopHint").style.display = "none";
     } else if (shopLat === null) {
-      // 【手机与电脑一致】前端不再用本地算法解析链接（手机上短链/短码本地解析容易偏点），
-      // 改为请服务端用同一套权威算法再解析一次，结果与电脑端完全相同。
-      var _sl = (j.shop_link || "").trim();
-      if (_sl) {
-        try {
-          var _rr = await fetch("/api/rider/update-shop", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ order_no: (window.state && state.orderNo) || j.order_no || "",
-                                   phone: (window.state && state.phone) || j.phone || "",
-                                   shop_location_link: _sl })
-          });
-          var _rj = await _rr.json();
-          if (_rj && _rj.ok && _rj.shop_lat !== null && _rj.shop_lat !== undefined) {
-            setShop(_rj.shop_lat, _rj.shop_lng, _rj.shop_link || _sl);
-            document.getElementById("shopHint").style.display = "none";
-          } else {
-            document.getElementById("shopHint").style.display = "block";
-          }
-        } catch (e) {
-          document.getElementById("shopHint").style.display = "block";
-        }
+      var shopC = resolveShopLocation();
+      if (shopC) {
+        setShop(shopC[0], shopC[1], "");
+        document.getElementById("shopHint").style.display = "none";
       } else {
         document.getElementById("shopHint").style.display = "block";
       }
@@ -2470,21 +2441,13 @@ async function refreshRiderInfo() {
     // 位置显示地名（反向地理编码），失败时回退经纬度
     document.getElementById("curLocation").textContent = j.latest ? (j.latest.address || (j.latest.lat.toFixed(6) + ", " + j.latest.lng.toFixed(6))) : "-";
     document.getElementById("curCity").textContent = (j.city && j.city !== "") ? j.city : "-";
-    // 分母锁定：分母永远取「这个骑手在这一单第一次输入的量」，永久固定（跨天也不变）
+    // 分母锁定：分母永远取「这个骑手今天第一次输入的量」，只增不减（重新下单也不会变成 500）
     // 问题3：只认「本骑手本人」的数字；没有本人记录时绝不用订单级数字冒充（否则所有骑手看到同一数字）
-    // 【关键】这里绝不能拿 j.baozi_total 兜底 —— 那是订单/当前量，每次位置上报都会把本地锁写坏，
-    // 表现为「第二次输入 400 分母就变 400」。只认服务端下发的 *_total_orig（本人本单固定分母）。
-    var _riderScope = (j.scope === "rider_order" || j.scope === "rider_empty");
-    var _srvOB = _riderScope ? parseInt(j.baozi_total_orig, 10) : 0;
-    var _srvOS = _riderScope ? parseInt(j.shop_total_orig, 10) : 0;
-    if (isNaN(_srvOB)) _srvOB = 0;
-    if (isNaN(_srvOS)) _srvOS = 0;
-    var _lk0 = setDenomFromServer(state.phone || j.phone || "", j.order_no || (window.state && state.orderNo) || "",
-      _srvOB, _srvOS);
-    if (!(_lk0.baozi > 0) && !(_lk0.shop > 0)) {
-      _lk0 = lockDenom(state.phone || j.phone || "", j.order_no || (window.state && state.orderNo) || "", 0, 0);
-    }
-    var _obt = _srvOB || _lk0.baozi || 0, _ost = _srvOS || _lk0.shop || 0;
+    var _riderScope = (j.scope === "rider_order");
+    var _lk0 = lockDenom(state.phone || j.phone || "", j.order_no || (window.state && state.orderNo) || "",
+      _riderScope ? (j.baozi_total_orig || j.baozi_total || 0) : 0,
+      _riderScope ? (j.shop_total_orig || j.shop_total || 0) : 0);
+    var _obt = _lk0.baozi || 0, _ost = _lk0.shop || 0;
     var _rbr = _riderScope ? (j.baozi_received || 0) : 0;
     var _rsr = _riderScope ? (j.shop_received || 0) : 0;
     document.getElementById("curBaozi").textContent = Math.max(_obt - _rbr, 0) + " / " + (_obt > 0 ? _obt : "-");
@@ -2859,16 +2822,13 @@ checkLogin();
     var _isRiderScope = (j.scope === "rider_order" || j.scope === "rider_empty") && (_srvB > 0 || _srvS > 0);
     var _denB = 0, _denS = 0;
     if (_isRiderScope) {
-      // 分母以「服务端下发的该骑手本单固定分母」为最高优先级（后端已永久锁定，跨天不变），
-      // 拿到就同步写进本地锁；服务端没给（0）时才回落到本地已锁的分母。
-      // 这样清缓存 / 换设备 / 跨天登录都不会再出现「输入 400 后分母变成 400」。
-      var _lkR = setDenomFromServer((window.state && state.phone) || "", j.order_no || (window.state && state.orderNo) || "",
+      var _lkR = lockDenom((window.state && state.phone) || "", j.order_no || (window.state && state.orderNo) || "",
         _srvB, _srvS);
-      if (!(_lkR.baozi > 0) && !(_lkR.shop > 0)) {
-        _lkR = lockDenom((window.state && state.phone) || "", j.order_no || (window.state && state.orderNo) || "", 0, 0);
-      }
-      _denB = _srvB || _lkR.baozi || 0;
-      _denS = _srvS || _lkR.shop || 0;
+      // 分母以「本骑手 + 本单 + 当天第一次输入」为准（本地锁优先）：
+      // 第二次、第三次输入时服务端/界面传来的任何新数字都不会改动已锁的分母；
+      // 只有本地还没有当天的锁（首次登录 / 清过缓存）时才采用服务端返回的本人分母。
+      _denB = _lkR.baozi || _srvB || 0;
+      _denS = _lkR.shop || _srvS || 0;
     }
     // 还没绑定订单、且服务端返回 rider_empty（该骑手当天没有任何自己的数量）时，
     // 一律显示 "-"，不显示 0/-，避免"骑手还没下单却显示 0"的误解
@@ -2895,8 +2855,8 @@ checkLogin();
 window._rem().hasProgress = !!j.has_progress;
     // 分母（骑手第一次输入量）也记下来，供数量校验使用：允许填「首次数」或「当前剩余」，
     // 这样重新下单时不会被强制改写成剩余量，分母永远是 600。
-    window._rem().baoziOrig = _denB || (_isRiderScope ? (j.baozi_total_orig !== undefined ? j.baozi_total_orig : null) : null);
-    window._rem().shopOrig = _denS || (_isRiderScope ? (j.shop_total_orig !== undefined ? j.shop_total_orig : null) : null);
+    window._rem().baoziOrig = _denB || (j.baozi_total_orig !== undefined ? j.baozi_total_orig : null);
+    window._rem().shopOrig = _denS || (j.shop_total_orig !== undefined ? j.shop_total_orig : null);
     d.style.display = "block";
     if (window.validateCountInputs) window.validateCountInputs();
   }
